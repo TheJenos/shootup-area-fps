@@ -25,7 +25,7 @@ function useHud(game: Game): HudState {
 }
 
 /** The icon the kill feed and death screen use for a weapon. */
-export const weaponIcon = (w: WeaponKind): string => (w === 'grenade' ? '💣' : GUNS[w]?.icon ?? '▸');
+export const weaponIcon = (w: WeaponKind): string => (w === 'grenade' ? '💣' : w === 'flag' ? '⚑' : GUNS[w]?.icon ?? '▸');
 
 /** Copy (or, on phones, share) the invite link for this room. */
 export function useCopyInvite(game: Game, roomCode: string): { copy(): void; copied: boolean } {
@@ -431,6 +431,15 @@ function HealthPanel({ hp }: { hp: number }) {
 function AmmoPanel({ hud, touch }: { hud: HudState; touch: boolean }) {
   const { ammo, magSize: max, reloading, gun, reserve, special } = hud;
   const { bindings } = useSettings();
+  if (hud.melee) {
+    return (
+      <div id="ammo" className="panel melee">
+        <div className="gun-slots"><span className="gun-slot on">⚑ Flag</span></div>
+        <span id="ammo-value">MELEE</span>
+        <div id="reload-hint" className="show">{touch ? '● TO SWING' : 'CLICK TO SWING'} · GUNS STOWED</div>
+      </div>
+    );
+  }
   const low = ammo <= max * 0.2;
   const dry = ammo === 0 && reserve === 0;
   const classes = [low && 'low', reloading && 'reloading', dry && 'dry'].filter(Boolean).join(' ');

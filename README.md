@@ -48,6 +48,10 @@ The room's creator picks the mode; the lobby shows it next to each room.
   The pause menu (Esc) has a **Switch team** button.
 - **Capture the Flag:** each base is a glowing pad near the back wall with the team's flag on it.
   Walk over the enemy flag to take it, then walk onto your own base to score — only while your own flag is home.
+  **While you carry the flag your guns and grenades are stowed: the flag is your only weapon.** Click (or ●)
+  to swing it: 55 damage, 80 to the head, 2.4 m reach, one swing every 0.7 s, so two hits take most people down.
+  Swings are forgiving to aim (a fan of short rays across your view) but walls block them. Other players see
+  the carrier's gun disappear and the swing as an arm strike, and the kill feed shows ⚑ for flag kills.
   A carrier who dies (or switches team, or leaves) drops the flag where they stood. Touch your own dropped flag
   to send it home; otherwise it returns by itself after 20 s. The score bar shows where both flags are.
 - **Rounds:** the score bar shows the round clock, which turns red in the last 30 s. When the time runs out,
@@ -234,6 +238,22 @@ size** (with a live preview), sound effects and music volume, screen shake, **re
 Off: no pulsing, zooming or camera shake; "System" follows the OS setting), **HUD size** (80–140 %; panels grow
 from the corner they're pinned to), a button to show the one-time tips again, and every key binding (hidden on
 touch screens, where the mouse section becomes "Look"). Settings are saved in the browser.
+
+### Global leaderboard
+
+The lobby lists the **top 20 players** of all time (top 10 in the Discord lobby), live: score, K/D and wins,
+with medals for the top three and your own row highlighted (or shown underneath if you're not in the top 20).
+
+- Every **finished round** you played in adds your kills, deaths and flag captures, plus a win if your side
+  (or you, in FFA / Gun Game) won. Spectators and players who joined during the results aren't counted, and
+  a round is never counted twice.
+- **Score = kills × 10 + captures × 30 + wins × 50.**
+- Your identity is a random id saved in the browser (`fps-profile`), or your Discord account inside Discord,
+  so the name shown is the one you last played with.
+- Stored at `leaderboard/{profileId}` (`src/net/leaderboard.ts`). Like the rest of the game the numbers are
+  reported by each player, so the database rules limit what one round can add (≤ 100 kills / deaths, ≤ 10
+  captures, ≤ 1 win, exactly one round) and check the score matches the formula. That stops casual editing,
+  not a determined cheater.
 
 ### Menu (Esc)
 

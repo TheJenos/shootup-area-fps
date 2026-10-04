@@ -131,6 +131,34 @@ export const playPickup = () => { blip(660, 0.12, 0.08, 'triangle'); blip(990, 0
 export const playAbility = () => blip(520, 0.12, 0.15, 'triangle');
 export const playDenied = () => blip(160, 0.1, 0.08, 'square');
 
+/** A flag pole cutting the air: a quick band-passed noise sweep. */
+export function playSwing(volume = 1, pan = 0): void {
+  if (!ctx || !noise || volume < 0.01) return;
+  const { gain, t } = envelope(ctx, 0.28 * volume, 0.22, 0, pan);
+  const src = ctx.createBufferSource();
+  src.buffer = noise;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.Q.value = 1.4;
+  filter.frequency.setValueAtTime(600, t);
+  filter.frequency.exponentialRampToValueAtTime(2600, t + 0.16);
+  src.connect(filter).connect(gain);
+  src.start(t, Math.random() * 0.2);
+  src.stop(t + 0.24);
+}
+
+/** The pole connecting: a dull, heavy thump. */
+export function playMeleeHit(volume = 1, pan = 0): void {
+  if (!ctx || volume < 0.01) return;
+  const { gain, t } = envelope(ctx, 0.7 * volume, 0.18, 0, pan);
+  const osc = ctx.createOscillator();
+  osc.frequency.setValueAtTime(140, t);
+  osc.frequency.exponentialRampToValueAtTime(55, t + 0.15);
+  osc.connect(gain);
+  osc.start(t);
+  osc.stop(t + 0.2);
+}
+
 /** Scrape of a slide along the floor. Softer surfaces muffle it. */
 export function playSlide(surface: 'hard' | 'sand' | 'snow' | 'wood', volume = 1, pan = 0): void {
   if (!ctx || !noise || volume < 0.01) return;

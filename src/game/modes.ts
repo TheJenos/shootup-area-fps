@@ -76,6 +76,17 @@ export const FLAG_BASES: Record<Team, THREE.Vector3> = {
   blue: new THREE.Vector3(0, 0, 32 * SIDE.blue),
 };
 
+/**
+ * Carrying the enemy flag stows your guns and grenades: the flag itself is your only weapon,
+ * swung at close range. Two body hits (or a hit to the head and one more) take someone down.
+ */
+export const MELEE_DAMAGE = 55;
+export const MELEE_HEAD_DAMAGE = 80;
+/** Reach of a swing from the eyes (m) */
+export const MELEE_RANGE = 2.4;
+/** Seconds between swings */
+export const MELEE_COOLDOWN = 0.7;
+
 /** Distance at which a player touches a flag */
 export const FLAG_RADIUS = 1.5;
 /** A dropped flag goes back to its base after this long */

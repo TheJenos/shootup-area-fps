@@ -347,6 +347,8 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 #ammo.low #ammo-value { color: var(--danger); }
 #reload-hint { font-size: 12px; color: var(--accent); letter-spacing: 2px; visibility: hidden; }
 #reload-hint.show { visibility: visible; }
+#ammo.melee #ammo-value { font-size: 26px; letter-spacing: 2px; color: var(--accent); }
+#ammo.melee #reload-hint { color: var(--text); }
 #ammo.low:not(.reloading) #reload-hint, #ammo.dry #reload-hint { color: var(--danger); }
 
 #abilities {
@@ -643,6 +645,22 @@ kbd {
 .lobby-card .lobby-rooms h2 { margin-top: 0; }
 .lobby-card .lobby-rooms #room-list { flex: 1; align-content: start; max-height: 60vh; overflow-y: auto; padding-right: 4px; }
 .lobby-card .legal { grid-column: 1 / -1; }
+.lobby-card .lobby-rooms #room-list { flex: 0 1 auto; max-height: 34vh; }
+
+/* Global leaderboard (lobby) */
+.leaderboard { margin-top: 8px; }
+.leaderboard table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.leaderboard th { font-size: 12px; color: var(--muted); font-weight: 600; text-align: right; padding: 0 6px 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.leaderboard td { text-align: right; padding: 6px; border-top: 1px solid var(--line); }
+.leaderboard th:first-child, .leaderboard td.rank { text-align: center; width: 32px; }
+.leaderboard th.name, .leaderboard td.name { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+.leaderboard td.score { font-weight: 700; color: var(--accent); }
+.leaderboard tr.me td { background: rgba(255, 181, 71, 0.08); }
+.leaderboard tfoot td { border-top: 2px solid var(--line); }
+.leaderboard .you { color: var(--accent); font-size: 12px; }
+.leaderboard .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 12px; border: 1px dashed var(--line); border-radius: 10px; margin: 0; }
+.leaderboard .hint { font-size: 12px; margin: 8px 0 0; }
+.card.discord .leaderboard { margin-top: 18px; text-align: left; }
 @media (max-width: 860px) {
   .lobby-card { grid-template-columns: 1fr; width: min(480px, 100%); }
   .lobby-card .lobby-rooms #room-list { max-height: none; overflow: visible; }

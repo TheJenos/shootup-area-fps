@@ -10,6 +10,8 @@ import type { GameMode, RoomSummary } from '../types';
 import { ROOM_CODE_MAX, type Session } from './App';
 import { Brand } from './Brand';
 import { friendlyError } from './errors';
+import { Leaderboard } from './Leaderboard';
+import { browserProfileId } from '../net/leaderboard';
 import { SettingsPanel } from './SettingsPanel';
 
 const NAME_KEY = 'fps-name';
@@ -93,6 +95,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { rooms, failed: roomsFailed, retry: retryRooms } = useRooms();
   const nameRef = useRef<HTMLInputElement>(null);
+  const [profileId] = useState(browserProfileId);
   const codeRef = useRef<HTMLInputElement>(null);
   // Start downloading the player model while the user is still in the lobby.
   useEffect(() => { loadCharacter().catch(() => {}); }, []);
@@ -148,7 +151,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
         }
         throw new Error(`Room ${normalized} doesn't exist.`);
       }
-      onEnter({ roomCode: normalized, playerId: randomId(), name: playerName, seed: setup.seed });
+      onEnter({ roomCode: normalized, playerId: randomId(), name: playerName, seed: setup.seed, profileId });
     });
   };
 
@@ -157,7 +160,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
     const title = roomName.trim().slice(0, 24) || `${playerName}'s room`;
     const roomSeed = seed || randomSeed();
     const roomCode = await createRoom(title, mode, roomSeed, playerName, playerId);
-    onEnter({ roomCode, playerId, name: playerName, seed: roomSeed });
+    onEnter({ roomCode, playerId, name: playerName, seed: roomSeed, profileId });
   });
 
   /** Enter in the name field: join if a code is filled in, otherwise move on to the code. */
@@ -339,6 +342,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
             ))
           )}
         </ul>
+        <Leaderboard limit={20} me={profileId} />
         </section>
 
         <p className="legal muted"><a href="/terms.html" target="_blank" rel="noreferrer">Terms</a> · <a href="/privacy.html" target="_blank" rel="noreferrer">Privacy</a></p>

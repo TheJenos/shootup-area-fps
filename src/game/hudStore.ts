@@ -120,6 +120,8 @@ export interface HudState {
   specialRounds: number | null;
   /** Looking through the sniper scope */
   scoped: boolean;
+  /** Carrying the enemy flag: guns stowed, the flag is a melee weapon */
+  melee: boolean;
   reloading: boolean;
   /** `n` increments on every hit so the UI can restart the animation. */
   hitmarker: { n: number; head: boolean };
@@ -188,6 +190,7 @@ const initialState: HudState = {
   special: null,
   specialRounds: null,
   scoped: false,
+  melee: false,
   reloading: false,
   hitmarker: { n: 0, head: false },
   damageFlash: 0,

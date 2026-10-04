@@ -19,12 +19,13 @@ import { GUNS, PICKUP_GUNS, isPickupGun, maxShotDamage, shotDamage } from './gun
 import { GrenadeFx, simulateGrenade, THROW_LIFT, THROW_SPEED } from './grenades';
 import { FlagField, placementOf, type FlagPlacement } from './flags';
 import {
-  CLOCK_WARNING, FLAG_BASES, FLAG_RADIUS, FLAG_RETURN_TIME, GUN_GAME_LADDER, MODES, MVP_TIME, RESULTS_TIME, TEAMS, TEAM_INFO,
-  gunGameGun, otherTeam, teamSpawns,
+  CLOCK_WARNING, FLAG_BASES, FLAG_RADIUS, FLAG_RETURN_TIME, GUN_GAME_LADDER, MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_HEAD_DAMAGE,
+  MELEE_RANGE, MODES, MVP_TIME, RESULTS_TIME, TEAMS, TEAM_INFO, gunGameGun, otherTeam, teamSpawns,
 } from './modes';
 import { MomentTracker } from './moments';
 import { ReplayDirector, ReplayRecorder } from './replay';
 import { RoomConnection, randomId } from '../net/network';
+import { recordRound } from '../net/leaderboard';
 import * as sfx from './audio';
 import { actionFor, keyFor, keyLabel, settings, type Action, type Quality } from './settings';
 import { IN_DISCORD } from '../discord/patch';
@@ -40,7 +41,8 @@ const SEND_INTERVAL = 1 / 15;
 const HEARTBEAT = 2;
 const RESPAWN_TIME = 3;
 /** Most damage one hit of each kind can deal; anything above that from another client is clamped. */
-const maxDamage = (weapon: WeaponKind) => (weapon === 'grenade' ? GRENADE_DAMAGE : maxShotDamage(weapon));
+const maxDamage = (weapon: WeaponKind) =>
+  (weapon === 'grenade' ? GRENADE_DAMAGE : weapon === 'flag' ? MELEE_HEAD_DAMAGE : maxShotDamage(weapon));
 /** Dropped items land this far in front of the player */
 const DROP_DISTANCE = 1.6;
 const ABILITY_ACTIONS: Action[] = ['ability1', 'ability2', 'ability3'];
@@ -107,6 +109,8 @@ export interface GameOptions {
   name: string;
   /** Map seed; every client generates the same arena from it */
   seed: string;
+  /** Leaderboard identity (finished rounds are added to it) */
+  profileId: string;
 }
 
 export class Game {
@@ -255,7 +259,12 @@ export class Game {
   private pingTimer = 0;
   private pingInFlight = false;
 
-  constructor({ host, roomCode, playerId, name, seed }: GameOptions) {
+  private readonly profileId: string;
+  /** The last round we added to the leaderboard, so a round is never counted twice */
+  private rankedRound = -1;
+
+  constructor({ host, roomCode, playerId, name, seed, profileId }: GameOptions) {
+    this.profileId = profileId;
     this.roomCode = roomCode;
     this.playerId = playerId;
     this.name = name;
@@ -848,6 +857,15 @@ export class Game {
     } else if (evt.type === 'grenade') {
       if (evt.from === this.playerId) return;
       this.grenades.launch(evt.id, simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders));
+    } else if (evt.type === 'melee') {
+      if (evt.from === this.playerId || !evt.o) return;
+      const origin = fromArr(evt.o);
+      const heard = this.heardFrom(origin);
+      if (heard) sfx.playSwing(heard.volume * 1.6, heard.pan);
+      if (evt.hit === this.playerId) {
+        sfx.playMeleeHit(0.9);
+        this.takeDamage(evt.dmg, evt.from, !!evt.head, 'flag', origin);
+      }
     } else if (evt.type === 'smoke') {
       if (evt.from === this.playerId) return;
       const arc = simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders);
@@ -948,7 +966,10 @@ export class Game {
     if (next.ended && (first || !prev.ended || newRound)) {
       this.endedAt = next.ended.at ?? this.net.serverNow();
       this.triggerHeld = false;
-      if (!first) this.announceWinner();
+      if (!first) {
+        this.announceWinner();
+        this.recordRanking();
+      }
     }
     if (newRound) this.startRound();
 
@@ -975,6 +996,20 @@ export class Game {
     this.refreshScore();
   }
 
+  /**
+   * The round just ended: add our part of it to the global leaderboard. Only rounds we were
+   * playing in (not spectating, not joined during the results) count, once each.
+   */
+  private recordRanking(): void {
+    const ended = this.game.ended;
+    if (!ended || this.spectating || this.rankedRound === this.game.round) return;
+    if (this.kills + this.deaths + this.stats.captures === 0 && performance.now() - this.joinedAt < 60_000) return;
+    this.rankedRound = this.game.round;
+    const won = ended.winner !== 'draw' && (this.team ? ended.winner === this.team : ended.winner === this.playerId);
+    recordRound(this.profileId, this.name, { kills: this.kills, deaths: this.deaths, captures: this.stats.captures, won })
+      .catch((err: unknown) => console.warn('Could not update the leaderboard', err));
+  }
+
   private announceWinner(): void {
     const ended = this.game.ended;
     if (!ended) return;
@@ -999,7 +1034,7 @@ export class Game {
       this.hud.pushInfo(`${who(is.carrier)} took the ${flag}`);
       if (is.carrier === this.playerId) {
         sfx.playPickup();
-        this.hud.announce('FLAG TAKEN', 'Run it to your base');
+        this.hud.announce('FLAG TAKEN', 'Guns stowed — swing the flag to fight · run it home');
       } else if (ours) {
         sfx.playDenied();
         this.hud.announce('YOUR FLAG IS GONE', `${who(is.carrier)} has it`);
@@ -1675,9 +1710,49 @@ export class Game {
     this.recorder.event({ t: this.net.serverNow(), kind: 'shot', ...shot, ...extra, hit: damageTo.size > 0 });
   }
 
+  /**
+   * Swing the carried flag: short rays fanned across the view (a club is forgiving to aim)
+   * find the nearest enemy within reach. Walls in the way block it. Shown to others as a throw.
+   */
+  private swingFlag(): void {
+    this.throws++;
+    const origin = this.camera.getWorldPosition(new THREE.Vector3());
+    const forward = this.camera.getWorldDirection(new THREE.Vector3());
+    const targets: THREE.Object3D[] = [...this.world.solids];
+    for (const [id, r] of this.remotes) if (!this.isAlly(id)) targets.push(...r.hitboxes);
+    this.raycaster.far = MELEE_RANGE;
+    let best: { id: string; head: boolean; distance: number } | null = null;
+    for (const yaw of [0, -0.22, 0.22, -0.42, 0.42]) {
+      for (const pitch of [0, -0.18]) {
+        const dir = forward.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+        dir.y += pitch;
+        this.raycaster.set(origin, dir.normalize());
+        const hit = this.raycaster.intersectObjects(targets, false)[0];
+        const box = hit?.object.userData as Partial<HitboxData> | undefined;
+        if (!hit || !box?.playerId) continue;
+        if (!best || hit.distance < best.distance) best = { id: box.playerId, head: !!box.head, distance: hit.distance };
+      }
+    }
+    sfx.playSwing(0.8);
+    this.stats.shots++;
+    const dmg = best ? (best.head ? MELEE_HEAD_DAMAGE : MELEE_DAMAGE) : 0;
+    if (best) {
+      this.stats.hits++;
+      if (best.head) this.stats.headshots++;
+      const target = this.remotes.get(best.id);
+      if (target) {
+        this.stats.damage += Math.min(dmg, target.displayedHp);
+        target.reveal(dmg);
+      }
+      this.hud.hitmarker(best.head);
+      sfx.playMeleeHit();
+    }
+    this.net.sendEvent({ type: 'melee', o: toArr(origin), hit: best?.id ?? null, dmg, head: !!best?.head });
+  }
+
   /** Q / mouse wheel / the touch swap button: rifle <-> picked-up gun. */
   switchGun(): void {
-    if (!this.alive || this.roundOver) return;
+    if (!this.alive || this.roundOver || this.weapon.meleeMode) return;
     if (this.weapon.switchGun()) {
       this.aimHeld = false;
       sfx.playSwitch();
@@ -1731,6 +1806,11 @@ export class Game {
         this.player.dash(DASH_SPEED);
         break;
       case 'grenade':
+        if (this.weapon.meleeMode) {
+          this.hud.toast("Hands full — you can't throw while carrying the flag");
+          sfx.playDenied();
+          return;
+        }
         this.throwGrenade();
         break;
       case 'smoke':
@@ -2108,7 +2188,10 @@ export class Game {
       this.introDone = true;
       this.hud.announce(MODES[this.mode].name, MODES[this.mode].goal, 3800);
     }
-    const aiming = this.aimHeld && this.alive && this.locked && !this.roundOver && !this.inventoryOpen;
+    // Carrying the enemy flag: guns stowed, the flag is the only weapon.
+    const melee = this.alive && this.carryingFlag();
+    this.weapon.setMelee(melee, this.team ? TEAM_INFO[otherTeam(this.team)].color : undefined);
+    const aiming = this.aimHeld && this.alive && this.locked && !this.roundOver && !this.inventoryOpen && !melee;
     this.player.aiming = aiming;
     if (aiming) {
       this.hint('ads', () => `Aiming down sights: tighter spread, slower moves${settings.get().aimToggle ? ' — right-click again to stop' : ''}`);
@@ -2125,7 +2208,12 @@ export class Game {
       this.hint('slide', () => (this.touch ? 'Tap ⤓ while sprinting to slide' : `Press ${keyLabel(keyFor('crouch'))} while sprinting to slide`));
     }
 
-    if (this.triggerHeld && this.alive && this.locked && this.joined && !this.roundOver && this.weapon.tryFire()) this.shoot();
+    const canAttack = this.triggerHeld && this.alive && this.locked && this.joined && !this.roundOver;
+    if (canAttack && melee) {
+      if (this.weapon.trySwing(MELEE_COOLDOWN)) this.swingFlag();
+    } else if (canAttack && this.weapon.tryFire()) {
+      this.shoot();
+    }
     if (this.weapon.specialEmpty) {
       this.weapon.removeSpecial();
       this.hud.toast('Out of ammo — back to the rifle');
@@ -2146,6 +2234,7 @@ export class Game {
       gun: this.weapon.gun,
       special: this.weapon.special,
       specialRounds: this.weapon.specialRounds,
+      melee,
       reloading: this.weapon.reloading,
     });
 
@@ -2159,6 +2248,7 @@ export class Game {
 
     for (const [id, r] of this.remotes) {
       r.setAlly(this.isAlly(id));
+      r.setCarrying(this.mode === 'ctf' && TEAMS.some((t) => this.game.flags[t]?.by === id));
       r.update(dt);
       this.updateRemoteSteps(id, r, dt);
       if (r.consumeReloadStart()) {

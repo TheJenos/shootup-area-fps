@@ -171,6 +171,8 @@ export class RemotePlayer {
   private switchTime = -1;
   /** Death: a sideways tilt chosen per fall so bodies don't all drop the same way */
   private fallRoll = 0;
+  /** Carrying the enemy flag: no gun in hand, arms swing free except when they strike */
+  private carrying = false;
   /** 0..1 blend from the animation's arms to the aim pose, and from the ready pose to the sights */
   private readyAmount = 1;
   private adsAmount = 0;
@@ -421,6 +423,13 @@ export class RemotePlayer {
     for (const mesh of this.xray) mesh.visible = show;
   }
 
+  /** They're carrying the enemy flag (guns stowed; a "throw" is a swing of the flag). */
+  setCarrying(carrying: boolean): void {
+    if (carrying === this.carrying) return;
+    this.carrying = carrying;
+    this.gunMesh.visible = !carrying;
+  }
+
   /** True once per reload they start (for the sound). */
   consumeReloadStart(): boolean {
     const started = this.reloadStarted;
@@ -514,8 +523,10 @@ export class RemotePlayer {
    * its fore-end. Blended over the animation; off while sprinting, sliding or dead.
    */
   private applyAim(dt: number): void {
-    const ready = this.alive && (this.aiming || (this.gait !== 'Run' && this.slideAmount < 0.5)) ? 1 : 0;
-    this.readyAmount += (ready - this.readyAmount) * (1 - Math.exp(-READY_SPEED * dt));
+    const ready = !this.alive ? 0
+      : this.carrying ? (this.throwTime >= 0 ? 1 : 0)
+        : this.aiming || (this.gait !== 'Run' && this.slideAmount < 0.5) ? 1 : 0;
+    this.readyAmount += (ready - this.readyAmount) * (1 - Math.exp(-(this.carrying ? 16 : READY_SPEED) * dt));
     this.adsAmount += ((this.aiming && this.alive ? 1 : 0) - this.adsAmount) * (1 - Math.exp(-ADS_SPEED * dt));
     this.head.rotateX(-this.pitch * HEAD_PITCH);
     const w = this.readyAmount;

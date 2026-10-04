@@ -10,6 +10,8 @@ import type { Session } from './App';
 import { Brand } from './Brand';
 import { friendlyError } from './errors';
 import { SettingsPanel } from './SettingsPanel';
+import { Leaderboard } from './Leaderboard';
+import { discordProfileId } from '../net/leaderboard';
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -72,7 +74,9 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
       const notice = !existing && !created && setup.mode !== mode
         ? `Someone started first — you joined their ${MODES[setup.mode].name} match`
         : undefined;
-      onEnter({ roomCode, playerId, name: discord.name, seed: setup.seed, ...(notice ? { notice } : {}) });
+      onEnter({
+        roomCode, playerId, name: discord.name, seed: setup.seed, profileId: discordProfileId(discord.userId), ...(notice ? { notice } : {}),
+      });
     } catch (err) {
       console.error(err);
       setError(friendlyError(err));
@@ -124,6 +128,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
               {busy ? <><span className="spinner" aria-hidden="true" />{existing ? 'Joining…' : 'Starting…'}</> : existing ? 'Join match' : 'Start match'}
             </button>
             <p className="muted hint">Everyone in this voice channel plays in the same match.</p>
+            <Leaderboard limit={10} me={discordProfileId(discord.userId)} />
           </>
         )}
         <p className="error">{error}</p>

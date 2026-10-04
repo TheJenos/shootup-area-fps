@@ -108,7 +108,8 @@ export interface ShotEvent {
 /** Guns a player can hold. The rifle is always carried; the others are picked up on the map. */
 export type GunKind = 'rifle' | 'shotgun' | 'sniper' | 'deagle';
 
-export type WeaponKind = GunKind | 'grenade';
+/** What can kill: a gun, a grenade, or the enemy flag swung as a club (CTF carriers) */
+export type WeaponKind = GunKind | 'grenade' | 'flag';
 
 export interface KillEvent {
   type: 'kill';
@@ -124,6 +125,16 @@ export interface GrenadeEvent {
   id: string;
   o: Vec3Tuple;
   v: Vec3Tuple;
+}
+
+/** A flag carrier swung the flag; `hit` took `dmg` (melee range only). */
+export interface MeleeEvent {
+  type: 'melee';
+  /** Where the swing came from (the swinger's eyes) */
+  o: Vec3Tuple;
+  hit: string | null;
+  dmg: number;
+  head: boolean;
 }
 
 /** A smoke canister was thrown; it bursts where the same arc lands. */
@@ -155,7 +166,7 @@ export interface BlastEvent {
   hits?: Record<string, number>;
 }
 
-export type OutgoingEvent = ShotEvent | KillEvent | GrenadeEvent | BlastEvent | SmokeEvent | WallEvent;
+export type OutgoingEvent = ShotEvent | KillEvent | GrenadeEvent | BlastEvent | SmokeEvent | WallEvent | MeleeEvent;
 
 /** An event as stored in the database, stamped by the sender. */
 export type GameEvent = OutgoingEvent & { from: string; t: number };

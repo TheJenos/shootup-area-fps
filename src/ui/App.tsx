@@ -12,6 +12,8 @@ export interface Session {
   seed: string;
   /** Something to tell the player once they're in (e.g. the mode they picked wasn't used) */
   notice?: string;
+  /** Leaderboard identity: stays the same between visits (or Discord accounts) */
+  profileId: string;
 }
 
 /** Room codes are 5 characters, or 10 for Discord voice-channel rooms (DC + 8). */
