@@ -634,6 +634,20 @@ kbd {
 .mode-badge.ctf { background: rgba(255, 77, 77, 0.18); color: #ff9a9a; }
 .mode-badge.gungame { background: rgba(255, 181, 71, 0.18); color: #ffd48a; }
 .subtitle.invite strong { color: var(--accent); }
+
+/* Lobby: the header across the top, the room form on the left, the open rooms on the right */
+.lobby-card { width: min(960px, 100%); display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); column-gap: 32px; align-content: start; }
+.lobby-card .lobby-head { grid-column: 1 / -1; }
+.lobby-card .lobby-head .subtitle { margin-bottom: 18px; }
+.lobby-card .lobby-rooms { display: flex; flex-direction: column; min-width: 0; }
+.lobby-card .lobby-rooms h2 { margin-top: 0; }
+.lobby-card .lobby-rooms #room-list { flex: 1; align-content: start; max-height: 60vh; overflow-y: auto; padding-right: 4px; }
+.lobby-card .legal { grid-column: 1 / -1; }
+@media (max-width: 860px) {
+  .lobby-card { grid-template-columns: 1fr; width: min(480px, 100%); }
+  .lobby-card .lobby-rooms #room-list { max-height: none; overflow: visible; }
+  .lobby-card .lobby-rooms h2 { margin-top: 24px; }
+}
 .field .hint { display: block; margin-top: 4px; font-size: 12px; }
 .invite-card { position: relative; overflow: hidden; border: 1px solid var(--accent); background: rgba(255, 181, 71, 0.08); border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; text-align: left; }
 .invite-card p { margin: 0 0 10px; }

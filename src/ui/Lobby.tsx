@@ -176,7 +176,8 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
 
   return (
     <section id="lobby" className="screen">
-      <div className="card">
+      <div className="card lobby-card">
+        <header className="lobby-head">
         <Brand />
         {invite === 'auto' ? (
           <div className="invite-card" role="status">
@@ -202,6 +203,9 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
         ) : (
           <p className="subtitle">Pick a name, open a room, frag your friends.</p>
         )}
+        </header>
+
+        <section className="lobby-setup">
 
         {!isConfigured && (
           <div className="warning">
@@ -302,7 +306,9 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
         <button type="button" className="settings-link" onClick={() => setSettingsOpen(true)}>
           ⚙ Mouse &amp; key settings
         </button>
+        </section>
 
+        <section className="lobby-rooms">
         <h2>Open rooms</h2>
         <ul id="room-list">
           {!isConfigured ? (
@@ -333,6 +339,8 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
             ))
           )}
         </ul>
+        </section>
+
         <p className="legal muted"><a href="/terms.html" target="_blank" rel="noreferrer">Terms</a> · <a href="/privacy.html" target="_blank" rel="noreferrer">Privacy</a></p>
       </div>
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
