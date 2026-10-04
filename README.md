@@ -201,6 +201,7 @@ Discord, with no website to visit.
 | Shift | Sprint |
 | Ctrl (hold) | Crouch; press while sprinting to slide |
 | R | Reload |
+| Q / mouse wheel | Switch between the rifle and a picked-up gun |
 | 1 / 2 / 3 | Use the ability in that slot |
 | I | Inventory (details + drop items) |
 | Tab (hold) | Match summary |
@@ -230,6 +231,29 @@ On a touch device the game switches to on-screen controls and plays in landscape
 - On phones the game renders at a slightly lower resolution, pinch / double-tap zoom is disabled, and
   overlays get compact on short screens.
 - Add `?touch` to the URL to try the touch layout with a mouse on a desktop.
+
+## Guns
+
+You always carry the **rifle**. Three more guns lie around the map as glowing pickups (up to 3 at a time,
+stocked separately from abilities) and go into a second slot when you walk over them:
+
+| | Gun | Fire | Damage body / head | Magazine + spare | Notes |
+| --- | --- | --- | --- | --- | --- |
+| ▸ | Rifle | Automatic, 10/s | 20 / 50 | 30 + ∞ | Never runs out |
+| 💥 | Shotgun | Pump, 9 pellets | 12 / 18 per pellet | 6 + 12 | Falls off from 7 m to 25% at 28 m; ~100+ up close |
+| 🎯 | Sniper | Bolt action | 75 / 150 | 5 + 10 | Scope zooms to an 18° view; wild from the hip |
+| 🔫 | Deagle | Semi-auto | 40 / 90 | 7 + 21 | Heavy recoil |
+
+- Switch with **Q** or the mouse wheel (or the ⇄ button on touch screens). The ammo panel shows both slots,
+  the magazine and the spare rounds.
+- Walking over a different gun swaps it in and drops yours with its remaining ammo; the same gun just adds
+  ammo. When a picked-up gun runs completely dry you go back to the rifle. When you die it drops next to your body
+  with the ammo it had left.
+- Each gun has its own model, iron sights or scope, aimed field of view, spread, recoil and synthesized
+  report. Other players see the gun you're holding, and the kill feed shows which gun got the kill.
+- Shotgun shots are sent as one event carrying every pellet's end point and the damage per player hit;
+  each client still caps incoming damage at what that gun can deal in one shot.
+- All gun numbers live in `src/game/guns.ts`.
 
 ## Aim down sights
 
@@ -280,7 +304,8 @@ Browsers normally don't let a page catch the close-tab shortcut, so the game use
 
 Ability pickups spawn at random open spots on the map (up to 6 at once). Walk over one to put it in your
 first free slot (3 slots). Each ability has a number of uses and a cooldown; when its uses run out it removes
-itself from the slot. Dying empties your slots.
+itself from the slot. When you die, your abilities (with their uses left) and your picked-up gun are scattered on
+the floor around your body, spread apart rather than stacked, for anyone to grab.
 
 Press **I** to open the inventory: it frees the mouse and lists each slot's uses and cooldown with a **Drop**
 button. Dropped abilities land in front of you with their remaining uses, and anyone can pick them up.
@@ -323,7 +348,9 @@ rooms/{code}/game          round number, map seed, start time, winner + MVP + ne
 
 - Each client sends its own position ~15×/s (only when it changes) and interpolates everyone else.
 - Shooting is hitscan: the shooter raycasts locally against the map and other players' hitboxes,
-  then publishes a `shot` event (tracer + who was hit). Body shots do 20, headshots 50.
+  then publishes a `shot` event (tracer + who was hit). Body shots do 20, headshots 50 (rifle). The shooter
+  sees a hit marker on the crosshair right away: a quick white X for a body hit, a bigger red X with a burst ring
+  (and a higher-pitched tick) for a headshot.
 - The victim applies the damage to itself, and on death publishes a `kill` event and credits the killer
   (via a transaction). Respawn after 3 s at the spawn point furthest from enemies.
 - The `game` node is only ever changed with transactions (scoring, ending a round, taking / dropping /
@@ -374,6 +401,7 @@ src/
     replay.ts        records the round and replays the MVP's highlight
     flags.ts         CTF bases and flags (waving, carried, dropped)
     settings.ts      mouse sensitivity + key bindings (saved in localStorage)
+    guns.ts          gun stats, damage falloff and first-person models
     abilities.ts     ability definitions, tuning numbers, 3-slot inventory
     pickups.ts       ability pickups on the map
     grenades.ts      deterministic grenade arcs + explosion effects

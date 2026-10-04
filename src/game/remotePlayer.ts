@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import { NameTag } from './nameTag';
 import { makeXrayMaterial, makeXrayMeshes } from './xray';
+import { REMOTE_GUN_SIZE } from './guns';
 import { wornMetalTexture } from './textures';
 import { cloneCharacter, GAITS, type CharacterAsset, type Gait } from './character';
 import { TEAMS, TEAM_INFO } from './modes';
-import type { PlayerState, Stance, Team } from '../types';
+import type { GunKind, PlayerState, Stance, Team } from '../types';
 
 /** Attached to hitbox meshes so a raycast hit can be traced back to a player. */
 export interface HitboxData {
@@ -112,6 +113,8 @@ export class RemotePlayer {
   private readonly feet: THREE.Object3D[];
   private stanceNow: Stance = 'stand';
   private colorNow: string | undefined;
+  private gunMesh!: THREE.Mesh;
+  private gunNow: GunKind = 'rifle';
   private ally = false;
   /** Glowing outline drawn through cover, for teammates only (made on first need) */
   private xray: THREE.SkinnedMesh[] = [];
@@ -179,6 +182,8 @@ export class RemotePlayer {
     this.stanceNow = data.stance ?? 'stand';
 
     const gun = new THREE.Mesh(gunGeo, rifleMaterial());
+    this.gunMesh = gun;
+    if (data.gun) this.setGun(data.gun);
     gun.castShadow = true;
     gun.scale.setScalar(BONE_SCALE);
     gun.position.copy(GUN_OFFSET);
@@ -228,6 +233,7 @@ export class RemotePlayer {
     if (data.color || data.team) this.setColor(data.color ?? this.colorNow, data.team ?? this.teamNow);
     if (data.name) this.tag.setName(data.name);
     this.shield.visible = !!data.shield && this.alive;
+    if (data.gun && data.gun !== this.gunNow) this.setGun(data.gun);
     if (data.stance) {
       if (data.stance === 'slide' && this.stanceNow !== 'slide') this.slideStarted = true;
       this.stanceNow = data.stance;
@@ -282,6 +288,14 @@ export class RemotePlayer {
   /** Height of their chest above their feet, lower when crouching or sliding (for grenade line of sight). */
   get chestHeight(): number {
     return 1 - 0.35 * this.crouchAmount - 0.55 * this.slideAmount;
+  }
+
+  /** Show the gun they're holding: a box of that gun's size (the rifle is the base box). */
+  private setGun(kind: GunKind): void {
+    const size = REMOTE_GUN_SIZE[kind] ?? REMOTE_GUN_SIZE.rifle;
+    const base = REMOTE_GUN_SIZE.rifle;
+    this.gunNow = kind;
+    this.gunMesh.scale.set((size[0] / base[0]) * BONE_SCALE, (size[1] / base[1]) * BONE_SCALE, (size[2] / base[2]) * BONE_SCALE);
   }
 
   /** Hide the avatar (e.g. while the MVP replay is on). */

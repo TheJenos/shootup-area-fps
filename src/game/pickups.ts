@@ -2,13 +2,20 @@ import * as THREE from 'three';
 import { ABILITIES } from './abilities';
 import { ARENA_HALF } from './world';
 import { boxTexture } from './textures';
+import { GUNS, buildGunModel, isPickupGun } from './guns';
 import type { AbilityType, PickupRecord } from '../types';
 
+/** Abilities and guns are stocked separately, so guns don't crowd out abilities */
 export const MAX_PICKUPS = 6;
+export const MAX_GUN_PICKUPS = 3;
 const PICKUP_RADIUS = 1.1;
 /** Keep pickups this far from walls/crates and from each other */
 const CLEARANCE = 1;
 const SPACING = 4;
+/** Items dropped by a dead player: rings around the body, kept apart so they don't stack */
+const SCATTER_RADII = [1.3, 2, 2.8, 3.6];
+const SCATTER_SPACING = 1.5;
+const SCATTER_CLEARANCE = 0.5;
 
 const ringGeo = new THREE.RingGeometry(0.45, 0.6, 32).rotateX(-Math.PI / 2);
 const pedestalGeo = new THREE.CylinderGeometry(0.62, 0.72, 0.12, 24).translate(0, 0.06, 0);
@@ -73,16 +80,39 @@ export class PickupField {
     return this.pickups.size;
   }
 
+  /** What kind of pickup `id` is */
+  typeOf(id: string): PickupRecord['type'] | undefined {
+    return this.pickups.get(id)?.record.type;
+  }
+
+  /** How many guns / abilities are lying around */
+  countOf(kind: 'gun' | 'ability'): number {
+    let n = 0;
+    for (const p of this.pickups.values()) if (isPickupGun(p.record.type) === (kind === 'gun')) n++;
+    return n;
+  }
+
   add(id: string, record: PickupRecord): void {
-    if (this.pickups.has(id) || !ABILITIES[record.type]) return;
-    const color = ABILITIES[record.type].color;
+    const type = record.type;
+    const gun = isPickupGun(type);
+    if (this.pickups.has(id) || (!gun && !ABILITIES[type])) return;
+    const color = gun ? GUNS[type].color : ABILITIES[type].color;
     const iconMat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.5, roughness: 0.4 });
     const glowMat = new THREE.MeshBasicMaterial({
       color, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
     });
     const group = new THREE.Group();
     group.position.set(record.x, 0, record.z);
-    const icon = iconMesh(record.type, iconMat);
+    let icon: THREE.Object3D;
+    if (gun) {
+      // A full-size copy of the gun itself, spinning on its side.
+      const model = buildGunModel(type).group;
+      model.scale.setScalar(1.6);
+      model.rotation.z = Math.PI / 2;
+      icon = new THREE.Group().add(model);
+    } else {
+      icon = iconMesh(type, iconMat);
+    }
     icon.position.y = 0.9;
     const ring = new THREE.Mesh(ringGeo, glowMat);
     ring.position.y = 0.13;
@@ -135,6 +165,43 @@ export class PickupField {
       return { x: Math.round(x * 100) / 100, z: Math.round(z * 100) / 100 };
     }
     return null;
+  }
+
+  /**
+   * `count` spots on open floor in a ring around (x, z), spread apart rather than stacked:
+   * evenly spaced angles, pushed further out when cover or the arena edge is in the way.
+   */
+  scatterAround(x: number, z: number, count: number): { x: number; z: number }[] {
+    const limit = ARENA_HALF - 1;
+    const spots: { x: number; z: number }[] = [];
+    const free = (sx: number, sz: number) =>
+      Math.abs(sx) < limit && Math.abs(sz) < limit &&
+      !this.colliders.some((c) =>
+        sx > c.min.x - SCATTER_CLEARANCE && sx < c.max.x + SCATTER_CLEARANCE &&
+        sz > c.min.z - SCATTER_CLEARANCE && sz < c.max.z + SCATTER_CLEARANCE) &&
+      ![...spots, ...[...this.pickups.values()].map((p) => p.record)]
+        .some((o) => Math.hypot(o.x - sx, o.z - sz) < SCATTER_SPACING);
+    const start = Math.random() * Math.PI * 2;
+    for (let i = 0; i < count; i++) {
+      const base = start + (i / count) * Math.PI * 2;
+      let spot: { x: number; z: number } | null = null;
+      search: for (const r of SCATTER_RADII) {
+        // Try the item's own direction first, then swing either way around the body.
+        for (let k = 0; k < 12; k++) {
+          const a = base + Math.ceil(k / 2) * (k % 2 ? 1 : -1) * (Math.PI / 6);
+          const sx = x + Math.sin(a) * r;
+          const sz = z + Math.cos(a) * r;
+          if (free(sx, sz)) {
+            spot = { x: sx, z: sz };
+            break search;
+          }
+        }
+      }
+      // Boxed in on every side: fall back to the body itself.
+      spot ??= { x: THREE.MathUtils.clamp(x, -limit, limit), z: THREE.MathUtils.clamp(z, -limit, limit) };
+      spots.push({ x: Math.round(spot.x * 100) / 100, z: Math.round(spot.z * 100) / 100 });
+    }
+    return spots;
   }
 
   dispose(): void {

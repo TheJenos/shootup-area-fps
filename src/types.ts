@@ -15,6 +15,8 @@ export interface PlayerState {
   shield?: boolean;
   /** Crouching or sliding; missing means standing */
   stance?: Stance;
+  /** The gun in hand (others see it); missing means the rifle */
+  gun?: GunKind;
   /** Team in TDM / CTF; absent in free-for-all */
   team?: Team;
   /** Match stats, reported by each player about themselves */
@@ -81,15 +83,24 @@ export interface ShotEvent {
   type: 'shot';
   /** Muzzle position */
   o: Vec3Tuple;
-  /** Where the bullet stopped */
+  /** Where the bullet stopped (the first pellet, for shotguns) */
   e: Vec3Tuple;
   /** Id of the player that was hit, if any */
   hit?: string | null;
   dmg?: number;
   head?: boolean;
+  /** Gun that fired; missing means the rifle */
+  w?: GunKind;
+  /** Shotgun: where the other pellets stopped (for tracers) */
+  ends?: Vec3Tuple[];
+  /** Shotgun: total damage dealt to each player hit, replacing hit/dmg */
+  hits?: Record<string, number>;
 }
 
-export type WeaponKind = 'rifle' | 'grenade';
+/** Guns a player can hold. The rifle is always carried; the others are picked up on the map. */
+export type GunKind = 'rifle' | 'shotgun' | 'sniper' | 'deagle';
+
+export type WeaponKind = GunKind | 'grenade';
 
 export interface KillEvent {
   type: 'kill';
@@ -177,11 +188,14 @@ export type GameState = GameRecord & Required<Pick<GameRecord, 'score' | 'flags'
 
 export type AbilityType = 'medkit' | 'shield' | 'speed' | 'dash' | 'grenade';
 
-/** An ability lying on the map at rooms/{code}/pickups/{id}. */
+/** An ability or a gun lying on the map at rooms/{code}/pickups/{id}. */
 export interface PickupRecord {
-  type: AbilityType;
+  type: AbilityType | Exclude<GunKind, 'rifle'>;
   x: number;
   z: number;
-  /** Uses left, for abilities a player dropped; fresh pickups have the full amount */
+  /**
+   * What's left in a dropped item: uses for abilities, rounds for guns. Fresh pickups have the
+   * full amount.
+   */
   uses?: number;
 }

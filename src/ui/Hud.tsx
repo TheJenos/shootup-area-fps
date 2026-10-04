@@ -9,13 +9,15 @@ import { SettingsPanel, useSettings } from './SettingsPanel';
 import { keyLabel, type Bindings } from '../game/settings';
 import { InventoryPanel } from './InventoryPanel';
 import { TouchControls } from './TouchControls';
+import { GUNS } from '../game/guns';
+import type { GunKind } from '../types';
 import { safeColor } from './colors';
 
 function controls(b: Bindings): [key: string, action: string][] {
   const k = (...codes: string[]) => codes.map(keyLabel).join(' ');
   return [
     [k(b.forward, b.left, b.back, b.right), 'move'], ['Mouse', 'aim'], ['Click', 'shoot'], [k(b.jump), 'jump'],
-    ['Right-click', 'aim'], [k(b.sprint), 'sprint'], [k(b.crouch), 'crouch / slide'], [k(b.reload), 'reload'], [k(b.ability1, b.ability2, b.ability3), 'abilities'],
+    ['Right-click', 'aim'], [k(b.sprint), 'sprint'], [k(b.crouch), 'crouch / slide'], [k(b.reload), 'reload'], [k(b.swap) + ' / wheel', 'switch gun'], [k(b.ability1, b.ability2, b.ability3), 'abilities'],
     [k(b.inventory), 'inventory'], [k(b.scoreboard), 'match summary'],
   ];
 }
@@ -40,6 +42,8 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       id="hud"
       className={[hud.matchEnd?.phase === 'mvp' && 'cinematic', game.touch && 'touch'].filter(Boolean).join(' ') || undefined}
     >
+      {/* First, so every HUD panel draws on top of the scope's black surround. */}
+      {hud.scoped && !hud.death && <ScopeOverlay />}
       {!hud.death && <div id="crosshair" className={hud.aiming ? 'ads' : undefined} />}
       {hud.hitmarker.n > 0 && (
         // A new key remounts the element, which restarts the CSS animation.
@@ -52,7 +56,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       <ScoreBar hud={hud} />
       <KillFeed entries={hud.feed} />
       <HealthPanel hp={hud.hp} />
-      <AmmoPanel ammo={hud.ammo} max={hud.magSize} reloading={hud.reloading} />
+      <AmmoPanel hud={hud} />
       <AbilityBar
         slots={hud.slots}
         buffs={hud.buffs}
@@ -60,7 +64,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
         onUse={game.touch ? (i) => game.touchAbility(i) : undefined}
       />
       {game.touch && !hud.paused && !hud.connecting && !hud.death && !hud.inventoryOpen
-        && hud.matchEnd?.phase !== 'mvp' && <TouchControls game={game} aiming={hud.aiming} />}
+        && hud.matchEnd?.phase !== 'mvp' && <TouchControls game={game} aiming={hud.aiming} hasSpecial={!!hud.special} />}
       {game.touch && (
         <div id="rotate-hint" className="overlay">
           <div className="phone" />
@@ -274,13 +278,32 @@ function HealthPanel({ hp }: { hp: number }) {
   );
 }
 
-function AmmoPanel({ ammo, max, reloading }: { ammo: number; max: number; reloading: boolean }) {
+function AmmoPanel({ hud }: { hud: HudState }) {
+  const { ammo, magSize: max, reloading, gun, reserve, special } = hud;
   const classes = [ammo <= max * 0.2 && 'low', reloading && 'reloading'].filter(Boolean).join(' ');
+  const slot = (kind: GunKind) => (
+    <span className={kind === gun ? 'gun-slot on' : 'gun-slot'}>{GUNS[kind].name}</span>
+  );
   return (
     <div id="ammo" className={`panel ${classes}`}>
+      <div className="gun-slots">
+        {slot('rifle')}
+        {special ? slot(special) : <span className="gun-slot empty">—</span>}
+      </div>
       <span id="ammo-value">{ammo}</span>
-      <span className="label"> / {max}</span>
+      <span className="label"> / {reserve === null ? '∞' : reserve}</span>
       <div id="reload-hint">RELOADING</div>
+    </div>
+  );
+}
+
+/** Looking through the sniper scope: black around a round lens with a fine reticle. */
+function ScopeOverlay() {
+  return (
+    <div id="scope" aria-hidden="true">
+      <div className="lens">
+        <i className="h" /><i className="v" /><i className="dot" />
+      </div>
     </div>
   );
 }
@@ -295,7 +318,8 @@ function KillFeed({ entries }: { entries: FeedEntry[] }) {
           <li key={e.id} className={e.mine ? 'me' : undefined}>
             <span style={{ color: safeColor(e.killer.color) }}>{e.killer.name}</span>
             <span className="weapon">
-              {e.weapon === 'grenade' ? '💣' : e.head ? <span className="head">⌖ headshot</span> : '▸'}
+              {e.weapon === 'grenade' ? '💣' : GUNS[e.weapon]?.icon ?? '▸'}
+              {e.weapon !== 'grenade' && e.head && <span className="head"> ⌖ headshot</span>}
             </span>
             <span style={{ color: safeColor(e.victim.color) }}>{e.victim.name}</span>
           </li>

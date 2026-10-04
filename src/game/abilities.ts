@@ -97,6 +97,13 @@ export class Inventory {
     this.slots.fill(null);
   }
 
+  /** Empties every slot and returns what was in them (to drop on death). */
+  takeAll(): { type: AbilityType; usesLeft: number }[] {
+    const items = this.slots.flatMap((s) => (s ? [{ type: s.type, usesLeft: s.usesLeft }] : []));
+    this.clear();
+    return items;
+  }
+
   view(now: number): (SlotView | null)[] {
     return this.slots.map((s) =>
       s && {

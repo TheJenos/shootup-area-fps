@@ -7,7 +7,7 @@ import type { CharacterAsset } from './character';
 import { GRENADE_RADIUS } from './abilities';
 import { TEAMS } from './modes';
 import * as sfx from './audio';
-import type { MvpInfo, PlayerState, Stance, Team, Vec3Tuple } from '../types';
+import type { GunKind, MvpInfo, PlayerState, Stance, Team, Vec3Tuple } from '../types';
 
 /** Keep at most one pose per player per this many ms (about 12 a second). */
 const SAMPLE_GAP = 80;
@@ -35,7 +35,7 @@ interface Track {
 }
 
 export type ReplayEvent =
-  | { t: number; kind: 'shot'; o: Vec3Tuple; e: Vec3Tuple; hit: boolean }
+  | { t: number; kind: 'shot'; o: Vec3Tuple; e: Vec3Tuple; hit: boolean; w?: GunKind; ends?: Vec3Tuple[] }
   | { t: number; kind: 'kill'; killer: string; victim: string; head: boolean }
   | { t: number; kind: 'grenade'; id: string; o: Vec3Tuple; v: Vec3Tuple }
   | { t: number; kind: 'blast'; id: string; p: Vec3Tuple }
@@ -223,10 +223,12 @@ export class ReplayDirector {
       if (e.t <= from) continue;
       if (e.kind === 'shot') {
         const o = fromArr(e.o);
-        const end = fromArr(e.e);
-        effects.tracer(o, end, 0xffa27a);
-        effects.impact(end, e.hit ? 0xff3b3b : 0xffc35c);
-        sfx.playShot(0.6 / (1 + o.distanceTo(camera.position) / 10));
+        for (const p of [e.e, ...(e.ends ?? [])]) {
+          const end = fromArr(p);
+          effects.tracer(o, end, 0xffa27a);
+          effects.impact(end, e.hit ? 0xff3b3b : 0xffc35c);
+        }
+        sfx.playShot(0.6 / (1 + o.distanceTo(camera.position) / 10), e.w ?? 'rifle');
       } else if (e.kind === 'kill') {
         onKill(e.killer, e.victim, e.head);
       } else if (e.kind === 'grenade') {

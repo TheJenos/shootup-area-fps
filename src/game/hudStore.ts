@@ -1,5 +1,5 @@
 import type { SlotView } from './abilities';
-import type { GameMode, PlayerState, Team, WeaponKind } from '../types';
+import type { GameMode, GunKind, PlayerState, Team, WeaponKind } from '../types';
 
 const FEED_LIFETIME = 5_000;
 const FEED_MAX = 5;
@@ -98,6 +98,12 @@ export interface HudState {
   hp: number;
   ammo: number;
   magSize: number;
+  /** The gun in hand, its spare rounds (null = endless), and the picked-up gun if any */
+  gun: GunKind;
+  reserve: number | null;
+  special: GunKind | null;
+  /** Looking through the sniper scope */
+  scoped: boolean;
   reloading: boolean;
   /** `n` increments on every hit so the UI can restart the animation. */
   hitmarker: { n: number; head: boolean };
@@ -140,6 +146,10 @@ const initialState: HudState = {
   hp: 100,
   ammo: 0,
   magSize: 0,
+  gun: 'rifle',
+  reserve: null,
+  special: null,
+  scoped: false,
   reloading: false,
   hitmarker: { n: 0, head: false },
   damageFlash: 0,

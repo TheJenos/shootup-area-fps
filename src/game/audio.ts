@@ -40,27 +40,43 @@ function envelope(ac: AudioContext, peak: number, duration: number, delay = 0, p
   return { gain, t };
 }
 
-export function playShot(volume = 1): void {
+/** Shape of each gun's report: a filtered noise crack plus a falling low thump. */
+const GUN_SOUNDS: Record<'rifle' | 'shotgun' | 'sniper' | 'deagle', {
+  crack: number; crackDecay: number; filterFrom: number; filterTo: number;
+  thump: number; thumpFrom: number; thumpTo: number; thumpDecay: number;
+}> = {
+  rifle: { crack: 0.35, crackDecay: 0.18, filterFrom: 4000, filterTo: 300, thump: 0.5, thumpFrom: 160, thumpTo: 40, thumpDecay: 0.12 },
+  shotgun: { crack: 0.55, crackDecay: 0.32, filterFrom: 2600, filterTo: 180, thump: 0.8, thumpFrom: 110, thumpTo: 32, thumpDecay: 0.22 },
+  sniper: { crack: 0.6, crackDecay: 0.55, filterFrom: 7000, filterTo: 250, thump: 0.65, thumpFrom: 180, thumpTo: 38, thumpDecay: 0.2 },
+  deagle: { crack: 0.45, crackDecay: 0.24, filterFrom: 3200, filterTo: 220, thump: 0.75, thumpFrom: 140, thumpTo: 34, thumpDecay: 0.16 },
+};
+
+export function playShot(volume = 1, gun: keyof typeof GUN_SOUNDS = 'rifle'): void {
   if (!ctx || !noise || volume < 0.01) return;
-  const { gain, t } = envelope(ctx, 0.35 * volume, 0.18);
+  const sound = GUN_SOUNDS[gun];
+  const { gain, t } = envelope(ctx, sound.crack * volume, sound.crackDecay);
   const src = ctx.createBufferSource();
   src.buffer = noise;
+  src.loop = sound.crackDecay > 0.3;
   const filter = ctx.createBiquadFilter();
   filter.type = 'lowpass';
-  filter.frequency.setValueAtTime(4000, t);
-  filter.frequency.exponentialRampToValueAtTime(300, t + 0.15);
+  filter.frequency.setValueAtTime(sound.filterFrom, t);
+  filter.frequency.exponentialRampToValueAtTime(sound.filterTo, t + sound.crackDecay * 0.85);
   src.connect(filter).connect(gain);
   src.start(t);
-  src.stop(t + 0.2);
+  src.stop(t + sound.crackDecay + 0.02);
 
-  const thump = envelope(ctx, 0.5 * volume, 0.12);
+  const thump = envelope(ctx, sound.thump * volume, sound.thumpDecay);
   const osc = ctx.createOscillator();
-  osc.frequency.setValueAtTime(160, t);
-  osc.frequency.exponentialRampToValueAtTime(40, t + 0.12);
+  osc.frequency.setValueAtTime(sound.thumpFrom, t);
+  osc.frequency.exponentialRampToValueAtTime(sound.thumpTo, t + sound.thumpDecay);
   osc.connect(thump.gain);
   osc.start(t);
-  osc.stop(t + 0.13);
+  osc.stop(t + sound.thumpDecay + 0.01);
 }
+
+/** A pickup gun being swapped in: two quick metallic clicks. */
+export const playSwitch = () => { blip(900, 0.06, 0.03, 'square'); blip(650, 0.07, 0.04, 'square', 0.12); };
 
 export function playExplosion(volume = 1): void {
   if (!ctx || !noise || volume < 0.01) return;

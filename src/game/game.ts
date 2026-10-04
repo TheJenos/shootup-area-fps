@@ -12,7 +12,8 @@ import {
   ABILITIES, ABILITY_TYPES, Inventory, DASH_SPEED, GRENADE_DAMAGE, GRENADE_RADIUS, MEDKIT_HEAL,
   SHIELD_AMOUNT, SHIELD_DURATION, SPEED_DURATION, SPEED_MULTIPLIER,
 } from './abilities';
-import { MAX_PICKUPS, PickupField } from './pickups';
+import { MAX_GUN_PICKUPS, MAX_PICKUPS, PickupField } from './pickups';
+import { GUNS, PICKUP_GUNS, isPickupGun, maxShotDamage, shotDamage } from './guns';
 import { GrenadeFx, simulateGrenade, THROW_LIFT, THROW_SPEED } from './grenades';
 import { FlagField, placementOf, type FlagPlacement } from './flags';
 import {
@@ -28,16 +29,14 @@ import { IN_DISCORD } from '../discord/patch';
 import { TOUCH } from './device';
 import { StepTracker, type StepEvent } from './footsteps';
 import type {
-  GameEvent, GameMode, GameState, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, Team, Vec3Tuple, WeaponKind,
+  GameEvent, GameMode, GameState, GunKind, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, Team, Vec3Tuple, WeaponKind,
 } from '../types';
 
 const SEND_INTERVAL = 1 / 15;
 const HEARTBEAT = 2;
 const RESPAWN_TIME = 3;
-const BODY_DAMAGE = 20;
-const HEAD_DAMAGE = 50;
-const MAX_RANGE = 200;
-const MAX_DAMAGE: Record<WeaponKind, number> = { rifle: HEAD_DAMAGE, grenade: GRENADE_DAMAGE };
+/** Most damage one hit of each kind can deal; anything above that from another client is clamped. */
+const maxDamage = (weapon: WeaponKind) => (weapon === 'grenade' ? GRENADE_DAMAGE : maxShotDamage(weapon));
 /** Dropped items land this far in front of the player */
 const DROP_DISTANCE = 1.6;
 const ABILITY_ACTIONS: Action[] = ['ability1', 'ability2', 'ability3'];
@@ -55,9 +54,8 @@ const INDICATOR_HOLD = 0.6;
 const INDICATOR_FADE = 1;
 /** How often we record our own pose for the MVP replay (s) */
 const RECORD_INTERVAL = 0.1;
-/** Field of view at the hip and fully aimed down the sights (degrees) */
+/** Field of view at the hip (degrees); each gun has its own aimed field of view */
 const HIP_FOV = 75;
-const ADS_FOV = 50;
 /** How often to check whether teammates are hidden behind cover (s) */
 const ALLY_SIGHT_INTERVAL = 0.1;
 /** Radians of turn per pixel of finger drag, at sensitivity 1 */
@@ -246,7 +244,6 @@ export class Game {
     this.pickups = new PickupField(this.scene, this.colliders);
     this.grenades = new GrenadeFx(this.scene);
     this.hud.update({ ammo: this.weapon.ammo, magSize: this.weapon.magSize });
-    this.raycaster.far = MAX_RANGE;
 
     this.net = new RoomConnection(roomCode, playerId, {
       onPlayerAdded: (id, data) => this.onPlayerAdded(id, data),
@@ -439,6 +436,14 @@ export class Game {
       else if (e.button === 2 && this.locked) this.aimHeld = settings.get().aimToggle ? !this.aimHeld : true;
     }, { signal });
     window.addEventListener('contextmenu', (e) => { if (this.locked) e.preventDefault(); }, { signal });
+    // Mouse wheel switches guns too (one switch per flick).
+    let lastWheel = 0;
+    window.addEventListener('wheel', (e) => {
+      if (!this.locked || Math.abs(e.deltaY) < 1) return;
+      const now = performance.now();
+      if (now - lastWheel > 250) this.switchGun();
+      lastWheel = now;
+    }, { signal, passive: true });
     // Rebinding keys mid-game: lock the new set.
     signal.addEventListener('abort', settings.subscribe(() => {
       if (document.fullscreenElement) keyboardLock()?.lock(keysToLock()).catch(() => {});
@@ -464,6 +469,7 @@ export class Game {
         this.hud.update({ scoreboardOpen: true, scoreboard: this.scoreRows() });
       }
       if (action === 'reload' && this.alive && this.locked) this.weapon.reload();
+      if (action === 'swap' && !e.repeat && this.locked) this.switchGun();
       const slot = action ? ABILITY_ACTIONS.indexOf(action) : -1;
       if (slot >= 0 && !e.repeat && this.alive && this.locked) this.useAbility(slot);
       if (action === 'inventory' && !e.repeat) {
@@ -564,6 +570,7 @@ export class Game {
       name: this.name,
       color: this.color,
       ...(this.team ? { team: this.team } : {}),
+      gun: this.weapon.gun,
       ...this.poseState(),
       hp: Math.max(0, this.hp),
       alive: this.alive,
@@ -623,7 +630,10 @@ export class Game {
     // Server timestamp of the event, for the replay recording.
     const t = typeof evt.t === 'number' ? evt.t : this.net.serverNow();
     if (evt.type === 'shot' && evt.from !== this.playerId && evt.o && evt.e) {
-      this.recorder.event({ t, kind: 'shot', o: evt.o, e: evt.e, hit: !!evt.hit });
+      this.recorder.event({
+        t, kind: 'shot', o: evt.o, e: evt.e, hit: !!(evt.hit || evt.hits),
+        ...(evt.w ? { w: evt.w } : {}), ...(evt.ends ? { ends: evt.ends } : {}),
+      });
     } else if (evt.type === 'grenade' && evt.from !== this.playerId) {
       this.recorder.event({ t, kind: 'grenade', id: evt.id, o: evt.o, v: evt.v });
     } else if (evt.type === 'blast' && evt.from !== this.playerId) {
@@ -635,12 +645,18 @@ export class Game {
     if (evt.type === 'shot') {
       if (evt.from === this.playerId || !evt.o || !evt.e) return;
       const origin = fromArr(evt.o);
-      const end = fromArr(evt.e);
-      this.effects.tracer(origin, end, 0xffa27a);
-      this.effects.impact(end, evt.hit ? 0xff3b3b : 0xffc35c);
+      const gun = evt.w && evt.w in GUNS ? evt.w : 'rifle';
+      for (const e of [evt.e, ...(evt.ends ?? [])]) {
+        const end = fromArr(e);
+        this.effects.tracer(origin, end, 0xffa27a);
+        this.effects.impact(end, evt.hit || evt.hits ? 0xff3b3b : 0xffc35c);
+      }
       const dist = origin.distanceTo(this.camera.position);
-      sfx.playShot(1 / (1 + dist / 10));
-      if (evt.hit === this.playerId) this.takeDamage(evt.dmg, evt.from, !!evt.head, 'rifle', origin);
+      sfx.playShot(1 / (1 + dist / 10), gun);
+      // Shotguns send damage per player hit; everything else a single hit.
+      const pellets = evt.hits?.[this.playerId];
+      if (pellets) this.takeDamage(pellets, evt.from, false, gun, origin);
+      else if (evt.hit === this.playerId) this.takeDamage(evt.dmg, evt.from, !!evt.head, gun, origin);
     } else if (evt.type === 'grenade') {
       if (evt.from === this.playerId) return;
       this.grenades.launch(evt.id, simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders));
@@ -1186,7 +1202,7 @@ export class Game {
   ): void {
     if (!this.alive || this.roundOver || this.isAlly(fromId)) return;
     // Never trust the number another client sent beyond what the game allows.
-    let amount = Math.min(Math.max(Number(dmg) || 0, 0), MAX_DAMAGE[weapon]);
+    let amount = Math.min(Math.max(Number(dmg) || 0, 0), maxDamage(weapon));
     // Show where it came from even when the shield soaks it up.
     this.hitSources.set(fromId, { at: source, time: performance.now(), damage: amount });
     if (this.shieldHp > 0) {
@@ -1210,7 +1226,8 @@ export class Game {
     this.respawnTimer = RESPAWN_TIME;
     this.triggerHeld = false;
     this.aimHeld = false;
-    // Abilities and their effects are lost on death.
+    // Our picked-up gun and abilities fall around the body for anyone to grab; their effects end.
+    this.dropLoot();
     this.clearAbilities();
     this.stats.streak = 0;
     this.moments.onDeath();
@@ -1223,6 +1240,19 @@ export class Game {
       hp: 0,
       death: { killerName: this.players[killerId]?.name || 'someone', respawnIn: RESPAWN_TIME },
     });
+  }
+
+  /** Scatter the picked-up gun and abilities (with their ammo / uses left) on the floor around where we died. */
+  private dropLoot(): void {
+    const gun = this.weapon.takeSpecial();
+    const items: PickupRecord[] = [
+      ...(gun && gun.rounds > 0 && isPickupGun(gun.kind) ? [{ type: gun.kind, uses: gun.rounds, x: 0, z: 0 }] : []),
+      ...this.inventory.takeAll().map((a) => ({ type: a.type, uses: a.usesLeft, x: 0, z: 0 })),
+    ];
+    if (!items.length) return;
+    const p = this.player.position;
+    const spots = this.pickups.scatterAround(p.x, p.z, items.length);
+    items.forEach((item, i) => void this.net.spawnPickup({ ...item, ...spots[i]! }));
   }
 
   /** Give the kill to `killerId`, and the point to their team in TDM. */
@@ -1274,54 +1304,87 @@ export class Game {
   }
 
   private shoot(): void {
+    const gun = this.weapon.gun;
+    const def = GUNS[gun];
     const origin = this.camera.getWorldPosition(new THREE.Vector3());
-    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const forward = this.camera.getWorldDirection(new THREE.Vector3());
 
     const moving = this.player.horizontalSpeed > 1;
-    // Crouching steadies your aim; sliding doesn't.
-    // Aiming down sights tightens it a lot more.
-    const steady = (this.player.stance === 'crouch' ? 0.6 : 1) * (1 - 0.7 * this.weapon.aim);
-    const spread = (0.002
-      + (moving ? 0.012 : 0)
-      + (this.player.onGround ? 0 : 0.04)
-      + Math.min(this.weapon.shotsInBurst, 10) * 0.0015) * steady;
-    dir.add(new THREE.Vector3().randomDirection().multiplyScalar(spread)).normalize();
+    // Crouching steadies your aim (sliding doesn't); aiming down sights tightens it far more.
+    const steady = (this.player.stance === 'crouch' ? 0.6 : 1) * THREE.MathUtils.lerp(1, def.adsSpread, this.weapon.aim);
+    const spread = (def.spread
+      + (moving ? def.movingSpread : 0)
+      + (this.player.onGround ? 0 : def.airSpread)
+      + (def.auto ? Math.min(this.weapon.shotsInBurst, 10) * 0.0015 : 0)) * steady;
 
     const targets: THREE.Object3D[] = [...this.world.solids];
     // Bullets pass through teammates.
     for (const [id, r] of this.remotes) if (!this.isAlly(id)) targets.push(...r.hitboxes);
-    this.raycaster.set(origin, dir);
-    const hit = this.raycaster.intersectObjects(targets, false)[0];
+    this.raycaster.far = def.range;
 
-    const end = hit ? hit.point : origin.clone().addScaledVector(dir, MAX_RANGE);
-    const hitbox = hit?.object.userData as Partial<HitboxData> | undefined;
-    const hitId = hitbox?.playerId ?? null;
-    const head = !!hitbox?.head;
-    const dmg = head ? HEAD_DAMAGE : BODY_DAMAGE;
+    // One ray per pellet (the shotgun fires nine); damage adds up per player hit.
+    const ends: THREE.Vector3[] = [];
+    const damageTo = new Map<string, number>();
+    let anyHead = false;
+    for (let p = 0; p < def.pellets; p++) {
+      const dir = forward.clone().add(new THREE.Vector3().randomDirection().multiplyScalar(spread)).normalize();
+      this.raycaster.set(origin, dir);
+      const hit = this.raycaster.intersectObjects(targets, false)[0];
+      const end = hit ? hit.point : origin.clone().addScaledVector(dir, def.range);
+      ends.push(end);
+      const hitbox = hit?.object.userData as Partial<HitboxData> | undefined;
+      const id = hitbox?.playerId;
+      if (hit) this.effects.impact(end, id ? 0xff3b3b : 0xffc35c);
+      if (!id || !hit) continue;
+      const head = !!hitbox?.head;
+      anyHead ||= head;
+      damageTo.set(id, (damageTo.get(id) ?? 0) + shotDamage(gun, head, hit.distance));
+    }
+
     this.stats.shots++;
-    const target = hitId ? this.remotes.get(hitId) : undefined;
-    if (target) {
+    if (damageTo.size) {
       this.stats.hits++;
-      if (head) this.stats.headshots++;
-      this.stats.damage += Math.min(dmg, target.displayedHp);
+      if (anyHead) this.stats.headshots++;
+      for (const [id, dmg] of damageTo) {
+        const target = this.remotes.get(id);
+        if (target) {
+          this.stats.damage += Math.min(dmg, target.displayedHp);
+          target.reveal(dmg);
+        }
+      }
+      this.hud.hitmarker(anyHead);
+      sfx.playHit(anyHead);
     }
 
     const muzzle = this.camera.localToWorld(this.weapon.muzzleOffset());
-    this.effects.tracer(muzzle, end);
-    if (hit) this.effects.impact(end, hitId ? 0xff3b3b : 0xffc35c);
-    if (hitId) {
-      this.remotes.get(hitId)?.reveal(dmg);
-      this.hud.hitmarker(head);
-      sfx.playHit(head);
-    }
-    sfx.playShot(0.7);
-    const recoil = 1 - 0.45 * this.weapon.aim;
-    this.player.look((Math.random() - 0.5) * 0.006 * recoil, 0.012 * recoil);
+    for (const end of ends) this.effects.tracer(muzzle, end);
+    sfx.playShot(0.7, gun);
+    const recoil = def.recoil * (1 - 0.45 * this.weapon.aim);
+    this.player.look((Math.random() - 0.5) * recoil * 0.5, recoil);
 
-    const shot = { o: toArr(muzzle), e: toArr(end) };
-    this.net.sendEvent({ type: 'shot', ...shot, hit: hitId, dmg, head });
-    this.recorder.event({ t: this.net.serverNow(), kind: 'shot', ...shot, hit: !!hitId });
+    const [first, ...rest] = ends.map(toArr);
+    const shot = { o: toArr(muzzle), e: first ?? toArr(origin) };
+    const extra = { ...(gun !== 'rifle' ? { w: gun } : {}), ...(rest.length ? { ends: rest } : {}) };
+    if (def.pellets > 1) {
+      // Firebase rejects undefined, so hits only goes in when something was hit.
+      const hits = Object.fromEntries([...damageTo].map(([id, d]) => [id, Math.round(d)]));
+      this.net.sendEvent({ type: 'shot', ...shot, ...extra, ...(damageTo.size ? { hits } : {}) });
+    } else {
+      const [hitId, dmg] = [...damageTo][0] ?? [null, 0];
+      this.net.sendEvent({ type: 'shot', ...shot, ...extra, hit: hitId, dmg, head: anyHead });
+    }
+    this.recorder.event({ t: this.net.serverNow(), kind: 'shot', ...shot, ...extra, hit: damageTo.size > 0 });
   }
+
+  /** Q / mouse wheel / the touch swap button: rifle <-> picked-up gun. */
+  switchGun(): void {
+    if (!this.alive || this.roundOver) return;
+    if (this.weapon.switchGun()) {
+      this.aimHeld = false;
+      sfx.playSwitch();
+    }
+  }
+
 
   // ---------------------------------------------------------------- abilities
 
@@ -1510,7 +1573,8 @@ export class Game {
       return;
     }
     if (this.claimingPickup) return; // one claim at a time, so two can't race for the last slot
-    if (!this.inventory.hasRoom) {
+    const touchingType = this.pickups.typeOf(id);
+    if (touchingType && !isPickupGun(touchingType) && !this.inventory.hasRoom) {
       if (this.fullToastFor !== id) this.hud.toast('Slots full — use an ability to make room');
       this.fullToastFor = id;
       return;
@@ -1518,7 +1582,10 @@ export class Game {
     this.claimingPickup = id;
     this.net.claimPickup(id)
       .then((pickup) => {
-        if (pickup && this.alive && this.inventory.add(pickup.type, pickup.uses) >= 0) {
+        if (!pickup || !this.alive) return;
+        if (isPickupGun(pickup.type)) {
+          this.takeGun(pickup.type, pickup.uses);
+        } else if (this.inventory.add(pickup.type, pickup.uses) >= 0) {
           this.hud.toast(`Picked up ${ABILITIES[pickup.type].name}`);
           this.bumpMyMatch('pickups');
           sfx.playPickup();
@@ -1533,14 +1600,35 @@ export class Game {
     if (!this.isLeader()) return;
     this.spawnTimer -= dt;
     if (this.spawnTimer > 0) return;
+    const abilities = this.pickups.countOf('ability');
+    const guns = this.pickups.countOf('gun');
     // Fill up quickly when the map is bare, then trickle in.
-    this.spawnTimer = this.pickups.count < MAX_PICKUPS / 2 ? 1.5 : 7;
-    if (this.pickups.count >= MAX_PICKUPS) return;
+    this.spawnTimer = abilities < MAX_PICKUPS / 2 || guns < MAX_GUN_PICKUPS / 2 ? 1.5 : 7;
+    // Top up whichever is shorter of its target (guns and abilities are stocked separately).
+    const needGun = guns < MAX_GUN_PICKUPS && guns / MAX_GUN_PICKUPS <= abilities / MAX_PICKUPS;
+    if (!needGun && abilities >= MAX_PICKUPS) return;
     const spot = this.pickups.randomSpot();
     if (!spot) return;
-    const type = ABILITY_TYPES[Math.floor(Math.random() * ABILITY_TYPES.length)] ?? 'medkit';
+    const pick = <T,>(list: T[]) => list[Math.floor(Math.random() * list.length)];
+    const type = needGun ? pick(PICKUP_GUNS) ?? 'shotgun' : pick(ABILITY_TYPES) ?? 'medkit';
     const pickup: PickupRecord = { type, ...spot };
     void this.net.spawnPickup(pickup);
+  }
+
+  /** Walked over a gun: it goes in the second slot; a different gun we had is dropped with its ammo. */
+  private takeGun(kind: Exclude<GunKind, 'rifle'>, rounds: number | undefined): void {
+    const def = GUNS[kind];
+    const had = this.weapon.special;
+    const dropped = this.weapon.giveGun(kind, rounds ?? def.mag + def.reserve);
+    this.aimHeld = false;
+    if (dropped) {
+      const spot = this.dropSpot();
+      const id = this.net.spawnPickup({ type: dropped.kind as Exclude<GunKind, 'rifle'>, uses: dropped.rounds, ...spot });
+      if (id) this.ignorePickup = { id, ...spot };
+    }
+    this.hud.toast(had === kind ? `+${def.name} ammo` : `Picked up ${def.name} — Q / wheel to switch`);
+    this.bumpMyMatch('pickups');
+    sfx.playSwitch();
   }
 
   // ---------------------------------------------------------------- loop
@@ -1562,7 +1650,7 @@ export class Game {
     this.update(dt);
     this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
-    if (this.alive && !this.replay) {
+    if (this.alive && !this.replay && !this.hud.get().scoped) {
       this.renderer.clearDepth();
       this.renderer.render(this.weapon.scene, this.weapon.camera);
     }
@@ -1585,9 +1673,21 @@ export class Game {
     const sprinting = this.player.sprintHeld && speed > 7;
 
     if (this.triggerHeld && this.alive && this.locked && this.joined && !this.roundOver && this.weapon.tryFire()) this.shoot();
+    if (this.weapon.specialEmpty) {
+      this.weapon.removeSpecial();
+      this.hud.toast('Out of ammo — back to the rifle');
+    }
+    this.publishGun();
     this.weapon.update(dt, speed, sprinting && !this.triggerHeld && !aiming, aiming);
     this.updateZoom();
-    this.hud.update({ ammo: this.weapon.ammo, reloading: this.weapon.reloading });
+    this.hud.update({
+      ammo: this.weapon.ammo,
+      magSize: this.weapon.magSize,
+      reserve: this.weapon.reserve,
+      gun: this.weapon.gun,
+      special: this.weapon.special,
+      reloading: this.weapon.reloading,
+    });
 
     if (this.alive) {
       if (this.player.slideStarted) sfx.playSlide(this.surfaceAt(this.player.position), 0.7);
@@ -1706,14 +1806,25 @@ export class Game {
    */
   private updateZoom(): void {
     const aim = this.weapon.aim;
-    const fov = THREE.MathUtils.lerp(HIP_FOV, ADS_FOV, aim);
+    const fov = THREE.MathUtils.lerp(HIP_FOV, GUNS[this.weapon.gun].adsFov, aim);
     if (Math.abs(this.camera.fov - fov) > 0.01) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
     }
     const zoom = Math.tan(THREE.MathUtils.degToRad(fov / 2)) / Math.tan(THREE.MathUtils.degToRad(HIP_FOV / 2));
     this.player.lookScale = zoom * THREE.MathUtils.lerp(1, settings.get().aimSensitivity, aim);
-    this.hud.update({ aiming: aim > 0.6 });
+    // The sniper's scope takes over the screen once it's up to the eye.
+    const scoped = GUNS[this.weapon.gun].scope && aim > 0.85;
+    this.hud.update({ aiming: aim > 0.6, scoped });
+  }
+
+  private lastGunSent: GunKind = 'rifle';
+  /** Tell everyone which gun we're holding, so our avatar shows it. */
+  private publishGun(): void {
+    const gun = this.weapon.gun;
+    if (gun === this.lastGunSent || !this.joined) return;
+    this.lastGunSent = gun;
+    void this.net.sendState({ gun });
   }
 
   /** Our own movement for the replay recording (other players' come in with their updates). */
