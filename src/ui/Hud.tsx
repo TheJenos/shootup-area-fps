@@ -8,6 +8,7 @@ import { MatchSummary } from './MatchSummary';
 import { SettingsPanel, useSettings } from './SettingsPanel';
 import { keyLabel, type Bindings } from '../game/settings';
 import { InventoryPanel } from './InventoryPanel';
+import { TouchControls } from './TouchControls';
 import { safeColor } from './colors';
 
 function controls(b: Bindings): [key: string, action: string][] {
@@ -35,7 +36,10 @@ export function Hud({ game, roomCode, onLeave }: Props) {
 
   return (
     // The MVP replay is a cinematic: hide the crosshair, health, ammo and abilities.
-    <div id="hud" className={hud.matchEnd?.phase === 'mvp' ? 'cinematic' : undefined}>
+    <div
+      id="hud"
+      className={[hud.matchEnd?.phase === 'mvp' && 'cinematic', game.touch && 'touch'].filter(Boolean).join(' ') || undefined}
+    >
       {!hud.death && <div id="crosshair" className={hud.aiming ? 'ads' : undefined} />}
       {hud.hitmarker.n > 0 && (
         // A new key remounts the element, which restarts the CSS animation.
@@ -49,7 +53,21 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       <KillFeed entries={hud.feed} />
       <HealthPanel hp={hud.hp} />
       <AmmoPanel ammo={hud.ammo} max={hud.magSize} reloading={hud.reloading} />
-      <AbilityBar slots={hud.slots} buffs={hud.buffs} toast={hud.toast} />
+      <AbilityBar
+        slots={hud.slots}
+        buffs={hud.buffs}
+        toast={hud.toast}
+        onUse={game.touch ? (i) => game.touchAbility(i) : undefined}
+      />
+      {game.touch && !hud.paused && !hud.connecting && !hud.death && !hud.inventoryOpen
+        && hud.matchEnd?.phase !== 'mvp' && <TouchControls game={game} aiming={hud.aiming} />}
+      {game.touch && (
+        <div id="rotate-hint" className="overlay">
+          <div className="phone" />
+          <h2>Rotate your device</h2>
+          <p className="muted">Arena FPS plays in landscape.</p>
+        </div>
+      )}
 
       {hud.inventoryOpen && <InventoryPanel game={game} slots={hud.slots} />}
 
@@ -287,7 +305,9 @@ function KillFeed({ entries }: { entries: FeedEntry[] }) {
   );
 }
 
-function AbilityBar({ slots, buffs, toast }: Pick<HudState, 'slots' | 'buffs' | 'toast'>) {
+function AbilityBar(
+  { slots, buffs, toast, onUse }: Pick<HudState, 'slots' | 'buffs' | 'toast'> & { onUse?: (slot: number) => void },
+) {
   return (
     <div id="abilities">
       {toast && <div key={`toast-${toast.n}`} id="ability-toast">{toast.text}</div>}
@@ -296,13 +316,13 @@ function AbilityBar({ slots, buffs, toast }: Pick<HudState, 'slots' | 'buffs' | 
         {buffs.shield !== null && <span className="buff shield">🛡️ {buffs.shield}</span>}
       </div>
       <div className="slots">
-        {slots.map((slot, i) => <AbilitySlot key={i} index={i} slot={slot} />)}
+        {slots.map((slot, i) => <AbilitySlot key={i} index={i} slot={slot} onUse={onUse} />)}
       </div>
     </div>
   );
 }
 
-function AbilitySlot({ index, slot }: { index: number; slot: SlotView | null }) {
+function AbilitySlot({ index, slot, onUse }: { index: number; slot: SlotView | null; onUse?: (slot: number) => void }) {
   const { bindings } = useSettings();
   const key = keyLabel([bindings.ability1, bindings.ability2, bindings.ability3][index] ?? '');
   if (!slot) {
@@ -315,8 +335,12 @@ function AbilitySlot({ index, slot }: { index: number; slot: SlotView | null }) 
   const def = ABILITIES[slot.type];
   const coolingDown = slot.cooldown > 0;
   return (
-    <div className={`slot ${coolingDown ? 'cooling' : 'ready'}`} title={`${def.name}: ${def.description}`}>
-      <kbd>{key}</kbd>
+    <div
+      className={`slot ${coolingDown ? 'cooling' : 'ready'}`}
+      title={`${def.name}: ${def.description}`}
+      onPointerDown={onUse ? (e) => { e.stopPropagation(); onUse(index); } : undefined}
+    >
+      {!onUse && <kbd>{key}</kbd>}
       <span className="icon">{def.icon}</span>
       <span className="name">{def.name}</span>
       <span className="uses">
@@ -353,12 +377,19 @@ function PauseMenu(
 
   return (
     <div id="pause-overlay" className="overlay" onClick={resume}>
-      <h2>Click to play</h2>
-      <div className="controls">
-        {controls(bindings).map(([key, action]) => (
-          <span key={key}><kbd>{key}</kbd> {action}</span>
-        ))}
-      </div>
+      <h2>{game.touch ? 'Tap to play' : 'Click to play'}</h2>
+      {game.touch ? (
+        <p className="muted touch-help">
+          Left thumb: move (push all the way to sprint) · Right side: drag to look · ● fire · ◎ aim · ⤒ jump ·
+          ⤓ crouch (tap while sprinting to slide) · tap an ability to use it
+        </p>
+      ) : (
+        <div className="controls">
+          {controls(bindings).map(([key, action]) => (
+            <span key={key}><kbd>{key}</kbd> {action}</span>
+          ))}
+        </div>
+      )}
       {team && (
         <p>
           You're on <strong style={{ color: TEAM_INFO[team].color }}>{TEAM_INFO[team].name} team</strong>{' '}

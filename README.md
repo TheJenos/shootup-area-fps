@@ -149,7 +149,7 @@ Discord, with no website to visit.
 - Everyone in the same voice channel shares one match; the room code comes from Discord's instance id.
   The first player picks the mode and starts; the rest press **Join match**.
 - Players are signed in with Discord (`identify` scope only) and use their Discord display name.
-- Desktop only (there are no touch controls).
+- Works on desktop and in Discord's mobile apps (touch controls, landscape).
 
 ### How it works
 
@@ -209,6 +209,27 @@ Discord, with no website to visit.
 These are the defaults. **Settings** (in the lobby, or the pause menu) lets you change mouse sensitivity
 (0.1×–4×), invert vertical look and rebind every key except shooting (left click) and Esc. Binding a key
 that's already in use swaps the two. Settings are saved in your browser (`src/game/settings.ts`).
+
+## Phones and tablets
+
+On a touch device the game switches to on-screen controls and plays in landscape:
+
+- **Move:** put your left thumb anywhere on the left side; a stick appears under it. Push it all the way
+  forward to sprint.
+- **Look:** drag anywhere on the right side.
+- **Buttons:** ● fire (drag on it to keep aiming while you shoot), ◎ aim down sights (toggle), ⤒ jump,
+  ⤓ crouch (toggle; tap while sprinting to slide, and you stand back up when the slide ends), ↻ reload.
+  Tap an ability slot to use it. ☰ (hold) shows the scoreboard and ❚❚ opens the menu.
+- Several fingers work at once (move, look and shoot together).
+- **Landscape:**
+  - Android browsers go fullscreen and lock to landscape when you tap to play.
+  - iOS doesn't let web pages lock orientation, so a "rotate your device" screen covers the game in
+    portrait.
+  - Inside Discord's mobile app, the Activity's Phone and Tablet orientation settings are set to Landscape,
+    and iOS and Android are enabled under Supported Platforms.
+- On phones the game renders at a slightly lower resolution, pinch / double-tap zoom is disabled, and
+  overlays get compact on short screens.
+- Add `?touch` to the URL to try the touch layout with a mouse on a desktop.
 
 ## Aim down sights
 
@@ -334,6 +355,7 @@ src/
     GameView.tsx     mounts the Game engine for the current room
     Hud.tsx          health, ammo, ability bar, kill feed, death / pause overlays
     InventoryPanel.tsx  inventory (I) with drop buttons
+    TouchControls.tsx   on-screen controls for phones and tablets
     MatchSummary.tsx    match summary (Tab)
     SettingsPanel.tsx   sensitivity + key binding editor
     MapPreview.tsx      top-down map preview in the lobby

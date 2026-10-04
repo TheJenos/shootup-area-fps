@@ -111,7 +111,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
             <button className="primary play" disabled={busy} onClick={() => void play()}>
               {existing ? 'Join match' : 'Start match'}
             </button>
-            <p className="muted hint">Everyone in this voice channel plays in the same match. Desktop only.</p>
+            <p className="muted hint">Everyone in this voice channel plays in the same match.</p>
           </>
         )}
         <p className="error">{error}</p>

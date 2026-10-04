@@ -25,6 +25,7 @@ import { RoomConnection, randomId } from '../net/network';
 import * as sfx from './audio';
 import { actionFor, settings, type Action } from './settings';
 import { IN_DISCORD } from '../discord/patch';
+import { TOUCH } from './device';
 import { StepTracker, type StepEvent } from './footsteps';
 import type {
   GameEvent, GameMode, GameState, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, Team, Vec3Tuple, WeaponKind,
@@ -59,6 +60,8 @@ const HIP_FOV = 75;
 const ADS_FOV = 50;
 /** How often to check whether teammates are hidden behind cover (s) */
 const ALLY_SIGHT_INTERVAL = 0.1;
+/** Radians of turn per pixel of finger drag, at sensitivity 1 */
+const TOUCH_LOOK = 0.0045;
 
 export function colorFor(id: string): string {
   let h = 2166136261;
@@ -107,6 +110,8 @@ export class Game {
   readonly playerId: string;
   readonly name: string;
   readonly hud = new HudStore();
+  /** Phone / tablet: on-screen controls instead of mouse and keyboard */
+  readonly touch = TOUCH;
   /** Our tint: unique per player in FFA, the team color otherwise */
   private color: string;
   joined = false;
@@ -222,7 +227,8 @@ export class Game {
     const signal = this.abort.signal;
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Phones have very dense screens and slower GPUs: cap the resolution a bit lower there.
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, TOUCH ? 1.5 : 2));
     this.renderer.setSize(host.clientWidth, host.clientHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -270,7 +276,89 @@ export class Game {
     // Fullscreen first: it needs the click, and pointer lock doesn't once we're fullscreen.
     // Not inside Discord, which manages its own window.
     if (settings.get().fullscreen && !IN_DISCORD) this.enterFullscreen();
-    this.lockPointer();
+    if (this.touch) this.startTouchPlay();
+    else this.lockPointer();
+  }
+
+  // ---------------------------------------------------------------- touch controls
+
+  /** Touch devices have no pointer lock: "tap to play" just starts taking input. */
+  private startTouchPlay(): void {
+    if (!this.joined) return;
+    this.locked = true;
+    this.player.setEnabled(true);
+    this.hud.update({ paused: false });
+  }
+
+  /** The on-screen menu button: back to the pause menu. */
+  pauseTouchPlay(): void {
+    this.locked = false;
+    this.triggerHeld = false;
+    this.aimHeld = false;
+    this.weapon.releaseTrigger();
+    this.player.setEnabled(false);
+    this.hud.update({ paused: this.joined });
+  }
+
+  /** Finger drag on the look area (or the fire button), in screen pixels. */
+  touchLook(dx: number, dy: number): void {
+    if (!this.locked) return;
+    const { sensitivity, invertY } = settings.get();
+    const scale = TOUCH_LOOK * sensitivity * this.player.lookScale;
+    this.player.look(-dx * scale, -dy * scale * (invertY ? -1 : 1));
+  }
+
+  /** Move stick: x right, y forward, each -1..1; null when released. Pushed all the way forward sprints. */
+  setTouchMove(move: { x: number; y: number } | null): void {
+    this.player.touchMove = move;
+    this.player.touchSprint = !!move && move.y > 0.75 && Math.hypot(move.x, move.y) > 0.92;
+  }
+
+  setTouchFire(down: boolean): void {
+    if (down && this.locked && this.alive) {
+      this.triggerHeld = true;
+    } else {
+      this.triggerHeld = false;
+      this.weapon.releaseTrigger();
+    }
+  }
+
+  toggleTouchAim(): void {
+    if (this.locked) this.aimHeld = !this.aimHeld;
+  }
+
+  setTouchJump(down: boolean): void {
+    this.player.touchJump = down;
+  }
+
+  /**
+   * Crouch toggles. Tapped while sprinting it slides instead, and you're back on your feet
+   * when the slide ends (like letting go of the crouch key).
+   */
+  tapTouchCrouch(): void {
+    if (!this.locked) return;
+    if (this.player.sprintHeld && this.player.stance === 'stand') {
+      this.player.touchCrouch = true;
+      setTimeout(() => { this.player.touchCrouch = false; }, 80);
+      return;
+    }
+    this.player.touchCrouch = !this.player.touchCrouch;
+  }
+
+  get touchCrouched(): boolean {
+    return this.player.touchCrouch;
+  }
+
+  touchReload(): void {
+    if (this.alive && this.locked) this.weapon.reload();
+  }
+
+  touchAbility(slot: number): void {
+    if (this.alive && this.locked) this.useAbility(slot);
+  }
+
+  setTouchScoreboard(open: boolean): void {
+    this.hud.update({ scoreboardOpen: open, ...(open ? { scoreboard: this.scoreRows() } : {}) });
   }
 
   /**
@@ -313,6 +401,11 @@ export class Game {
     if (document.fullscreenElement || !document.documentElement.requestFullscreen) return;
     document.documentElement.requestFullscreen({ navigationUI: 'hide' })
       .then(() => {
+        if (this.touch) {
+          // Phones: hold the screen in landscape (Android; iOS can't, so the HUD asks to rotate).
+          const orientation = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+          return orientation.lock?.('landscape').catch(() => {});
+        }
         // Entering fullscreen can cancel a pointer lock that was requested in the same click.
         this.lockPointer();
         return keyboardLock()?.lock(keysToLock());

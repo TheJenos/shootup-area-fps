@@ -47,6 +47,11 @@ export class LocalPlayer {
   aiming = false;
   /** Scales mouse look (lower while zoomed in) */
   lookScale = 1;
+  /** Touch controls: analog stick (x = right, y = forward, each -1..1), and held buttons */
+  touchMove: { x: number; y: number } | null = null;
+  touchSprint = false;
+  touchCrouch = false;
+  touchJump = false;
 
   private readonly camera: THREE.PerspectiveCamera;
   private readonly colliders: THREE.Box3[];
@@ -79,7 +84,11 @@ export class LocalPlayer {
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
-    if (!enabled) this.keys.clear();
+    if (!enabled) {
+      this.keys.clear();
+      this.touchMove = null;
+      this.touchSprint = this.touchCrouch = this.touchJump = false;
+    }
   }
 
   teleport(pos: THREE.Vector3, yaw: number): void {
@@ -103,7 +112,7 @@ export class LocalPlayer {
   }
 
   get sprintHeld(): boolean {
-    return !this.aiming && this.keys.has(keyFor('sprint'));
+    return !this.aiming && (this.touchSprint || this.keys.has(keyFor('sprint')));
   }
 
   get crouching(): boolean {
@@ -130,7 +139,7 @@ export class LocalPlayer {
   private updateStance(dt: number, move: boolean): void {
     this.slideStarted = false;
     this.slideCooldown = Math.max(0, this.slideCooldown - dt);
-    const held = move && this.keys.has(keyFor('crouch'));
+    const held = move && (this.touchCrouch || this.keys.has(keyFor('crouch')));
     const pressed = held && !this.crouchWasHeld;
     this.crouchWasHeld = held;
 
@@ -167,8 +176,11 @@ export class LocalPlayer {
     const move = canMove && this.enabled;
     const held = (action: Parameters<typeof keyFor>[0]) => (k.has(keyFor(action)) ? 1 : 0);
     this.updateStance(dt, move);
-    const forward = move ? held('forward') - held('back') : 0;
-    const strafe = move ? held('right') - held('left') : 0;
+    const stick = move ? this.touchMove : null;
+    const forward = stick ? stick.y : move ? held('forward') - held('back') : 0;
+    const strafe = stick ? stick.x : move ? held('right') - held('left') : 0;
+    // Keys are full speed in any direction; the stick moves slower when pushed less.
+    const amount = stick ? Math.min(1, Math.hypot(stick.x, stick.y)) : 1;
     const base = this.crouching
       ? CROUCH_SPEED
       : this.aiming ? AIM_SPEED : move && this.sprintHeld && forward > 0 ? SPRINT_SPEED : WALK_SPEED;
@@ -181,7 +193,7 @@ export class LocalPlayer {
       0,
       -cos * forward - sin * strafe,
     );
-    if (wish.lengthSq() > 0) wish.normalize().multiplyScalar(speed);
+    if (wish.lengthSq() > 0) wish.normalize().multiplyScalar(speed * amount);
 
     if (this.stance === 'slide') {
       // No steering while sliding: just friction bleeding off the speed.
@@ -195,7 +207,7 @@ export class LocalPlayer {
       this.velocity.z += (wish.z - this.velocity.z) * t;
     }
 
-    if (move && this.onGround && held('jump') && (this.stance === 'slide' || this.canStand())) {
+    if (move && this.onGround && (held('jump') || this.touchJump) && (this.stance === 'slide' || this.canStand())) {
       // Jumping out of a slide keeps its momentum.
       this.velocity.y = JUMP_SPEED;
       this.onGround = false;

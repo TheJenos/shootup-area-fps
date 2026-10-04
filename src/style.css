@@ -701,3 +701,84 @@ kbd {
 #crosshair.ads { width: 4px; height: 4px; border-radius: 50%; background: #fff; box-shadow: 0 0 2px #000; }
 #crosshair.ads::before, #crosshair.ads::after { display: none; }
 #settings .number-readout { width: 76px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* ---------- Touch controls (phones / tablets) ---------- */
+
+#game-screen { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+
+#touch-controls { position: absolute; inset: 0; pointer-events: none; }
+#touch-controls .stick-zone,
+#touch-controls .look-zone { position: absolute; top: 56px; bottom: 0; pointer-events: auto; touch-action: none; }
+#touch-controls .stick-zone { left: 0; width: 42%; }
+#touch-controls .look-zone { right: 0; width: 58%; }
+
+#touch-controls .stick {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  margin: -60px 0 0 -60px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.18);
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+#touch-controls .stick.idle { left: calc(env(safe-area-inset-left) + 110px); top: auto; bottom: 46px; margin: 0 0 0 -60px; opacity: 0.45; }
+#touch-controls .knob { width: 52px; height: 52px; border-radius: 50%; background: rgba(255, 255, 255, 0.55); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4); }
+
+#touch-controls .tbtn {
+  position: absolute;
+  pointer-events: auto;
+  touch-action: none;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.32);
+  color: #fff;
+  font-size: 22px;
+  line-height: 1;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  -webkit-tap-highlight-color: transparent;
+}
+#touch-controls .tbtn:active { background: rgba(255, 181, 71, 0.4); }
+#touch-controls .tbtn.on { border-color: var(--accent); background: rgba(255, 181, 71, 0.3); }
+#touch-controls .fire { width: 92px; height: 92px; right: calc(env(safe-area-inset-right) + 34px); bottom: 104px; font-size: 34px; border-color: rgba(255, 90, 90, 0.7); background: rgba(255, 90, 90, 0.22); }
+#touch-controls .aim { width: 60px; height: 60px; right: calc(env(safe-area-inset-right) + 142px); bottom: 150px; }
+#touch-controls .jump { width: 64px; height: 64px; right: calc(env(safe-area-inset-right) + 132px); bottom: 34px; }
+#touch-controls .crouch { width: 58px; height: 58px; right: calc(env(safe-area-inset-right) + 214px); bottom: 26px; }
+#touch-controls .reload { width: 52px; height: 52px; right: calc(env(safe-area-inset-right) + 54px); bottom: 214px; }
+#touch-controls .top-buttons { position: absolute; top: 12px; left: calc(env(safe-area-inset-left) + 12px); display: flex; gap: 8px; pointer-events: auto; }
+#touch-controls .tbtn.small { position: static; width: 40px; height: 40px; font-size: 14px; border-radius: 10px; }
+
+/* HUD rearranged around the thumbs */
+#hud.touch #room-tag { left: calc(env(safe-area-inset-left) + 112px); top: 18px; }
+#hud.touch #health { left: 50%; transform: translateX(-50%) scale(0.75); transform-origin: bottom center; bottom: 92px; padding: 6px 12px; }
+#hud.touch #ammo { right: calc(env(safe-area-inset-right) + 12px); top: 64px; bottom: auto; font-size: 24px; padding: 6px 12px; }
+#hud.touch #killfeed { top: 120px; }
+#hud.touch #abilities { bottom: 8px; }
+#hud.touch .slot { width: 54px; height: 54px; pointer-events: auto; }
+#hud.touch .slot .name { display: none; }
+#hud.touch .touch-help { max-width: 560px; font-size: 14px; line-height: 1.6; }
+
+/* Portrait phone: ask to rotate (iOS can't lock orientation for web pages) */
+#rotate-hint { display: none; background: var(--bg); pointer-events: auto; z-index: 50; }
+#rotate-hint .phone { width: 46px; height: 78px; border: 4px solid var(--accent); border-radius: 10px; animation: rotate-phone 1.8s ease-in-out infinite; margin-bottom: 12px; }
+@keyframes rotate-phone { 0%, 20% { transform: rotate(0); } 60%, 100% { transform: rotate(-90deg); } }
+@media (orientation: portrait) {
+  #hud.touch #rotate-hint { display: flex; }
+}
+
+/* Short landscape phone screens: compact, scrollable overlays */
+@media (max-height: 520px) {
+  .overlay { gap: 6px; padding: 10px 16px; justify-content: safe center; overflow-y: auto; }
+  .overlay h2 { font-size: 24px; }
+  .overlay button { padding: 6px 12px; }
+  #pause-overlay button { margin-top: 2px; }
+  .controls { margin: 4px 0; gap: 4px 14px; font-size: 13px; }
+  #round-over h2 { font-size: 30px; }
+  #round-over .podium li { padding: 5px 10px; }
+  #mvp h2 { font-size: 24px; }
+  #mvp .card { padding: 10px 14px; bottom: calc(9vh + 10px); }
+}
