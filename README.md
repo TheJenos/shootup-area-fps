@@ -130,6 +130,9 @@ All sound is synthesized with Web Audio (no audio files), including footsteps:
   from a jump or a drop.
 - Other players' steps fade with distance (silent beyond 35 m) and are panned left/right toward where they are,
   so you can hear someone coming.
+- Each step layers a scuff, a heel click and a deep thud: a falling 55–75 Hz sine with a quiet octave above it
+  (so laptop speakers still carry it) plus low, muffled noise. Landings go deeper and longer. All game sound
+  runs through a limiter so stacked sounds don't distort.
 - The sound depends on what's underfoot: hard floor, sand (Dust Bowl), snow (Frostbite), or hollow wood on top
   of a crate.
 

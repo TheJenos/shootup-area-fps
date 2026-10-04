@@ -1,6 +1,8 @@
 // Tiny Web Audio synth so the game needs no sound assets.
 let ctx: AudioContext | null = null;
 let noise: AudioBuffer | null = null;
+/** Everything plays through this, so stacked sounds (gunfire + deep footsteps) don't clip. */
+let out: AudioNode | null = null;
 
 export function initAudio(): void {
   if (ctx) {
@@ -8,6 +10,14 @@ export function initAudio(): void {
     return;
   }
   ctx = new AudioContext();
+  const limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -10;
+  limiter.knee.value = 6;
+  limiter.ratio.value = 8;
+  limiter.attack.value = 0.003;
+  limiter.release.value = 0.15;
+  limiter.connect(ctx.destination);
+  out = limiter;
   noise = ctx.createBuffer(1, ctx.sampleRate * 0.4, ctx.sampleRate);
   const data = noise.getChannelData(0);
   for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
@@ -19,12 +29,13 @@ function envelope(ac: AudioContext, peak: number, duration: number, delay = 0, p
   const t = ac.currentTime + delay;
   gain.gain.setValueAtTime(peak, t);
   gain.gain.exponentialRampToValueAtTime(0.0001, t + duration);
+  const dest = out ?? ac.destination;
   if (pan) {
     const panner = ac.createStereoPanner();
     panner.pan.value = Math.max(-1, Math.min(1, pan));
-    gain.connect(panner).connect(ac.destination);
+    gain.connect(panner).connect(dest);
   } else {
-    gain.connect(ac.destination);
+    gain.connect(dest);
   }
   return { gain, t };
 }
@@ -120,13 +131,32 @@ interface StepSound {
   thump: number;
   thumpFreq: number;
   thumpDecay: number;
+  /** Deep thud of body weight landing: a falling sine (plus a quiet octave so small speakers still carry it) */
+  deep: number;
+  deepFreq: number;
+  deepDecay: number;
+  /** Low, muffled noise under the step (filtered below ~250 Hz) */
+  body: number;
 }
 
 const STEP_SOUNDS: Record<Surface, StepSound> = {
-  hard: { filter: 'bandpass', freq: 1700, q: 0.9, noise: 0.22, noiseDecay: 0.06, thump: 0.3, thumpFreq: 110, thumpDecay: 0.07 },
-  sand: { filter: 'lowpass', freq: 900, q: 0.7, noise: 0.3, noiseDecay: 0.13, thump: 0.12, thumpFreq: 80, thumpDecay: 0.08 },
-  snow: { filter: 'highpass', freq: 2400, q: 0.8, noise: 0.25, noiseDecay: 0.11, thump: 0.1, thumpFreq: 90, thumpDecay: 0.07 },
-  wood: { filter: 'bandpass', freq: 520, q: 2.5, noise: 0.3, noiseDecay: 0.08, thump: 0.38, thumpFreq: 170, thumpDecay: 0.11 },
+  hard: {
+    filter: 'bandpass', freq: 1700, q: 0.9, noise: 0.22, noiseDecay: 0.06, thump: 0.3, thumpFreq: 110, thumpDecay: 0.07,
+    deep: 0.42, deepFreq: 62, deepDecay: 0.16, body: 0.18,
+  },
+  sand: {
+    filter: 'lowpass', freq: 900, q: 0.7, noise: 0.3, noiseDecay: 0.13, thump: 0.12, thumpFreq: 80, thumpDecay: 0.08,
+    deep: 0.32, deepFreq: 55, deepDecay: 0.2, body: 0.26,
+  },
+  snow: {
+    filter: 'highpass', freq: 2400, q: 0.8, noise: 0.25, noiseDecay: 0.11, thump: 0.1, thumpFreq: 90, thumpDecay: 0.07,
+    deep: 0.28, deepFreq: 58, deepDecay: 0.18, body: 0.22,
+  },
+  // Hollow crate tops ring a little longer.
+  wood: {
+    filter: 'bandpass', freq: 520, q: 2.5, noise: 0.3, noiseDecay: 0.08, thump: 0.38, thumpFreq: 170, thumpDecay: 0.11,
+    deep: 0.4, deepFreq: 76, deepDecay: 0.24, body: 0.14,
+  },
 };
 
 /**
@@ -153,6 +183,8 @@ export function playFootstep(surface: Surface, volume = 1, pan = 0, landing = fa
   src.start(scuff.t, Math.random() * 0.3);
   src.stop(scuff.t + sound.noiseDecay * 2);
 
+  playDeep(ctx, noise, sound, volume * vary(), pan, landing);
+
   if (!sound.thump) return;
   const heel = envelope(ctx, sound.thump * volume * vary() * weight, sound.thumpDecay * (landing ? 1.5 : 1), 0, pan);
   const osc = ctx.createOscillator();
@@ -162,4 +194,39 @@ export function playFootstep(surface: Surface, volume = 1, pan = 0, landing = fa
   osc.connect(heel.gain);
   osc.start(heel.t);
   osc.stop(heel.t + sound.thumpDecay * 2);
+}
+
+/** The low end of a step: a falling sine thud and a burst of low noise. Landings go deeper and longer. */
+function playDeep(ac: AudioContext, buffer: AudioBuffer, sound: StepSound, volume: number, pan: number, landing: boolean): void {
+  const weight = landing ? 1.5 : 1;
+  const decay = sound.deepDecay * (landing ? 1.7 : 1);
+  const freq = sound.deepFreq * (landing ? 0.8 : 1) * (0.92 + Math.random() * 0.16);
+
+  const thud = envelope(ac, sound.deep * volume * weight, decay, 0, pan);
+  // A few ms of attack: an instant start at this frequency would click.
+  thud.gain.gain.setValueAtTime(0.0001, thud.t);
+  thud.gain.gain.exponentialRampToValueAtTime(sound.deep * volume * weight, thud.t + 0.006);
+  thud.gain.gain.exponentialRampToValueAtTime(0.0001, thud.t + decay);
+  for (const [mult, level] of [[1, 1], [2, 0.35]] as const) {
+    const osc = ac.createOscillator();
+    const partial = ac.createGain();
+    partial.gain.value = level;
+    osc.frequency.setValueAtTime(freq * mult, thud.t);
+    osc.frequency.exponentialRampToValueAtTime(freq * mult * 0.6, thud.t + decay);
+    osc.connect(partial).connect(thud.gain);
+    osc.start(thud.t);
+    osc.stop(thud.t + decay + 0.02);
+  }
+
+  if (!sound.body) return;
+  const body = envelope(ac, sound.body * volume * weight, decay * 0.7, 0, pan);
+  const src = ac.createBufferSource();
+  src.buffer = buffer;
+  const low = ac.createBiquadFilter();
+  low.type = 'lowpass';
+  low.frequency.value = 250;
+  low.Q.value = 0.9;
+  src.connect(low).connect(body.gain);
+  src.start(body.t, Math.random() * 0.3);
+  src.stop(body.t + decay);
 }
