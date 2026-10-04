@@ -61,6 +61,8 @@ const INDICATOR_HOLD = 0.6;
 const INDICATOR_FADE = 1;
 /** How often we record our own pose for the MVP replay (s) */
 const RECORD_INTERVAL = 0.1;
+/** Fraction of full health a kill gives back */
+const KILL_HEAL = 0.5;
 /** How hard a killing hit shoves the body, per weapon (m/s at the chest) */
 const KNOCKBACK: Partial<Record<WeaponKind, number>> = { rifle: 3, deagle: 4, shotgun: 6, sniper: 6, grenade: 7, flag: 4.5 };
 
@@ -251,6 +253,10 @@ export class Game {
   /** Discord rich presence: what we last showed and when */
   private presenceKey = '';
   private presenceTimer = 0;
+
+  /** Free-for-all: who's in the outright lead (null = nobody yet, or a tie), and whether we've looked yet */
+  private ffaLeader: string | null = null;
+  private leadKnown = false;
 
   /** Onboarding: the mode banner on the first click to play, and how long we've been sprinting (slide tip) */
   private introDone = false;
@@ -901,6 +907,7 @@ export class Game {
       });
       if (evt.killer === this.playerId && evt.victim !== this.playerId) {
         sfx.playKill();
+        this.healForKill();
         this.onOwnKill(evt.victim, evt.head, t);
       }
     }
@@ -960,6 +967,17 @@ export class Game {
   /** Show a tip once per browser. */
   private hint(id: HintId, text: () => string): void {
     if (hints.once(id)) this.hud.toast(text());
+  }
+
+  /** Every kill gives back half of full health (never above full), as a reward for winning the fight. */
+  private healForKill(): void {
+    if (!this.alive || this.roundOver) return;
+    const max = this.rules.health;
+    const amount = Math.min(Math.round(max * KILL_HEAL), max - this.hp);
+    if (amount <= 0) return;
+    this.hp += amount;
+    this.hud.update({ hp: this.hp, heal: { n: (this.hud.get().heal?.n ?? 0) + 1, amount } });
+    void this.net.sendState({ hp: this.hp });
   }
 
   /** Feed our kills into the highlight tracker. */
@@ -1106,6 +1124,9 @@ export class Game {
     this.recorder.reset();
     this.carry = null;
     this.lastDrop = {};
+    // Everyone's back on zero: nobody leads until someone scores.
+    this.ffaLeader = null;
+    this.leadKnown = false;
     this.clearAbilities();
     this.hud.update({ myMatch: this.myMatch });
     this.respawn();
@@ -1330,7 +1351,52 @@ export class Game {
   }
 
   /** Push the score bar / clock / flags / round-over state to the HUD when it changes. */
+  /**
+   * Free-for-all modes: tell players when the outright lead changes hands. Taking it gets a big
+   * banner; losing it says who took it; anyone else's change is a line in the feed. A tie at the
+   * top isn't a lead, so the call comes when someone pulls clear.
+   */
+  private updateLead(): void {
+    if (this.team || !this.joined || this.roundOver) return;
+    let top = 0;
+    let holders: string[] = [];
+    for (const [id, p] of Object.entries(this.players)) {
+      if (p.spec) continue;
+      const kills = id === this.playerId ? this.kills : p.kills || 0;
+      if (kills > top) {
+        top = kills;
+        holders = [id];
+      } else if (kills === top && kills > 0) {
+        holders.push(id);
+      }
+    }
+    // Nobody has scored yet (a fresh round, or we joined before the first kill): the first lead is news.
+    if (top === 0) this.leadKnown = true;
+    const leader = top > 0 && holders.length === 1 ? holders[0]! : null;
+    // Ties and nobody-scored keep the last leader until someone is clearly ahead.
+    if (!leader || leader === this.ffaLeader) return;
+    const previous = this.ffaLeader;
+    this.ffaLeader = leader;
+    // Joining a match already under way: the first look just learns who's ahead.
+    if (!this.leadKnown) {
+      this.leadKnown = true;
+      return;
+    }
+    const name = (id: string) => this.players[id]?.name || 'Someone';
+    const unit = this.rules.loadout === 'gungame' ? `level ${top + 1}` : `${top} kill${top === 1 ? '' : 's'}`;
+    if (leader === this.playerId) {
+      this.hud.announce('YOU TOOK THE LEAD', previous ? `Ahead of ${name(previous)} · ${unit}` : unit);
+      sfx.playLeadGained();
+    } else if (previous === this.playerId) {
+      this.hud.announce('LEAD LOST', `${name(leader)} took the lead · ${unit}`);
+      sfx.playLeadLost();
+    } else {
+      this.hud.pushInfo(`👑 ${name(leader)} took the lead (${unit})`);
+    }
+  }
+
   private refreshScore(): void {
+    this.updateLead();
     let leader: { name: string; kills: number } | null = null;
     for (const [id, p] of Object.entries(this.players)) {
       if (id === this.playerId) continue;

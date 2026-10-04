@@ -334,6 +334,10 @@ export function playMultiKill(count: number): void {
 /** Kill streak milestone (5, 10, 15...): a rising fifth with a low hit. */
 export const playStreak = () => stinger(330, [0, 7, 12, 19], 0.09, 0.4, 0.2, true);
 
+/** Free-for-all: you took the outright lead (bright and rising) or lost it (falling). */
+export const playLeadGained = () => stinger(523, [0, 4, 7, 12], 0.07, 0.35, 0.18, true);
+export const playLeadLost = () => stinger(392, [7, 3, -2], 0.11, 0.45, 0.16);
+
 /** Round start: two quick notes up. */
 export const playRoundStart = () => stinger(392, [0, 7], 0.12, 0.3, 0.16);
 

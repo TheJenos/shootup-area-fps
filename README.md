@@ -5,6 +5,20 @@
 A multiplayer browser FPS built with **Three.js**, with realtime sync over **Firebase Realtime Database**.
 Pick a name, create or join a room, and shoot each other in Free-for-all, Team Deathmatch or Capture the Flag.
 
+## Lobby
+
+- **Your name** is chosen once, on your first visit, and kept in the browser (`fps-name`); it can't be changed
+  afterwards. It shows as "Playing as …" at the top, next to the ⚙ settings button. Names are 2–16 letters,
+  numbers, spaces, `-` or `_`.
+- **Open rooms** (the first tab) lists every room with its mode badge, mode, map, code and players. The search
+  box filters by room name, code, mode, map, host or any player; type a code next to it to join directly, or
+  press **＋ Create room**.
+- **Create room**: pick a mode (see [Game modes](#game-modes)), a map seed, and a room name, then create it.
+- **Leaderboard**: the global top 20.
+- **Inside Discord** the lobby looks the same, with your Discord name as "Playing as …". Its tabs are **This
+  channel** (the voice channel's match: join it if it's running, otherwise pick a mode and map and start it),
+  **Open rooms** (every other room, with the same search and room-code join) and **Leaderboard**.
+
 ## Quick start (local, no Firebase account needed)
 
 Requires Node 20+ and Java (for the Firebase emulator).
@@ -77,6 +91,12 @@ lobby has the same picker. A room's rules are stored with it (`lobby/{code}/rule
 rules), so everyone who joins plays the same; rooms made before custom modes keep working (their old mode
 names map to the matching prebuilt mode).
 
+- **Kills heal:** every kill gives back half of your full health (+50 HP normally, +25 in a 50 HP mode, +100
+  at 200 HP), never above full. A green "+50 HP" floats up from the health panel.
+- **The lead (free-for-all modes):** when someone pulls clear at the top, everyone hears about it. Taking the
+  lead puts **YOU TOOK THE LEAD** on screen with a rising stinger; losing it shows **LEAD LOST — Name took the
+  lead** with a falling one; a change between other players is a 👑 line in the kill feed. A tie at the top
+  doesn't count until someone pulls ahead again. While you lead, the score bar shows 👑 and your score in gold.
 - **Teams:** you join the smaller team. Every player's uniform takes their team colour (65%, with a faint glow
   and a glowing visor, so teams stay readable in shadow). Teammates' names show whenever they're in sight, and a
   teammate hidden behind cover is drawn over the walls as just a flat 2D silhouette of their character (same pose
@@ -268,7 +288,8 @@ Discord, with no website to visit.
 
 ### Settings
 
-The ⚙ panel (lobby or pause menu) has mouse sensitivity, aim sensitivity and aim toggle, invert Y, fullscreen,
+The ⚙ panel (lobby or pause menu) is split into tabs: **Controls** (mouse / look and key bindings), **Video**
+(display and crosshair), **Audio** and **Accessibility**; it reopens on the last tab you used. Altogether it has mouse sensitivity, aim sensitivity and aim toggle, invert Y, fullscreen,
 **field of view** (60–110°), **graphics quality** (Low: no shadows and a 1× resolution cap; Medium: soft
 shadows at native resolution; High: sharp shadows, up to 2×; phones default to Low), **crosshair colour and
 size** (with a live preview), sound effects and music volume, screen shake, **reduce motion** (System / On /
@@ -322,8 +343,8 @@ doesn't. The match keeps running while the menu is open. Round results and the M
 ### Invite links
 
 The pause menu's **Copy invite link** copies `…/?room=CODE` (on phones it opens the share sheet). Opening it
-with a name saved in that browser shows "Joining CODE as NAME…" with a two-second countdown, **Join now** and
-**Change name**; without a saved name the lobby asks for one with the room pre-filled. If the room has closed,
+shows "Joining CODE…" with a two-second countdown, **Join now** and **Stay in the lobby**; someone without a
+name yet picks one first, then joins. If the room has closed,
 the lobby says so and offers to create a new one. `#CODE` links keep working, and Discord's 10-character codes
 fit too.
 

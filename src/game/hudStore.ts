@@ -151,6 +151,8 @@ export interface HudState {
   } | null;
   /** Increments when we come back from the dead (for a flash) */
   respawnFlash: number;
+  /** Health given back for a kill; `n` restarts the "+50 HP" animation */
+  heal: { n: number; amount: number } | null;
   /** An ability slot refused (cooldown): shake it; `n` restarts the animation */
   slotDenied: { n: number; slot: number } | null;
   /** The three ability slots */
@@ -208,6 +210,7 @@ const initialState: HudState = {
   scoreboard: [],
   death: null,
   respawnFlash: 0,
+  heal: null,
   slotDenied: null,
   slots: [null, null, null],
   buffs: { speed: null, shield: null },

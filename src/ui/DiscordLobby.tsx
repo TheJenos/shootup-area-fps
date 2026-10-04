@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { connectDiscord, type DiscordSession } from '../discord/discord';
 import { createRoomWithCode, getRoomSetup, randomId } from '../net/network';
 import { initAudio } from '../game/audio';
 import { loadCharacter } from '../game/character';
 import { ModePicker } from './ModePicker';
 import { PRESETS, type ModeRules } from '../game/rules';
-import { generateMap, randomSeed } from '../game/mapgen';
+import { generateMap, normalizeSeed, randomSeed, SEED_MAX_LENGTH } from '../game/mapgen';
+import { MapPreview } from './MapPreview';
+import { RoomBrowser, useRooms } from './RoomBrowser';
 import type { Session } from './App';
 import { Brand } from './Brand';
 import { friendlyError } from './errors';
@@ -27,6 +29,7 @@ function roomCodeFor(instanceId: string): string {
 }
 
 type Existing = { rules: ModeRules; seed: string } | null;
+type Tab = 'channel' | 'rooms' | 'leaderboard';
 
 interface Props {
   initialError: string;
@@ -40,6 +43,12 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
   const [rules, setRules] = useState<ModeRules>(PRESETS[0]!.rules);
   const [error, setError] = useState(initialError);
   const [busy, setBusy] = useState(false);
+  /** Which listed room's Join button should spin (Open rooms tab) */
+  const [joiningCode, setJoiningCode] = useState('');
+  const [tab, setTab] = useState<Tab>('channel');
+  const [seed, setSeed] = useState(randomSeed);
+  const map = useMemo(() => (seed ? generateMap(seed) : null), [seed]);
+  const { rooms, failed: roomsFailed, retry: retryRooms } = useRooms();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const roomCode = discord ? roomCodeFor(discord.instanceId) : '';
@@ -66,8 +75,8 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
     try {
       const playerId = randomId();
       // Someone may have started the match since we looked; then we just join theirs.
-      const seed = randomSeed();
-      const created = existing ? false : await createRoomWithCode(roomCode, 'Discord match', rules, seed, discord.name, playerId);
+      const created = existing ? false
+        : await createRoomWithCode(roomCode, 'Discord match', rules, seed || randomSeed(), discord.name, playerId);
       const setup = await getRoomSetup(roomCode);
       if (!setup) throw new Error('Could not start the match. Try again.');
       // We lost the race to start: the mode we picked wasn't used.
@@ -84,50 +93,157 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
     }
   };
 
+  /** Join any other open room (Open rooms tab), as this Discord account. */
+  const joinOther = async (code: string) => {
+    if (!discord || busy) return;
+    const normalized = code.trim().toUpperCase();
+    initAudio();
+    setBusy(true);
+    setJoiningCode(normalized);
+    setError('');
+    try {
+      const setup = await getRoomSetup(normalized);
+      if (!setup) throw new Error(`Room ${normalized} doesn't exist.`);
+      onEnter({ roomCode: normalized, playerId: randomId(), name: discord.name, seed: setup.seed, profileId: discordProfileId(discord.userId) });
+    } catch (err) {
+      console.error(err);
+      setError(friendlyError(err));
+      setBusy(false);
+      setJoiningCode('');
+    }
+  };
+
+  const tabs: { id: Tab; label: string; count?: number }[] = [
+    { id: 'channel', label: 'This channel' },
+    { id: 'rooms', label: 'Open rooms', ...(rooms ? { count: rooms.filter((r) => r.code !== roomCode).length } : {}) },
+    { id: 'leaderboard', label: 'Leaderboard' },
+  ];
+
   return (
     <section id="lobby" className="screen">
-      <div className="card discord lobby-card">
-        <header className="lobby-head">
+      <div className="card lobby-tabs-card discord">
+        <header className="lobby-top">
           <Brand />
+          {discord && (
+            <div className="lobby-profile">
+              <span className="muted">Playing as</span>
+              <strong title="Your Discord name">{discord.name}</strong>
+              <button type="button" className="icon-button" aria-label="Mouse and key settings" title="Settings" onClick={() => setSettingsOpen(true)}>⚙</button>
+            </div>
+          )}
         </header>
-        <section className="lobby-setup">
+
         {!discord ? (
-          <>
-            <p className="subtitle">
-              {error ? 'Could not connect to Discord.' : <><span className="spinner" aria-hidden="true" />Connecting to Discord…</>}
-            </p>
-            {error && <button type="button" onClick={() => { setError(''); setAttempt((a) => a + 1); }}>Retry</button>}
-          </>
+          <div className="name-setup discord-connect">
+            <h2>{error ? 'Could not connect to Discord' : <><span className="spinner" aria-hidden="true" />Connecting to Discord…</>}</h2>
+            {error && (
+              <>
+                <p className="error">{error}</p>
+                <button type="button" className="primary" onClick={() => { setError(''); setAttempt((a) => a + 1); }}>Retry</button>
+              </>
+            )}
+          </div>
         ) : (
           <>
-            <p className="subtitle">Playing as <strong>{discord.name}</strong></p>
-            {existing ? (
-              <div className="match-info">
-                <span className={`mode-badge ${existing.rules.base}`}>{existing.rules.short}</span>
-                {existing.rules.name} on <strong>{generateMap(existing.seed).theme.name}</strong>
-                <p className="muted">A match is running in this channel.</p>
-              </div>
-            ) : (
-              <div className="field">
-                <span>Game mode</span>
-                <ModePicker value={rules} onChange={setRules} />
-              </div>
+            <nav className="tabs" role="tablist" aria-label="Lobby">
+              {tabs.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="tab"
+                  id={`tab-${t.id}`}
+                  aria-selected={tab === t.id}
+                  aria-controls={`panel-${t.id}`}
+                  className={tab === t.id ? 'tab selected' : 'tab'}
+                  onClick={() => setTab(t.id)}
+                >
+                  {t.label}{t.count !== undefined && <span className="count">{t.count}</span>}
+                </button>
+              ))}
+            </nav>
+
+            {tab === 'channel' && (
+              <section id="panel-channel" role="tabpanel" aria-labelledby="tab-channel" className="tab-panel create-panel">
+                {existing ? (
+                  // A match is already running in this voice channel: one big way in.
+                  <div className="channel-match">
+                    <div className="match-info">
+                      <span className={`mode-badge ${existing.rules.base}`}>{existing.rules.short}</span>
+                      <div>
+                        <strong>{existing.rules.name}</strong> on <strong>{generateMap(existing.seed).theme.name}</strong>
+                        <p className="muted">A match is running in this voice channel.</p>
+                      </div>
+                    </div>
+                    <button className="primary create-button" disabled={busy} onClick={() => void play()}>
+                      {busy ? <><span className="spinner" aria-hidden="true" />Joining…</> : 'Join match'}
+                    </button>
+                    <p className="error">{error}</p>
+                  </div>
+                ) : (
+                  <div className="create-grid">
+                    <div className="field">
+                      <span>Game mode</span>
+                      <ModePicker value={rules} onChange={setRules} />
+                    </div>
+                    <div className="create-side">
+                      <div className="field">
+                        <span>Map</span>
+                        <div className="map-picker stacked">
+                          {map ? <MapPreview map={map} mode={rules.base} /> : <div className="map-preview empty">Random map</div>}
+                          <div className="map-controls">
+                            <strong>{map ? map.theme.name : 'Surprise me'}</strong>
+                            <div className="row">
+                              <input
+                                className="seed-input"
+                                value={seed}
+                                onChange={(e) => setSeed(normalizeSeed(e.target.value))}
+                                maxLength={SEED_MAX_LENGTH}
+                                placeholder="Seed"
+                                aria-label="Map seed"
+                                autoComplete="off"
+                              />
+                              <button type="button" title="New random map" aria-label="New random map" onClick={() => setSeed(randomSeed())}>🎲</button>
+                            </div>
+                            <small className="muted">Same seed, same map.</small>
+                          </div>
+                        </div>
+                      </div>
+                      <button className="primary create-button" disabled={busy} onClick={() => void play()}>
+                        {busy ? <><span className="spinner" aria-hidden="true" />Starting…</> : `Start ${rules.name}`}
+                      </button>
+                      <p className="muted hint">Everyone in this voice channel plays in the same match.</p>
+                      <p className="error">{error}</p>
+                    </div>
+                  </div>
+                )}
+              </section>
             )}
-            <button className="primary play" disabled={busy} onClick={() => void play()}>
-              {busy ? <><span className="spinner" aria-hidden="true" />{existing ? 'Joining…' : 'Starting…'}</> : existing ? 'Join match' : 'Start match'}
-            </button>
-            <p className="muted hint">Everyone in this voice channel plays in the same match.</p>
+
+            {tab === 'rooms' && (
+              <section id="panel-rooms" role="tabpanel" aria-labelledby="tab-rooms" className="tab-panel">
+                <RoomBrowser
+                  rooms={rooms}
+                  failed={roomsFailed}
+                  retry={retryRooms}
+                  hide={roomCode}
+                  busy={busy}
+                  joiningCode={joiningCode}
+                  disabled={busy}
+                  error={error}
+                  onJoin={(c) => void joinOther(c)}
+                  onCreate={() => setTab('channel')}
+                />
+              </section>
+            )}
+
+            {tab === 'leaderboard' && (
+              <section id="panel-leaderboard" role="tabpanel" aria-labelledby="tab-leaderboard" className="tab-panel">
+                <Leaderboard limit={20} me={discordProfileId(discord.userId)} />
+              </section>
+            )}
           </>
         )}
-        <p className="error">{error}</p>
-        <button type="button" className="settings-link" onClick={() => setSettingsOpen(true)}>
-          ⚙ Mouse &amp; key settings
-        </button>
-        </section>
-        {/* Shown straight away, even while Discord is still signing in (your row lights up once it has). */}
-        <section className="lobby-rooms">
-          <Leaderboard limit={20} me={discord ? discordProfileId(discord.userId) : ''} />
-        </section>
+
         <p className="legal muted"><a href="/terms.html" target="_blank" rel="noreferrer">Terms</a> · <a href="/privacy.html" target="_blank" rel="noreferrer">Privacy</a></p>
       </div>
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}

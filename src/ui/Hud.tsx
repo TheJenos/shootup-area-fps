@@ -138,7 +138,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       )}
       {!hud.spectate && (
         <>
-          <HealthPanel hp={hud.hp} max={hud.maxHp} />
+          <HealthPanel hp={hud.hp} max={hud.maxHp} heal={hud.heal} />
           <AmmoPanel hud={hud} touch={game.touch} />
           <AbilityBar
             slots={hud.slots}
@@ -260,12 +260,14 @@ function SpectateBanner({ spectate, touch }: { spectate: NonNullable<HudState['s
 function ScoreBar({ hud }: { hud: HudState }) {
   const { team, score, flags, rules } = hud;
   const { limit, short } = rules;
+  /** Free-for-all: outright ahead of everyone else */
+  const leading = score.mine > 0 && score.mine > (score.leader?.kills ?? 0);
   if (rules.loadout === 'gungame') {
     return (
       <div id="scorebar" className="ffa">
         <span className="mode">{short}</span>
         <RoundClock clock={hud.clock} />
-        <span>Level <strong>{Math.min(score.mine + 1, limit)}</strong><span className="muted">/{limit}</span> · {GUNS[hud.gun].name}</span>
+        <span className={leading ? 'you leading' : 'you'}>{leading && '👑 '}Level <strong>{Math.min(score.mine + 1, limit)}</strong><span className="muted">/{limit}</span> · {GUNS[hud.gun].name}</span>
         {score.leader && (
           <span className="muted">Best other: {score.leader.name} <strong>lvl {Math.min(score.leader.kills + 1, limit)}</strong></span>
         )}
@@ -277,7 +279,9 @@ function ScoreBar({ hud }: { hud: HudState }) {
       <div id="scorebar" className="ffa">
         <span className="mode">{short}</span>
         <RoundClock clock={hud.clock} />
-        <span>You <strong>{score.mine}</strong></span>
+        <span className={leading ? 'you leading' : 'you'} title={leading ? "You're in the lead" : undefined}>
+          {leading && '👑 '}You <strong>{score.mine}</strong>
+        </span>
         {score.leader && (
           <span className="muted">Best other: {score.leader.name} <strong>{score.leader.kills}</strong></span>
         )}
@@ -416,11 +420,14 @@ function DamageDirections({ indicators }: { indicators: HudState['damageIndicato
   );
 }
 
-function HealthPanel({ hp, max }: { hp: number; max: number }) {
+function HealthPanel({ hp, max, heal }: { hp: number; max: number; heal: HudState['heal'] }) {
   const pct = Math.max(0, Math.min(100, (hp / max) * 100));
   const color = pct > 60 ? 'var(--good)' : pct > 30 ? 'var(--accent)' : 'var(--danger)';
   return (
     <div id="health" className="panel">
+      {/* A new key per kill restarts the pop and the panel glow. */}
+      {heal && <span key={`heal-${heal.n}`} className="heal-pop" aria-hidden="true">+{heal.amount} HP</span>}
+      {heal && <span key={`glow-${heal.n}`} className="heal-glow" aria-hidden="true" />}
       <span className="label">HP</span>
       <span>{Math.max(0, Math.ceil(hp))}</span>
       <div className="bar" aria-hidden="true">

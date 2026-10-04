@@ -15,11 +15,24 @@ interface Props {
   onClose(): void;
 }
 
+type SettingsTab = 'controls' | 'video' | 'audio' | 'access';
+const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: 'controls', label: 'Controls' },
+  { id: 'video', label: 'Video' },
+  { id: 'audio', label: 'Audio' },
+  { id: 'access', label: 'Accessibility' },
+];
+
+/** Reopening settings goes back to the tab you were on (for this visit). */
+let lastTab: SettingsTab = 'controls';
+const rememberTab = (t: SettingsTab) => { lastTab = t; };
+
 /** Mouse, video, crosshair, audio, accessibility and key bindings. Opened from the lobby or the pause menu. */
 export function SettingsPanel({ onClose }: Props) {
   const current = useSettings();
   const [listening, setListening] = useState<Action | null>(null);
   const [tipsReset, setTipsReset] = useState(false);
+  const [tab, setTab] = useState<SettingsTab>(lastTab);
   const [confirmReset, setConfirmReset] = useState(false);
 
   // Esc closes the panel (unless we're waiting for a key to bind, which handles Esc itself).
@@ -49,12 +62,32 @@ export function SettingsPanel({ onClose }: Props) {
 
   return (
     <div id="settings" className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="panel-box" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div className="panel-box tabbed" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <header>
           <h3 id="settings-title">Settings</h3>
           <button onClick={onClose} autoFocus>Done</button>
         </header>
 
+        <nav className="tabs settings-tabs" role="tablist" aria-label="Settings">
+          {SETTINGS_TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              id={`settings-tab-${t.id}`}
+              aria-selected={tab === t.id}
+              aria-controls={`settings-panel-${t.id}`}
+              className={tab === t.id ? 'tab selected' : 'tab'}
+              onClick={() => { setTab(t.id); rememberTab(t.id); }}
+            >
+              {t.id === 'controls' && TOUCH ? 'Look' : t.label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="settings-body" role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`}>
+        {tab === 'controls' && (
+          <>
         <section>
           <h4>{TOUCH ? 'Look' : 'Mouse'}</h4>
           <label className="setting">
@@ -123,9 +156,34 @@ export function SettingsPanel({ onClose }: Props) {
             </span>
           </label>
         </section>
-
+        {!TOUCH && (
         <section>
-          <h4>Video</h4>
+          <h4>Key bindings</h4>
+          <p className="muted hint">
+            Click a key, then press the new one. Taking a key used elsewhere swaps the two. <kbd>Esc</kbd> cancels.
+          </p>
+          <div className="bindings">
+            {ACTIONS.map(({ action, label }) => (
+              <div key={action} className="binding">
+                <span>{label}</span>
+                <button
+                  className={listening === action ? 'key listening' : 'key'}
+                  onClick={() => setListening(listening === action ? null : action)}
+                >
+                  {listening === action ? 'Press a key…' : keyLabel(current.bindings[action])}
+                </button>
+              </div>
+            ))}
+          </div>
+          <p className="muted hint">Shooting is always left click; <kbd>Esc</kbd> always pauses.</p>
+        </section>
+        )}
+          </>
+        )}
+        {tab === 'video' && (
+          <>
+        <section>
+          <h4>Display</h4>
           <label className="setting">
             <span>Field of view</span>
             <input
@@ -158,7 +216,6 @@ export function SettingsPanel({ onClose }: Props) {
           </div>
           <p className="muted hint">{QUALITIES.find((q) => q.value === current.quality)?.hint}</p>
         </section>
-
         <section>
           <h4>Crosshair</h4>
           <div className="crosshair-row">
@@ -199,9 +256,11 @@ export function SettingsPanel({ onClose }: Props) {
             </div>
           </div>
         </section>
-
+          </>
+        )}
+        {tab === 'audio' && (
+          <>
         <section>
-          <h4>Audio &amp; feel</h4>
           <label className="setting">
             <span>Sound effects</span>
             <input
@@ -235,9 +294,11 @@ export function SettingsPanel({ onClose }: Props) {
             <span>Screen shake when hit</span>
           </label>
         </section>
-
+          </>
+        )}
+        {tab === 'access' && (
+          <>
         <section>
-          <h4>Accessibility</h4>
           <div className="setting">
             <span>Reduce motion</span>
             <div className="choices" role="radiogroup" aria-label="Reduce motion">
@@ -278,29 +339,9 @@ export function SettingsPanel({ onClose }: Props) {
             </button>
           </div>
         </section>
-
-        {!TOUCH && (
-        <section>
-          <h4>Key bindings</h4>
-          <p className="muted hint">
-            Click a key, then press the new one. Taking a key used elsewhere swaps the two. <kbd>Esc</kbd> cancels.
-          </p>
-          <div className="bindings">
-            {ACTIONS.map(({ action, label }) => (
-              <div key={action} className="binding">
-                <span>{label}</span>
-                <button
-                  className={listening === action ? 'key listening' : 'key'}
-                  onClick={() => setListening(listening === action ? null : action)}
-                >
-                  {listening === action ? 'Press a key…' : keyLabel(current.bindings[action])}
-                </button>
-              </div>
-            ))}
-          </div>
-          <p className="muted hint">Shooting is always left click; <kbd>Esc</kbd> always pauses.</p>
-        </section>
+          </>
         )}
+        </div>
 
         <footer>
           {confirmReset ? (
