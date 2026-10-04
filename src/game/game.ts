@@ -24,6 +24,7 @@ import { ReplayDirector, ReplayRecorder } from './replay';
 import { RoomConnection, randomId } from '../net/network';
 import * as sfx from './audio';
 import { actionFor, settings, type Action } from './settings';
+import { IN_DISCORD } from '../discord/patch';
 import { StepTracker, type StepEvent } from './footsteps';
 import type {
   GameEvent, GameMode, GameState, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, Team, Vec3Tuple, WeaponKind,
@@ -258,8 +259,32 @@ export class Game {
   /** Capture the mouse (and go fullscreen) to start playing. Must be called from a user gesture. */
   requestPointerLock(): void {
     // Fullscreen first: it needs the click, and pointer lock doesn't once we're fullscreen.
-    if (settings.get().fullscreen) this.enterFullscreen();
+    // Not inside Discord, which manages its own window.
+    if (settings.get().fullscreen && !IN_DISCORD) this.enterFullscreen();
     this.lockPointer();
+  }
+
+  /**
+   * Discord's iframe may refuse pointer lock. Then aim with the free cursor instead (hidden over
+   * the game; look follows mouse movement, though it stops at the edge of the window). Esc pauses.
+   */
+  private freeMouse = false;
+  private enterFreeMouse(): void {
+    if (this.freeMouse || this.locked || !this.joined) return;
+    this.freeMouse = true;
+    this.locked = true;
+    this.player.setEnabled(true);
+    this.renderer.domElement.style.cursor = 'none';
+    this.hud.update({ paused: false });
+  }
+  private exitFreeMouse(): void {
+    if (!this.freeMouse) return;
+    this.freeMouse = false;
+    this.locked = false;
+    this.triggerHeld = false;
+    this.player.setEnabled(false);
+    this.renderer.domElement.style.cursor = '';
+    this.hud.update({ paused: this.joined && !this.inventoryOpen });
   }
 
   private lockPointer(): void {
@@ -290,7 +315,9 @@ export class Game {
 
     window.addEventListener('resize', () => this.resize(), { signal });
 
+    document.addEventListener('pointerlockerror', () => { if (IN_DISCORD) this.enterFreeMouse(); }, { signal });
     document.addEventListener('pointerlockchange', () => {
+      if (this.freeMouse) return;
       this.locked = document.pointerLockElement === canvas;
       this.player.setEnabled(this.locked);
       if (!this.locked) this.triggerHeld = false;
@@ -336,6 +363,7 @@ export class Game {
         else this.openInventory();
       }
       if (e.code === 'Escape' && this.inventoryOpen) this.closeInventory(false);
+      else if (e.code === 'Escape') this.exitFreeMouse();
     }, { signal });
     window.addEventListener('keyup', (e) => {
       if (actionFor(e.code) === 'scoreboard') this.hud.update({ scoreboardOpen: false });
@@ -344,7 +372,8 @@ export class Game {
     // Closing or reloading the tab mid-game (e.g. a stray Ctrl+W) asks first. Leaving through
     // the menu doesn't, because the game is disposed (and this listener removed) before that.
     window.addEventListener('beforeunload', (e) => {
-      if (!this.joined) return;
+      // Inside Discord, closing the Activity must never be held up by a prompt.
+      if (!this.joined || IN_DISCORD) return;
       e.preventDefault();
       e.returnValue = '';
     }, { signal });
@@ -1235,9 +1264,10 @@ export class Game {
     if (!this.alive || !this.joined) return;
     this.inventoryOpen = true;
     this.triggerHeld = false;
-    this.hud.update({ inventoryOpen: true, paused: false });
     // Free the mouse so the panel's buttons can be clicked.
     if (document.pointerLockElement) document.exitPointerLock();
+    this.exitFreeMouse();
+    this.hud.update({ inventoryOpen: true, paused: false });
   }
 
   /** @param resume grab the mouse again (only works from a key press or click) */

@@ -674,3 +674,13 @@ kbd {
   #mvp .card { left: 16px; max-width: calc(100% - 32px); }
   #mvp .next-map { right: 16px; top: calc(9vh + 16px); bottom: auto; }
 }
+
+/* ---------- Discord Activity ---------- */
+
+.card.discord .match-info { margin: 6px 0 16px; line-height: 1.6; }
+.card.discord .match-info p { margin: 0; font-size: 13px; }
+.card.discord .play { width: 100%; padding: 12px; font-size: 16px; margin-top: 4px; }
+.card.discord .hint { font-size: 12px; margin: 10px 0 0; }
+
+.card .legal { margin: 18px 0 0; font-size: 12px; text-align: center; }
+.card .legal a { color: var(--muted); }

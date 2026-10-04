@@ -136,6 +136,54 @@ All sound is synthesized with Web Audio (no audio files), including footsteps:
 - The sound depends on what's underfoot: hard floor, sand (Dust Bowl), snow (Frostbite), or hollow wood on top
   of a crate.
 
+## Discord Activity
+
+The same build also runs as a Discord Activity: players launch it from a voice channel and play inside
+Discord, with no website to visit.
+
+- Everyone in the same voice channel shares one match; the room code comes from Discord's instance id.
+  The first player picks the mode and starts; the rest press **Join match**.
+- Players are signed in with Discord (`identify` scope only) and use their Discord display name.
+- Desktop only (there are no touch controls).
+
+### How it works
+
+- **Proxy rewrites:** Discord only lets an Activity reach the internet through its proxy, using the URL
+  mappings below. `src/discord/patch.ts` is imported first and rewrites requests onto those mappings.
+  It must come first because Firebase captures the `WebSocket` constructor as soon as it loads.
+  Firebase sometimes reconnects to a "shard" server whose name can't be known in advance, so those
+  connections are sent back to the database's main host, which serves the same data.
+- **Sign-in:** the Discord client hands over a one-time code, and `netlify/functions/discord-token.mjs`
+  trades it for an access token. That step needs the app's client secret, so it runs on Netlify, never in
+  the browser.
+- **Differences inside Discord:** no fullscreen, key lock or "Leave site?" prompt. If Discord refuses mouse
+  capture (pointer lock), aiming falls back to a hidden free cursor; looking around then stops at the edge
+  of the window. Esc pauses.
+
+### Setup
+
+1. **Create the app:** in the [Discord Developer Portal](https://discord.com/developers/applications),
+   create an application.
+2. **OAuth2:** add the redirect `https://127.0.0.1` (Discord requires one; the SDK doesn't use it). Note
+   the **Client ID** and **Client Secret**.
+3. **Installation:** enable **User Install** and **Guild Install**.
+4. **Activities → URL Mappings:**
+
+   | Prefix | Target |
+   | --- | --- |
+   | `/` | `shootup-arena-fps.netlify.app` |
+   | `/firebase` | `arena-fps-asia-wezlh-default-rtdb.asia-southeast1.firebasedatabase.app` |
+   | `/api` | `shootup-arena-fps.netlify.app/.netlify/functions` |
+
+5. **Activities → Settings:** enable Activities. This creates the "Launch" command.
+6. **Client ID in the build:** put `VITE_DISCORD_CLIENT_ID=<client id>` in `.env`. It's public.
+7. **Secrets on Netlify:** set `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET` in the site's environment
+   variables. Never put the secret in `.env` or in the code.
+8. **Deploy:** run `npm run build && npx netlify-cli deploy --prod --dir dist --functions netlify/functions`.
+9. **Launch:** in Discord, turn on Developer Mode (User Settings → Advanced), join a voice channel, open the
+   Activity launcher and start the game. Until the app is verified, only you and members of its developer
+   team can see it.
+
 ## Controls
 
 | Key | Action |
@@ -264,6 +312,7 @@ src/
   ui/
     App.tsx          lobby <-> game screen switching
     Lobby.tsx        name, create / join / list rooms
+    DiscordLobby.tsx start screen inside Discord (mode pick / join the channel's match)
     GameView.tsx     mounts the Game engine for the current room
     Hud.tsx          health, ammo, ability bar, kill feed, death / pause overlays
     InventoryPanel.tsx  inventory (I) with drop buttons
@@ -291,6 +340,9 @@ src/
     audio.ts         synthesized sound effects (Web Audio), including footsteps per surface
     footsteps.ts     turns movement into footfalls and landings
     canvas.ts        helper for procedural textures
+  discord/
+    patch.ts         inside Discord: route traffic through Discord's proxy (imported first)
+    discord.ts       Discord SDK: ready, sign in, instance id
   net/
     firebase.ts      Firebase init (real project or emulator)
     network.ts       RoomConnection: presence, player sync, events, empty-room cleanup

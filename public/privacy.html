@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Arena FPS Privacy Policy</title>
+  <meta name="description" content="What data Arena FPS collects, how it is used, and how long it is kept.">
+  <style>
+    :root { --bg: #0f1218; --card: #171c25; --line: #2a3242; --text: #e8ecf3; --muted: #8b95a8; --accent: #ffb547; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+    main { max-width: 760px; margin: 0 auto; padding: 40px 16px 64px; }
+    a { color: var(--accent); }
+    h1 { font-size: 30px; margin: 0 0 4px; letter-spacing: 1px; }
+    h2 { font-size: 19px; margin: 32px 0 8px; }
+    p, li { color: #cfd6e2; }
+    .muted { color: var(--muted); font-size: 14px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 4px 22px 18px; margin-top: 20px; }
+    nav { display: flex; gap: 16px; margin-bottom: 28px; font-size: 14px; }
+    table { border-collapse: collapse; width: 100%; font-size: 15px; }
+    th, td { text-align: left; padding: 8px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; border-top: none; }
+  </style>
+</head>
+<body>
+<main>
+  <nav><a href="/">← Arena FPS</a><a href="/terms.html">Terms of Service</a><a href="/privacy.html">Privacy Policy</a></nav>
+  <h1>Privacy Policy</h1>
+  <p class="muted">Arena FPS · Last updated October 4, 2026</p>
+
+  <p>Arena FPS is a small free multiplayer browser game, playable on its website
+  (<a href="https://shootup-arena-fps.netlify.app">shootup-arena-fps.netlify.app</a>) and as a Discord Activity.
+  This policy explains what data the game uses. In short: only what's needed to play a match, kept only while the
+  match is running, and never sold or used for ads.</p>
+
+  <div class="card">
+    <h2>What we collect and why</h2>
+    <table>
+      <tr><th>Data</th><th>Why</th><th>How long</th></tr>
+      <tr><td><strong>Your player name</strong>: typed on the website, or your Discord display name in the Discord Activity</td>
+          <td>Shown to the other players in your match (scoreboard, kill feed, name tags)</td>
+          <td>Until you leave the match</td></tr>
+      <tr><td><strong>Gameplay data</strong>: position, health, team, kills, deaths, match stats, ping, and in-game events such as shots</td>
+          <td>Needed to sync the match between players</td>
+          <td>Until you leave the match; shot and kill events are deleted after about 3 seconds</td></tr>
+      <tr><td><strong>Room details</strong>: room name, game mode, map seed and member names</td>
+          <td>To list open matches and let others join</td>
+          <td>Deleted when the last player leaves the room</td></tr>
+      <tr><td><strong>Discord account basics</strong> (Discord Activity only): your Discord user ID, username and display name, via the <code>identify</code> permission</td>
+          <td>To sign you in and show your name; the access token is used only to authenticate with the Discord client</td>
+          <td>Not stored by us; only your display name enters the match</td></tr>
+      <tr><td><strong>Settings on your device</strong>: your last player name, mouse sensitivity and key bindings</td>
+          <td>So the game remembers your preferences</td>
+          <td>In your browser's local storage until you clear it</td></tr>
+    </table>
+  </div>
+
+  <h2>What we don't do</h2>
+  <ul>
+    <li>No ads, no analytics or tracking scripts, and no cookies.</li>
+    <li>We don't sell or share your data with anyone beyond the services below that run the game.</li>
+    <li>We don't access your Discord messages, servers, friends list or email address.</li>
+  </ul>
+
+  <h2>Services that process data for us</h2>
+  <ul>
+    <li><strong>Google Firebase Realtime Database</strong> (Singapore region) stores the live match data described above.
+      See <a href="https://firebase.google.com/support/privacy">Firebase's privacy information</a>.</li>
+    <li><strong>Netlify</strong> hosts the website and the small server function used for Discord sign-in. Like any web
+      host, it processes technical request data such as IP addresses. See <a href="https://www.netlify.com/privacy/">Netlify's privacy policy</a>.</li>
+    <li><strong>Discord</strong>, when you play the Activity. Discord's own <a href="https://discord.com/privacy">Privacy Policy</a> applies to your use of Discord.</li>
+  </ul>
+
+  <h2>Who can see your data</h2>
+  <p>Everything in a match (your name and gameplay data) is visible to the other players, and the list of open rooms
+  is public. Please don't use personal information such as your real full name as your player name.</p>
+
+  <h2>Children</h2>
+  <p>The game is not directed at children under 13. Discord requires its users to be at least 13 (or older where local
+  law requires).</p>
+
+  <h2>Your choices</h2>
+  <p>You can leave a match at any time, which removes your data from it. You can clear the game's saved settings by
+  clearing your browser's site data. To ask about your data or request deletion, message <strong>thejenos</strong> on Discord.</p>
+
+  <h2>Changes</h2>
+  <p>If this policy changes, the updated version will be posted on this page with a new date.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about privacy: message <strong>thejenos</strong> on Discord.</p>
+</main>
+</body>
+</html>

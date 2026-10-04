@@ -70,6 +70,24 @@ export async function createRoom(
   return code;
 }
 
+/**
+ * Create the room `code` unless someone already has it: Discord Activities use a fixed code per
+ * voice channel, so two players starting at once must not both create it. Resolves to whether
+ * we created it (otherwise just join).
+ */
+export async function createRoomWithCode(
+  code: string, name: string, mode: GameMode, seed: string, host: string, playerId: string,
+): Promise<boolean> {
+  const result = await runTransaction(ref(db(), `lobby/${code}`), (current: LobbyRecord | null) => {
+    // A record without members is a leftover from an abandoned room: take it over.
+    if (current && Object.keys(current.members || {}).length > 0) return undefined;
+    return { name, mode, seed, host, createdAt: Date.now(), members: { [playerId]: host } };
+  }, { applyLocally: false });
+  if (!result.committed) return false;
+  await set(ref(db(), `rooms/${code}/game`), { round: 0, seed, startedAt: serverTimestamp() });
+  return true;
+}
+
 /** Mode and map seed of an existing room, or null if there's no such room. */
 export async function getRoomSetup(code: string): Promise<{ mode: GameMode; seed: string } | null> {
   const room = (await get(ref(db(), `lobby/${code}`))).val() as LobbyRecord | null;
