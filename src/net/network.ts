@@ -200,6 +200,24 @@ export class RoomConnection {
     return update(this.playerRef, partial);
   }
 
+  /**
+   * Time a write until the server confirms it: our round trip to Firebase, which every
+   * update between players goes through. The write also publishes our last measurement.
+   * Resolves to null if there's no answer in time (e.g. offline).
+   */
+  async measurePing(report: number | null, timeoutMs = 5_000): Promise<number | null> {
+    const start = performance.now();
+    const ack = update(this.playerRef, { ping: report ?? 0 }).then(() => performance.now() - start);
+    const timeout = new Promise<null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.timers.delete(timer);
+        resolve(null);
+      }, timeoutMs);
+      this.timers.add(timer);
+    });
+    return Promise.race([ack, timeout]);
+  }
+
   sendEvent(event: OutgoingEvent): void {
     const eventRef = push(this.eventsRef);
     set(eventRef, { ...event, from: this.playerId, t: serverTimestamp() });

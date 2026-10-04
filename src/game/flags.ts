@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { FLAG_BASES, TEAMS, TEAM_INFO } from './modes';
+import { boxTexture, hazardTexture, wornMetalTexture } from './textures';
 import type { FlagRecord, Team } from '../types';
 
 const POLE_HEIGHT = 2.4;
@@ -10,9 +11,10 @@ const CARRIED_SCALE = 0.6;
 const CARRIED_LIFT = 0.9;
 
 const poleGeo = new THREE.CylinderGeometry(0.04, 0.04, POLE_HEIGHT, 8).translate(0, POLE_HEIGHT / 2, 0);
-const poleMat = new THREE.MeshStandardMaterial({ color: 0xd8dde6, metalness: 0.6, roughness: 0.3 });
 const padGeo = new THREE.CylinderGeometry(1.5, 1.6, 0.08, 32);
 const ringGeo = new THREE.RingGeometry(1.35, 1.55, 40).rotateX(-Math.PI / 2);
+/** Painted hazard stripes on the floor around each base pad */
+const hazardGeo = new THREE.RingGeometry(1.7, 2.1, 48).rotateX(-Math.PI / 2);
 const beamGeo = new THREE.CylinderGeometry(0.08, 0.08, 14, 8, 1, true).translate(0, 7, 0);
 
 /** Where a flag is drawn right now; `carrier` is a player id. */
@@ -47,14 +49,26 @@ export class FlagField {
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
+    const poleMat = this.track(new THREE.MeshStandardMaterial({
+      map: wornMetalTexture(), color: 0xe8ecf2, metalness: 0.6, roughness: 0.35,
+    }));
+    const hazardMat = this.track(new THREE.MeshStandardMaterial({
+      map: hazardTexture(), roughness: 0.8, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    }));
     for (const team of TEAMS) {
       const color = new THREE.Color(TEAM_INFO[team].color);
       const base = FLAG_BASES[team];
 
-      const padMat = this.track(new THREE.MeshStandardMaterial({ color: 0x3a404c, roughness: 0.7 }));
+      const concrete = boxTexture('concrete');
+      const padMat = this.track(new THREE.MeshStandardMaterial({
+        color: 0x6a7280, map: concrete, bumpMap: concrete, bumpScale: 0.8, roughness: 0.8,
+      }));
       const pad = new THREE.Mesh(padGeo, padMat);
       pad.position.set(base.x, 0.04, base.z);
       pad.receiveShadow = true;
+      const hazard = new THREE.Mesh(hazardGeo, hazardMat);
+      hazard.position.set(base.x, 0.01, base.z);
+      hazard.receiveShadow = true;
       const glowMat = this.track(new THREE.MeshBasicMaterial({
         color, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
       }));
@@ -73,7 +87,7 @@ export class FlagField {
       const flag = new THREE.Group();
       flag.add(pole, cloth, beam);
 
-      this.add(pad, ring, flag);
+      this.add(pad, hazard, ring, flag);
       const positions = clothGeo.getAttribute('position') as THREE.BufferAttribute;
       const rest = Float32Array.from(positions.array);
       this.views[team] = { flag, cloth, positions, rest, beam, ring, placement: { at: 'base' } };

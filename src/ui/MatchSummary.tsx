@@ -12,6 +12,9 @@ function formatClock(ms: number): string {
   return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
 }
 
+/** Under 80 ms feels instant, over 150 ms you start to notice it. */
+const pingClass = (ms: number | null) => (ms === null ? '' : ms < 80 ? 'good' : ms < 150 ? 'ok' : 'bad');
+
 const percent = (n: number | null) => (n === null ? '—' : `${Math.round(n * 100)}%`);
 const kd = (k: number, d: number) => (d ? (k / d).toFixed(2) : k.toFixed(2));
 
@@ -42,7 +45,7 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, score, map 
   const leader = rows[0];
   const { teams } = MODES[mode];
   const ctf = mode === 'ctf';
-  const columns = ctf ? 10 : 9;
+  const columns = ctf ? 11 : 10;
   // Team modes list each team under its own header; FFA is one list.
   const groups = teams
     ? TEAMS.map((t) => ({ team: t, rows: rows.filter((r) => r.team === t) }))
@@ -64,6 +67,7 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, score, map 
       <td>{percent(r.accuracy)}</td>
       <td>{r.headshots}</td>
       <td>{r.bestStreak}</td>
+      <td className={`ping ${pingClass(r.ping)}`}>{r.ping === null ? '—' : `${r.ping} ms`}</td>
     </tr>
   );
 
@@ -104,6 +108,7 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, score, map 
             <th>Acc.</th>
             <th>HS</th>
             <th>Best streak</th>
+            <th title="Round trip to the server">Ping</th>
           </tr>
         </thead>
         {groups.map((g) => (

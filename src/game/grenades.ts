@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { grenadeTexture } from './textures';
 
 const GRAVITY = 18;
 const STEP = 1 / 120;
@@ -45,7 +46,13 @@ export function simulateGrenade(origin: THREE.Vector3, velocity: THREE.Vector3, 
 }
 
 const grenadeGeo = new THREE.SphereGeometry(RADIUS, 12, 8);
-const grenadeMat = new THREE.MeshStandardMaterial({ color: 0x3f5a2a, roughness: 0.6, emissive: 0xff4a1a, emissiveIntensity: 0.25 });
+let grenadeMat: THREE.MeshStandardMaterial | null = null;
+function grenadeMaterial(): THREE.MeshStandardMaterial {
+  grenadeMat ??= new THREE.MeshStandardMaterial({
+    map: grenadeTexture(), roughness: 0.6, emissive: 0xff4a1a, emissiveIntensity: 0.25,
+  });
+  return grenadeMat;
+}
 const blastGeo = new THREE.SphereGeometry(1, 24, 16);
 
 interface Flight {
@@ -74,7 +81,7 @@ export class GrenadeFx {
   }
 
   launch(id: string, trajectory: Trajectory): void {
-    const mesh = new THREE.Mesh(grenadeGeo, grenadeMat);
+    const mesh = new THREE.Mesh(grenadeGeo, grenadeMaterial());
     mesh.castShadow = true;
     mesh.position.copy(trajectory.points[0] ?? trajectory.end);
     this.scene.add(mesh);

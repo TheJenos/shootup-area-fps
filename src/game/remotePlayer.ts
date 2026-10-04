@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { NameTag } from './nameTag';
+import { wornMetalTexture } from './textures';
 import { cloneCharacter, GAITS, type CharacterAsset, type Gait } from './character';
 import type { PlayerState } from '../types';
 
@@ -29,7 +30,12 @@ const shieldGeo = new THREE.SphereGeometry(1, 24, 16);
 const shieldMat = new THREE.MeshBasicMaterial({
   color: 0x4aa8ff, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false,
 });
-const gunMat = new THREE.MeshStandardMaterial({ color: 0x2b2f36, roughness: 0.5, metalness: 0.5 });
+let gunMat: THREE.MeshStandardMaterial | null = null;
+/** Shared by every remote rifle; made on first use so the texture isn't drawn while in the lobby. */
+function rifleMaterial(): THREE.MeshStandardMaterial {
+  gunMat ??= new THREE.MeshStandardMaterial({ map: wornMetalTexture(), color: 0xb0b4ba, roughness: 0.5, metalness: 0.5 });
+  return gunMat;
+}
 
 // World forward / up expressed in the right-hand bone's local space, measured in the Idle pose.
 // Aligning the rifle with them makes it point ahead instead of along the fingers.
@@ -122,7 +128,7 @@ export class RemotePlayer {
 
     this.spine = bone(this.model, 'mixamorigSpine2');
 
-    const gun = new THREE.Mesh(gunGeo, gunMat);
+    const gun = new THREE.Mesh(gunGeo, rifleMaterial());
     gun.castShadow = true;
     gun.scale.setScalar(BONE_SCALE);
     gun.position.copy(GUN_OFFSET);

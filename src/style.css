@@ -595,3 +595,10 @@ kbd {
 }
 #damage-directions .arc { fill: none; stroke: #ff3030; stroke-linecap: round; filter: drop-shadow(0 0 6px rgba(255, 30, 30, 0.8)); }
 #damage-directions .tip { fill: #ff3030; }
+
+#match-summary td.ping { white-space: nowrap; }
+#match-summary td.ping.good { color: var(--good); }
+#match-summary td.ping.ok { color: var(--accent); }
+#match-summary td.ping.bad { color: var(--danger); }
+#match-summary tr.me td.ping.good { color: var(--good); }
+#match-summary tr.me td.ping.bad { color: var(--danger); }

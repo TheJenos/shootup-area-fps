@@ -41,6 +41,8 @@ const EMPTY_MY_MATCH: MyMatch = { pickups: 0, abilitiesUsed: 0, dropped: 0 };
 const REFEREE_GRACE_MS = 3_000;
 /** Other players' footsteps can't be heard further away than this (m) */
 const STEP_HEARING_RANGE = 35;
+/** How often we measure our ping (s) */
+const PING_INTERVAL = 2;
 /** How long a damage direction arc stays fully visible, then how long it takes to fade (s) */
 const INDICATOR_HOLD = 0.6;
 const INDICATOR_FADE = 1;
@@ -152,6 +154,11 @@ export class Game {
   /** Where recent hits came from, keyed by attacker */
   private readonly hitSources = new Map<string, { at: THREE.Vector3; time: number; damage: number }>();
   private lastIndicatorKey = '';
+
+  /** Our smoothed round trip to the server in ms */
+  private ping: number | null = null;
+  private pingTimer = 0;
+  private pingInFlight = false;
 
   constructor({ host, roomCode, playerId, name, seed }: GameOptions) {
     this.roomCode = roomCode;
@@ -1082,9 +1089,12 @@ export class Game {
       this.updateRemoteSteps(id, r, dt);
     }
     this.effects.update(dt);
+    this.world.sky.position.copy(this.camera.position);
     this.updateDamageIndicators();
     this.updateAbilities(dt);
     this.updateMode();
+
+    if (this.joined) this.updatePing(dt);
 
     if (this.joined) {
       this.sendTimer += dt;
@@ -1144,6 +1154,22 @@ export class Game {
     if (key === this.lastIndicatorKey) return;
     this.lastIndicatorKey = key;
     this.hud.update({ damageIndicators: indicators });
+  }
+
+  /** Measure our ping every couple of seconds and publish it for everyone's scoreboard. */
+  private updatePing(dt: number): void {
+    this.pingTimer -= dt;
+    if (this.pingTimer > 0 || this.pingInFlight) return;
+    this.pingTimer = PING_INTERVAL;
+    this.pingInFlight = true;
+    this.net.measurePing(this.ping)
+      .then((rtt) => {
+        if (rtt === null) return;
+        // Smooth out one-off spikes.
+        this.ping = Math.round(this.ping === null ? rtt : this.ping * 0.6 + rtt * 0.4);
+      })
+      .catch((err: unknown) => console.warn('Ping failed', err))
+      .finally(() => { this.pingInFlight = false; });
   }
 
   // ---------------------------------------------------------------- footsteps
@@ -1217,6 +1243,8 @@ export class Game {
           accuracy: s.shots ? (s.hits || 0) / s.shots : null,
           headshots: s.headshots || 0,
           bestStreak: s.best || 0,
+          // Ours is fresher locally than the copy we published.
+          ping: id === this.playerId ? this.ping : typeof p.ping === 'number' && p.ping > 0 ? Math.round(p.ping) : null,
           captures: s.captures || 0,
           team: (id === this.playerId ? this.team : p.team) ?? null,
           me: id === this.playerId,

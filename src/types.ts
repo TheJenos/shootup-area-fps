@@ -24,6 +24,8 @@ export interface PlayerState {
   best?: number;
   /** Flags captured (CTF) */
   captures?: number;
+  /** Round trip to the Firebase server in ms, measured by this player */
+  ping?: number;
 }
 
 export type PlayerStats = Required<Pick<PlayerState, 'damage' | 'shots' | 'hits' | 'headshots' | 'streak' | 'best' | 'captures'>>;

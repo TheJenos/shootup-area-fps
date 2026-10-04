@@ -7,6 +7,8 @@
  * outer walls, so no part of the floor can be sealed off.
  */
 
+import type { BoxSurface, FloorTexture } from './textures';
+
 export const ARENA_HALF = 40;
 /** Seed of the original hand-made map (also used for rooms made before seeds existed) */
 export const CLASSIC_SEED = 'CLASSIC';
@@ -22,12 +24,18 @@ export interface MapBox {
   /** Height of the bottom face */
   y: number;
   color: number;
+  /** Texture; picked from the piece type and theme, never from the seed's random numbers */
+  surface: BoxSurface;
 }
 
 export interface MapTheme {
   name: string;
   /** What footsteps on the floor sound like */
   surface: 'hard' | 'sand' | 'snow';
+  floorTexture: FloorTexture;
+  /** Textures for long walls and for pillars / towers */
+  wallSurface: BoxSurface;
+  pillarSurface: BoxSurface;
   sky: number;
   hemiSky: number;
   hemiGround: number;
@@ -49,27 +57,32 @@ export interface MapLayout {
 
 export const THEMES: MapTheme[] = [
   {
-    name: 'Training Yard', surface: 'hard', sky: 0x9cc6ea, hemiSky: 0xe4f1ff, hemiGround: 0x5a4d3a, sun: 0xfff4e0,
+    name: 'Training Yard', surface: 'hard',
+    floorTexture: 'tiles', wallSurface: 'concrete', pillarSurface: 'metal', sky: 0x9cc6ea, hemiSky: 0xe4f1ff, hemiGround: 0x5a4d3a, sun: 0xfff4e0,
     floor: '#5d6b58', floorLine: '#4d5a49', wall: 0x8a8f99,
     palette: [0x9a6b4f, 0xc28a4a, 0x6f7d8c, 0x4f7a6a, 0x4f6a7a, 0x7d8597],
   },
   {
-    name: 'Dust Bowl', surface: 'sand', sky: 0xe8cfa4, hemiSky: 0xfff0d6, hemiGround: 0x7a5a36, sun: 0xffe2b0,
+    name: 'Dust Bowl', surface: 'sand',
+    floorTexture: 'sand', wallSurface: 'brick', pillarSurface: 'concrete', sky: 0xe8cfa4, hemiSky: 0xfff0d6, hemiGround: 0x7a5a36, sun: 0xffe2b0,
     floor: '#b8955f', floorLine: '#a3824f', wall: 0xa88a64,
     palette: [0x8c5a3c, 0xc9a26b, 0x6e4f3a, 0xb0703f, 0x998066],
   },
   {
-    name: 'Frostbite', surface: 'snow', sky: 0xcfe6f5, hemiSky: 0xf2fbff, hemiGround: 0x6c7f91, sun: 0xeaf6ff,
+    name: 'Frostbite', surface: 'snow',
+    floorTexture: 'snow', wallSurface: 'concrete', pillarSurface: 'metal', sky: 0xcfe6f5, hemiSky: 0xf2fbff, hemiGround: 0x6c7f91, sun: 0xeaf6ff,
     floor: '#d9e4ec', floorLine: '#c3d1dc', wall: 0x9fb3c4,
     palette: [0x5d7f9e, 0x86a7c2, 0x3e5a73, 0xb3c9d9, 0x6f8fa3],
   },
   {
-    name: 'Dusk Yard', surface: 'hard', sky: 0x3d3b63, hemiSky: 0xffb38a, hemiGround: 0x2a2440, sun: 0xffa36b,
+    name: 'Dusk Yard', surface: 'hard',
+    floorTexture: 'asphalt', wallSurface: 'brick', pillarSurface: 'metal', sky: 0x3d3b63, hemiSky: 0xffb38a, hemiGround: 0x2a2440, sun: 0xffa36b,
     floor: '#4a4560', floorLine: '#3d3852', wall: 0x5d5778,
     palette: [0x8a4f6b, 0xd07a52, 0x5a6b9a, 0x9c6b9e, 0x4f8a8a],
   },
   {
-    name: 'Toxic Works', surface: 'hard', sky: 0xa9c79b, hemiSky: 0xe6ffd6, hemiGround: 0x3b4a2e, sun: 0xf3ffd0,
+    name: 'Toxic Works', surface: 'hard',
+    floorTexture: 'plate', wallSurface: 'metal', pillarSurface: 'concrete', sky: 0xa9c79b, hemiSky: 0xe6ffd6, hemiGround: 0x3b4a2e, sun: 0xf3ffd0,
     floor: '#4f5a46', floorLine: '#414b39', wall: 0x6b7563,
     palette: [0x8fbf3f, 0x5c6b4a, 0xc9c94a, 0x3f5f5a, 0x7a8a5a],
   },
@@ -191,25 +204,26 @@ export function generateMap(rawSeed: string): MapLayout {
     const s = round(range(5, 8));
     const h = round(range(1, 1.3));
     const c = color();
-    const group: MapBox[] = [{ x: 0, z: 0, w: s, h, d: s, y: 0, color: c }];
+    const group: MapBox[] = [{ x: 0, z: 0, w: s, h, d: s, y: 0, color: c, surface: 'concrete' }];
     // A half-height step on each side, and a crate on top to fight over.
     for (const [sx, sz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
       group.push({
         x: round(sx * (s / 2 + 0.6)), z: round(sz * (s / 2 + 0.6)), w: sx ? 1.2 : 2, h: round(h / 2), d: sz ? 1.2 : 2, y: 0, color: c,
+        surface: 'concrete',
       });
     }
     placeAsIs(group);
-    boxes.push({ x: round(s / 4), z: round(s / 4), w: 1.4, h: 1, d: 1.4, y: h, color: color() });
+    boxes.push({ x: round(s / 4), z: round(s / 4), w: 1.4, h: 1, d: 1.4, y: h, color: color(), surface: 'crate' });
   } else if (center === 'tower') {
     const s = round(range(2.5, 4));
-    placeAsIs([{ x: 0, z: 0, w: s, h: round(range(4, 6)), d: s, y: 0, color: color() }]);
+    placeAsIs([{ x: 0, z: 0, w: s, h: round(range(4, 6)), d: s, y: 0, color: color(), surface: theme.pillarSurface }]);
   } else if (center === 'bunker') {
     // An L of wall in each corner around an open middle.
     const r = round(range(3.5, 5));
     const c = color();
     place([
-      { x: r, z: r + 1.05, w: 3, h: 2.2, d: 0.9, y: 0, color: c },
-      { x: r + 1.05, z: r, w: 0.9, h: 2.2, d: 3, y: 0, color: c },
+      { x: r, z: r + 1.05, w: 3, h: 2.2, d: 0.9, y: 0, color: c, surface: theme.wallSurface },
+      { x: r + 1.05, z: r, w: 0.9, h: 2.2, d: 3, y: 0, color: c, surface: theme.wallSurface },
     ]);
   }
 
@@ -220,8 +234,8 @@ export function generateMap(rawSeed: string): MapLayout {
       const along = round(range(14, 26));
       const len = round(range(6, 13));
       const wall: MapBox = axis === 'z'
-        ? { x: 0, z: along, w: len, h: round(range(1.6, 2.6)), d: 0.9, y: 0, color: color() }
-        : { x: along, z: 0, w: 0.9, h: round(range(1.6, 2.6)), d: len, y: 0, color: color() };
+        ? { x: 0, z: along, w: len, h: round(range(1.6, 2.6)), d: 0.9, y: 0, color: color(), surface: theme.wallSurface }
+        : { x: along, z: 0, w: 0.9, h: round(range(1.6, 2.6)), d: len, y: 0, color: color(), surface: theme.wallSurface };
       if (fits([wall])) {
         place([wall]);
         break;
@@ -235,7 +249,7 @@ export function generateMap(rawSeed: string): MapLayout {
   for (let attempt = 0; attempt < 400 && count < target; attempt++) {
     const x = range(GAP / 2 + 1, INNER - GAP - 1);
     const z = range(GAP / 2 + 1, INNER - GAP - 1);
-    const group = makePiece(rand, range, color, x, z);
+    const group = makePiece(rand, range, color, x, z, theme);
     // Keep quarter pieces off the axes so mirror images never touch.
     if (rectOf(group).minX < GAP / 2 || rectOf(group).minZ < GAP / 2) continue;
     if (!fits(group)) continue;
@@ -249,75 +263,79 @@ export function generateMap(rawSeed: string): MapLayout {
 type Range = (min: number, max: number) => number;
 
 /** One obstacle (or a small cluster that acts as one). */
-function makePiece(rand: () => number, range: Range, color: () => number, x: number, z: number): MapBox[] {
+function makePiece(
+  rand: () => number, range: Range, color: () => number, x: number, z: number, theme: MapTheme,
+): MapBox[] {
   const kind = rand();
-  const at = (b: Omit<MapBox, 'x' | 'z'> & { dx?: number; dz?: number }): MapBox => {
+  const at = (b: Omit<MapBox, 'x' | 'z' | 'surface'> & { dx?: number; dz?: number }, surface: BoxSurface): MapBox => {
     const { dx = 0, dz = 0, ...rest } = b;
-    return { ...rest, x: round(x + dx), z: round(z + dz), w: round(rest.w), h: round(rest.h), d: round(rest.d), y: round(rest.y) };
+    return {
+      ...rest, x: round(x + dx), z: round(z + dz), w: round(rest.w), h: round(rest.h), d: round(rest.d), y: round(rest.y), surface,
+    };
   };
 
   if (kind < 0.3) {
     // Crate
     const s = range(1.2, 2.4);
-    return [at({ w: s, h: Math.min(3, s * range(1, 1.5)), d: s, y: 0, color: color() })];
+    return [at({ w: s, h: Math.min(3, s * range(1, 1.5)), d: s, y: 0, color: color() }, 'crate')];
   }
   if (kind < 0.6) {
     // Low wall
     const long = range(4, 9);
     const thick = range(0.8, 1);
     const flip = rand() < 0.5;
-    return [at({ w: flip ? long : thick, h: range(1.8, 3.2), d: flip ? thick : long, y: 0, color: color() })];
+    return [at({ w: flip ? long : thick, h: range(1.8, 3.2), d: flip ? thick : long, y: 0, color: color() }, theme.wallSurface)];
   }
   if (kind < 0.75) {
     // Pillar
     const s = range(2.4, 3.4);
-    return [at({ w: s, h: range(4, 6), d: s, y: 0, color: color() })];
+    return [at({ w: s, h: range(4, 6), d: s, y: 0, color: color() }, theme.pillarSurface)];
   }
   if (kind < 0.9) {
     // Climbable stack: a step up to a tall crate with a small crate on top
     const c = color();
     const dir = rand() < 0.5 ? 1 : -1;
     return [
-      at({ w: 2, h: 2, d: 2, y: 0, color: c }),
-      at({ dx: dir * 2.1, w: 2, h: 1, d: 2, y: 0, color: c }),
-      at({ w: 1.2, h: 1, d: 1.2, y: 2, color: color() }),
+      at({ w: 2, h: 2, d: 2, y: 0, color: c }, 'crate'),
+      at({ dx: dir * 2.1, w: 2, h: 1, d: 2, y: 0, color: c }, 'crate'),
+      at({ w: 1.2, h: 1, d: 1.2, y: 2, color: color() }, 'crate'),
     ];
   }
   // L-shaped corner
   const c = color();
   const a = range(3, 5);
   return [
-    at({ w: a, h: 2.4, d: 0.9, y: 0, color: c }),
-    at({ dx: -(a / 2 - 0.45), dz: a / 2 - 0.45, w: 0.9, h: 2.4, d: a, y: 0, color: c }),
+    at({ w: a, h: 2.4, d: 0.9, y: 0, color: c }, theme.wallSurface),
+    at({ dx: -(a / 2 - 0.45), dz: a / 2 - 0.45, w: 0.9, h: 2.4, d: a, y: 0, color: c }, theme.wallSurface),
   ];
 }
 
 /** The original hand-built arena. */
 function classicMap(): MapLayout {
   const boxes: MapBox[] = [];
-  const add = (x: number, z: number, w: number, h: number, d: number, color: number, y = 0) =>
-    boxes.push({ x, z, w, h, d, y, color });
+  const add = (x: number, z: number, w: number, h: number, d: number, color: number, surface: BoxSurface, y = 0) =>
+    boxes.push({ x, z, w, h, d, y, color, surface });
 
-  add(0, 0, 6, 1.2, 6, 0x7d8597);
-  add(1.8, 1.8, 1.4, 1, 1.4, 0xc28a4a, 1.2);
+  add(0, 0, 6, 1.2, 6, 0x7d8597, 'concrete');
+  add(1.8, 1.8, 1.4, 1, 1.4, 0xc28a4a, 'crate', 1.2);
   for (const [sx, sz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-    add(sx * 3.6, sz * 3.6, sx ? 1.2 : 2, 0.6, sz ? 1.2 : 2, 0x7d8597);
+    add(sx * 3.6, sz * 3.6, sx ? 1.2 : 2, 0.6, sz ? 1.2 : 2, 0x7d8597, 'concrete');
   }
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
-      add(sx * 14, sz * 8, 8, 3, 1, 0x9a6b4f);
-      add(sx * 8, sz * 14, 1, 3, 8, 0x9a6b4f);
-      add(sx * 20, sz * 20, 2, 2, 2, 0xc28a4a);
-      add(sx * 22.2, sz * 20, 2, 1, 2, 0xc28a4a);
-      add(sx * 20, sz * 20, 1.2, 1, 1.2, 0xb5793d, 2);
-      add(sx * 30, sz * 30, 3, 4, 3, 0x6f7d8c);
-      add(sx * 6, sz * 22, 1.5, 1.5, 1.5, 0xc28a4a);
-      add(sx * 22, sz * 6, 1.5, 1.5, 1.5, 0xc28a4a);
-      add(sx * 32, sz * 14, 4, 2.2, 1, 0x4f7a6a);
-      add(sx * 14, sz * 32, 1, 2.2, 4, 0x4f7a6a);
+      add(sx * 14, sz * 8, 8, 3, 1, 0x9a6b4f, 'brick');
+      add(sx * 8, sz * 14, 1, 3, 8, 0x9a6b4f, 'brick');
+      add(sx * 20, sz * 20, 2, 2, 2, 0xc28a4a, 'crate');
+      add(sx * 22.2, sz * 20, 2, 1, 2, 0xc28a4a, 'crate');
+      add(sx * 20, sz * 20, 1.2, 1, 1.2, 0xb5793d, 'crate', 2);
+      add(sx * 30, sz * 30, 3, 4, 3, 0x6f7d8c, 'metal');
+      add(sx * 6, sz * 22, 1.5, 1.5, 1.5, 0xc28a4a, 'crate');
+      add(sx * 22, sz * 6, 1.5, 1.5, 1.5, 0xc28a4a, 'crate');
+      add(sx * 32, sz * 14, 4, 2.2, 1, 0x4f7a6a, 'concrete');
+      add(sx * 14, sz * 32, 1, 2.2, 4, 0x4f7a6a, 'concrete');
     }
-    add(0, sx * 24, 12, 2, 1, 0x4f6a7a);
-    add(sx * 24, 0, 1, 2, 12, 0x4f6a7a);
+    add(0, sx * 24, 12, 2, 1, 0x4f6a7a, 'concrete');
+    add(sx * 24, 0, 1, 2, 12, 0x4f6a7a, 'concrete');
   }
   return { seed: CLASSIC_SEED, theme: THEMES[0] as MapTheme, boxes, spawnPoints: SPAWN_POINTS };
 }

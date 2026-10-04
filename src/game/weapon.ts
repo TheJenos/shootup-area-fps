@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { playEmpty, playReload } from './audio';
+import { woodTexture, wornMetalTexture } from './textures';
 
 const FIRE_INTERVAL = 0.1;
 const MAG_SIZE = 30;
@@ -7,8 +8,10 @@ const RELOAD_TIME = 1.4;
 
 function buildGun(): THREE.Group {
   const gun = new THREE.Group();
-  const dark = new THREE.MeshStandardMaterial({ color: 0x4a515c, roughness: 0.5, metalness: 0.4 });
-  const accent = new THREE.MeshStandardMaterial({ color: 0x8a6a45, roughness: 0.8 });
+  const metal = wornMetalTexture();
+  const wood = woodTexture();
+  const dark = new THREE.MeshStandardMaterial({ map: metal, roughness: 0.5, metalness: 0.4 });
+  const accent = new THREE.MeshStandardMaterial({ map: wood, roughness: 0.8 });
   const part = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, rx = 0) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);

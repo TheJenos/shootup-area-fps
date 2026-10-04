@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ABILITIES } from './abilities';
 import { ARENA_HALF } from './world';
+import { boxTexture } from './textures';
 import type { AbilityType, PickupRecord } from '../types';
 
 export const MAX_PICKUPS = 6;
@@ -10,6 +11,7 @@ const CLEARANCE = 1;
 const SPACING = 4;
 
 const ringGeo = new THREE.RingGeometry(0.45, 0.6, 32).rotateX(-Math.PI / 2);
+const pedestalGeo = new THREE.CylinderGeometry(0.62, 0.72, 0.12, 24).translate(0, 0.06, 0);
 const beamGeo = new THREE.CylinderGeometry(0.04, 0.04, 5, 6, 1, true).translate(0, 2.5, 0);
 
 function iconMesh(type: AbilityType, mat: THREE.Material): THREE.Object3D {
@@ -51,9 +53,20 @@ export class PickupField {
   private readonly colliders: THREE.Box3[];
   private readonly pickups = new Map<string, PickupView>();
 
+  private pedestal: THREE.MeshStandardMaterial | null = null;
+
   constructor(scene: THREE.Scene, colliders: THREE.Box3[]) {
     this.scene = scene;
     this.colliders = colliders;
+  }
+
+  /** Metal plate under every pickup; one material shared by all of them. */
+  private pedestalMaterial(): THREE.MeshStandardMaterial {
+    const map = boxTexture('metal');
+    this.pedestal ??= new THREE.MeshStandardMaterial({
+      color: 0x9aa3ad, map, bumpMap: map, bumpScale: 0.8, roughness: 0.5, metalness: 0.4,
+    });
+    return this.pedestal;
   }
 
   get count(): number {
@@ -72,9 +85,11 @@ export class PickupField {
     const icon = iconMesh(record.type, iconMat);
     icon.position.y = 0.9;
     const ring = new THREE.Mesh(ringGeo, glowMat);
-    ring.position.y = 0.02;
+    ring.position.y = 0.13;
     const beam = new THREE.Mesh(beamGeo, glowMat);
-    group.add(icon, ring, beam);
+    const pedestal = new THREE.Mesh(pedestalGeo, this.pedestalMaterial());
+    pedestal.receiveShadow = true;
+    group.add(pedestal, icon, ring, beam);
     this.scene.add(group);
     this.pickups.set(id, { record, group, icon, materials: [iconMat, glowMat], phase: Math.random() * Math.PI * 2 });
   }
@@ -124,5 +139,6 @@ export class PickupField {
 
   dispose(): void {
     for (const id of [...this.pickups.keys()]) this.remove(id);
+    this.pedestal?.dispose();
   }
 }

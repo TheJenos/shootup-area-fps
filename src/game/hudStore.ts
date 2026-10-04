@@ -23,6 +23,8 @@ export interface ScoreRow {
   headshots: number;
   bestStreak: number;
   captures: number;
+  /** Round trip to the server in ms; null until measured */
+  ping: number | null;
   team: Team | null;
   me: boolean;
 }

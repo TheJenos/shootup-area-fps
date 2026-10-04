@@ -62,6 +62,28 @@ summary show the room's map and seed.
   so no part of the floor can be sealed off.
 - Generation is pure, seeded code (`src/game/mapgen.ts`), so every client builds the identical arena.
 
+### Textures
+
+Every texture is drawn in code when the game starts (`src/game/textures.ts`), so there are no image files.
+They take a few hundred ms the first time and are cached after that. They use tileable noise so they repeat
+without seams, and they tile at real-world scale instead of stretching across long walls.
+
+| Theme | Floor | Walls | Pillars |
+| --- | --- | --- | --- |
+| Training Yard | tiles | concrete | corrugated metal |
+| Dust Bowl | sand ripples | brick | concrete |
+| Frostbite | snow | concrete | corrugated metal |
+| Dusk Yard | cracked asphalt | brick | corrugated metal |
+| Toxic Works | diamond plate | corrugated metal | concrete |
+
+- Crates are wooden, with planks and a brace.
+- The outer wall is concrete panels with grime at the bottom.
+- The sky is a dome with a gradient and clouds.
+- Spawn points have painted floor markers, and CTF bases have hazard stripes.
+- The gun is worn metal and wood, grenades have a segmented shell, and pickups sit on metal pedestals.
+- A map's surfaces come from its theme and piece types, never from the seed's random numbers, so adding
+  textures didn't change any existing seed's layout.
+
 ## Damage direction
 
 When you're hit, a red arc around the crosshair points toward where it came from: the shooter's position for
@@ -126,8 +148,13 @@ All numbers live in `src/game/abilities.ts`.
 ## Match summary
 
 Hold **Tab** for the room name, match clock and every player's kills, deaths, K/D, damage dealt, accuracy,
-headshots and best kill streak, plus a "Your match" panel. Each player reports their own stats with their
+headshots, best kill streak and ping, plus a "Your match" panel. Each player reports their own stats with their
 position updates; damage dealt doesn't count overkill.
+
+**Ping** is each player's round trip to the Firebase server, which every update between players passes
+through. Each client times a small write until the server confirms it every 2 s, smooths it, and publishes it
+in its player record. Green is under 80 ms, amber under 150 ms, red above. The delay between two players is
+roughly their two pings added together.
 
 ## How it works
 
@@ -179,6 +206,7 @@ src/
     game.ts          game loop, shooting, damage, respawn, rendering
     hudStore.ts      engine -> React state bridge
     mapgen.ts        seeded map generator (layout + theme), and the classic map
+    textures.ts      procedural textures (surfaces, floors, sky, props) + world-scale box UVs
     world.ts         turns a map layout into meshes, lighting, colliders, spawn points
     player.ts        first-person controller + collisions
     remotePlayer.ts  other players' avatars + interpolation
