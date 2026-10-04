@@ -119,7 +119,12 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 
 #canvas-host, #canvas-host canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
-#hud { position: absolute; inset: 0; pointer-events: none; user-select: none; }
+#hud { position: absolute; inset: 0; pointer-events: none; user-select: none; --hud-scale: 1; }
+/* HUD size setting: each panel grows from the corner it's pinned to */
+#health { transform-origin: bottom left; transform: scale(var(--hud-scale)); }
+#ammo { transform-origin: bottom right; transform: scale(var(--hud-scale)); }
+#killfeed { transform-origin: top right; transform: scale(var(--hud-scale)); }
+#room-tag { transform-origin: top left; transform: scale(var(--hud-scale)); }
 
 /* Colour and size come from the settings (see Crosshair.tsx); everything scales with --ch-size. */
 #crosshair {
@@ -212,6 +217,7 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
   pointer-events: none;
   animation: announce 2.2s ease-out forwards;
 }
+#announce { max-width: 90vw; text-align: center; }
 #announce strong {
   font-size: 44px;
   font-weight: 900;
@@ -268,6 +274,58 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 }
 #killfeed li.me { border: 1px solid var(--accent); }
 #killfeed .weapon { color: var(--muted); margin: 0 6px; }
+#killfeed .tag { display: inline-block; font-size: 12px; font-weight: 800; line-height: 1; padding: 2px 4px; margin-right: 4px; border-radius: 3px; color: #fff; }
+#killfeed .tag.red { background: #c23b3b; }
+#killfeed .tag.blue { background: #2f6fd1; }
+#killfeed .you { color: var(--accent); font-size: 12px; }
+
+/* Status banners under the score bar (reconnecting, waiting for players) */
+.hud-banner {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+.hud-banner button { padding: 3px 10px; font-size: 12px; }
+.hud-banner.danger { border-color: rgba(255, 90, 90, 0.5); background: rgba(120, 0, 0, 0.45); animation: pulse 1s ease-in-out infinite alternate; }
+
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: -2px;
+  margin-right: 6px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+#respawn-flash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(255, 255, 255, 0.35) 100%);
+  animation: damage 0.6s ease-out forwards;
+}
+.slot.shake { animation: slot-shake 0.3s; border-color: var(--danger); }
+@keyframes slot-shake { 0%, 100% { transform: none; } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+#death-overlay .weapon { font-size: 20px; margin: 0 8px; }
+#death-overlay .head { color: var(--danger); font-weight: 700; }
+#connecting-overlay button { margin-top: 8px; }
 #killfeed .head { color: var(--danger); }
 @keyframes feed { 0%, 85% { opacity: 1; } 100% { opacity: 0; } }
 
@@ -288,13 +346,15 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 #ammo { right: 24px; font-size: 34px; text-align: right; }
 #ammo.low #ammo-value { color: var(--danger); }
 #reload-hint { font-size: 12px; color: var(--accent); letter-spacing: 2px; visibility: hidden; }
-#ammo.reloading #reload-hint { visibility: visible; }
+#reload-hint.show { visibility: visible; }
+#ammo.low:not(.reloading) #reload-hint, #ammo.dry #reload-hint { color: var(--danger); }
 
 #abilities {
   position: absolute;
   bottom: 24px;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translateX(-50%) scale(var(--hud-scale));
+  transform-origin: bottom center;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -316,10 +376,10 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 }
 .slot.ready { border-color: rgba(255, 181, 71, 0.6); }
 .slot.empty { border-style: dashed; }
-.slot kbd { position: absolute; top: 4px; left: 4px; font-size: 10px; padding: 0 4px; }
+.slot kbd { position: absolute; top: 4px; left: 4px; font-size: 12px; padding: 0 4px; }
 .slot.empty kbd { position: static; opacity: 0.6; }
 .slot .icon { font-size: 26px; line-height: 1; }
-.slot .name { font-size: 10px; color: var(--muted); margin-top: 3px; white-space: nowrap; }
+.slot .name { font-size: 12px; color: var(--muted); margin-top: 3px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .slot .uses { display: flex; gap: 3px; margin-top: 4px; }
 .slot .uses i { width: 6px; height: 6px; border-radius: 50%; background: rgba(255, 255, 255, 0.18); }
 .slot .uses i.left { background: var(--accent); }
@@ -349,12 +409,25 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 }
 .buff.speed { color: #ffd23f; }
 .buff.shield { color: #7cc2ff; }
-#ability-toast {
+/* Toasts: above the ability bar, on top of every overlay (so "Click again to resume" shows over the menu) */
+#toasts {
+  position: absolute;
+  left: 50%;
+  bottom: 140px;
+  transform: translateX(-50%);
+  z-index: 20;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+#toasts .toast {
   font-size: 14px;
   font-weight: 600;
   padding: 5px 12px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.55);
+  white-space: nowrap;
   animation: toast 1.8s forwards;
 }
 @keyframes toast { 0% { opacity: 0; transform: translateY(6px); } 10%, 80% { opacity: 1; transform: none; } 100% { opacity: 0; } }
@@ -378,7 +451,7 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 #match-summary .clock { display: flex; flex-direction: column; align-items: flex-end; }
 #match-summary .clock strong { font-size: 22px; font-variant-numeric: tabular-nums; }
 #match-summary table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-#match-summary th { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; padding: 0 6px 6px; text-align: right; white-space: nowrap; }
+#match-summary th { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; padding: 0 6px 6px; text-align: right; white-space: nowrap; }
 #match-summary td { padding: 7px 6px; border-top: 1px solid var(--line); text-align: right; }
 #match-summary th:nth-child(2), #match-summary td.player { text-align: left; }
 #match-summary .rank { text-align: left; color: var(--muted); width: 24px; }
@@ -390,7 +463,7 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 #match-summary .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 #match-summary .stat { background: rgba(255, 255, 255, 0.04); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; }
 #match-summary .stat strong { font-size: 20px; }
-#match-summary .stat span { font-size: 11px; color: var(--muted); }
+#match-summary .stat span { font-size: 12px; color: var(--muted); }
 
 #inventory { background: rgba(8, 10, 14, 0.55); pointer-events: auto; }
 #inventory .panel-box {
@@ -468,16 +541,47 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
   pointer-events: auto;
   cursor: pointer;
 }
-#pause-overlay button { margin-top: 6px; }
-
-.controls {
+/* The menu card: status on the left, actions on the right. The backdrop (not the card) resumes. */
+.pause-card {
+  cursor: default;
+  text-align: left;
+  pointer-events: auto;
+  width: min(780px, 100%);
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
   display: grid;
-  grid-template-columns: repeat(4, auto);
-  gap: 8px 18px;
-  color: var(--muted);
-  font-size: 14px;
-  margin: 10px 0;
+  grid-template-columns: 1fr 240px;
+  gap: 22px;
+  background: rgba(16, 20, 27, 0.96);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px 22px;
 }
+.pause-card .status { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.pause-card .status header { display: flex; gap: 10px; align-items: flex-start; }
+.pause-card .status header .mode-badge { margin-top: 4px; }
+.pause-card h3 { margin: 0; font-size: 20px; }
+.pause-card .goal { margin: 2px 0 0; font-size: 13px; line-height: 1.4; }
+.pause-card .row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 15px; }
+.pause-card .row .clock { font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.pause-card .score .flag { margin-left: 4px; font-size: 12px; }
+.pause-card .state { margin: 0; font-weight: 600; padding: 8px 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.05); border-left: 3px solid var(--accent); }
+.pause-card .map { display: flex; gap: 12px; align-items: center; }
+.pause-card .map > div { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.pause-card .map .map-preview { width: 112px !important; height: 112px !important; border-radius: 8px; }
+.pause-card .room { margin: 0; display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.pause-card .room button { padding: 5px 10px; font-size: 13px; }
+.pause-card .actions { display: flex; flex-direction: column; gap: 8px; }
+.pause-card .actions button { width: 100%; margin: 0; }
+.pause-card .confirm { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+.pause-card .confirm span { flex: 1; }
+.pause-card .confirm button { width: auto; padding: 6px 10px; font-size: 13px; }
+.pause-card .keys { list-style: none; margin: 8px 0 0; padding: 10px 0 0; border-top: 1px solid var(--line); display: grid; gap: 5px; font-size: 12px; color: var(--muted); }
+.pause-card .keys li { display: flex; gap: 8px; align-items: baseline; }
+.pause-card .keys kbd { min-width: 54px; text-align: center; white-space: nowrap; }
+.pause-card .touch-help { margin: 8px 0 0; font-size: 13px; line-height: 1.5; }
+#hud.paused #round-over, #hud.paused #mvp .card, #hud.paused #mvp .next-map { opacity: 0.4; }
+@media (max-width: 640px) { .pause-card { grid-template-columns: 1fr; } }
 kbd {
   background: #222a38;
   border: 1px solid var(--line);
@@ -494,7 +598,6 @@ kbd {
   #inventory .item { min-height: 0; }
   .slot { width: 58px; height: 58px; }
   .slot .name { display: none; }
-  .controls { grid-template-columns: repeat(2, auto); }
   #health .bar { width: 90px; }
 }
 
@@ -517,7 +620,7 @@ kbd {
 
 .mode-badge {
   display: inline-block;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.8px;
   padding: 2px 6px;
@@ -531,6 +634,14 @@ kbd {
 .mode-badge.ctf { background: rgba(255, 77, 77, 0.18); color: #ff9a9a; }
 .mode-badge.gungame { background: rgba(255, 181, 71, 0.18); color: #ffd48a; }
 .subtitle.invite strong { color: var(--accent); }
+.field .hint { display: block; margin-top: 4px; font-size: 12px; }
+.invite-card { position: relative; overflow: hidden; border: 1px solid var(--accent); background: rgba(255, 181, 71, 0.08); border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; text-align: left; }
+.invite-card p { margin: 0 0 10px; }
+.invite-card .row { margin: 0; }
+.invite-card .progress { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); animation: invite-progress 2s linear forwards; }
+@keyframes invite-progress { from { width: 0; } to { width: 100%; } }
+#room-list li.empty button { margin-left: 10px; padding: 4px 10px; font-size: 13px; }
+#code-input { letter-spacing: 2px; }
 
 /* Spectator banner */
 #spectate {
@@ -547,7 +658,7 @@ kbd {
   background: rgba(10, 12, 18, 0.6);
   pointer-events: none;
 }
-#spectate .label { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); }
+#spectate .label { font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); }
 #spectate strong { font-size: 20px; }
 #spectate .muted { font-size: 12px; }
 #match-summary tr.spectating td { color: var(--muted); font-style: italic; }
@@ -582,13 +693,13 @@ kbd {
   white-space: nowrap;
 }
 #scorebar strong { font-size: 18px; }
-#scorebar .mode { font-size: 11px; font-weight: 800; letter-spacing: 1px; color: var(--accent); }
+#scorebar .mode { font-size: 12px; font-weight: 800; letter-spacing: 1px; color: var(--accent); }
 #scorebar .center {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 12px;
   padding: 0 6px;
 }
 #scorebar .team {
@@ -604,9 +715,9 @@ kbd {
 #scorebar .team.red { --team: #ff4d4d; }
 #scorebar .team.blue { --team: #3d8bff; }
 #scorebar .team.mine { box-shadow: inset 0 0 0 1px var(--team); }
-#scorebar .team .name { font-size: 11px; font-weight: 700; color: var(--team); text-transform: uppercase; letter-spacing: 1px; }
+#scorebar .team .name { font-size: 12px; font-weight: 700; color: var(--team); text-transform: uppercase; letter-spacing: 1px; }
 #scorebar .team strong { font-size: 24px; line-height: 1.1; }
-#scorebar .flag { font-size: 11px; color: var(--muted); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#scorebar .flag { font-size: 12px; color: var(--muted); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #scorebar .flag.dropped { color: var(--accent); }
 #scorebar .flag.carried { color: var(--danger); font-weight: 700; }
 
@@ -873,20 +984,54 @@ kbd {
 #touch-controls .fire { width: 92px; height: 92px; right: calc(env(safe-area-inset-right) + 34px); bottom: 104px; font-size: 34px; border-color: rgba(255, 90, 90, 0.7); background: rgba(255, 90, 90, 0.22); }
 #touch-controls .aim { width: 60px; height: 60px; right: calc(env(safe-area-inset-right) + 142px); bottom: 150px; }
 #touch-controls .jump { width: 64px; height: 64px; right: calc(env(safe-area-inset-right) + 132px); bottom: 34px; }
-#touch-controls .crouch { width: 58px; height: 58px; right: calc(env(safe-area-inset-right) + 214px); bottom: 26px; }
-#touch-controls .reload { width: 52px; height: 52px; right: calc(env(safe-area-inset-right) + 54px); bottom: 214px; }
+/* Right cluster: nothing left of W-202px, so the centre column (abilities, health, toasts) fits a 667px phone */
+#touch-controls .crouch { width: 58px; height: 58px; right: calc(env(safe-area-inset-right) + 50px); bottom: 24px; }
+#touch-controls .reload { width: 52px; height: 52px; right: calc(env(safe-area-inset-right) + 54px); bottom: 204px; }
 #touch-controls .top-buttons { position: absolute; top: 12px; left: calc(env(safe-area-inset-left) + 12px); display: flex; gap: 8px; pointer-events: auto; }
 #touch-controls .tbtn.small { position: static; width: 40px; height: 40px; font-size: 14px; border-radius: 10px; }
 
 /* HUD rearranged around the thumbs */
 #hud.touch #room-tag { left: calc(env(safe-area-inset-left) + 112px); top: 18px; }
-#hud.touch #health { left: 50%; transform: translateX(-50%) scale(0.75); transform-origin: bottom center; bottom: 92px; padding: 6px 12px; }
-#hud.touch #ammo { right: calc(env(safe-area-inset-right) + 12px); top: 64px; bottom: auto; font-size: 24px; padding: 6px 12px; }
+#hud.touch #health { left: 50%; transform: translateX(-50%) scale(calc(0.75 * var(--hud-scale))); transform-origin: bottom center; bottom: 98px; padding: 6px 12px; }
+#hud.touch #ammo { right: calc(env(safe-area-inset-right) + 12px); top: 52px; bottom: auto; font-size: 22px; padding: 4px 10px; transform-origin: top right; }
 #hud.touch #killfeed { top: 120px; }
-#hud.touch #abilities { bottom: 8px; }
+/* Centre column, bottom-anchored rungs: slots, buffs, health, toasts. Above the look / stick zones so slots take taps. */
+#hud.touch #abilities { bottom: 8px; gap: 6px; z-index: 1; }
+#abilities .buffs:empty { display: none; }
+#hud.touch #abilities .buffs { min-height: 0; }
+#hud.touch .slot.empty kbd { display: none; }
+#hud.touch #match-summary { pointer-events: auto; top: 60px; transform: translateX(-50%); max-height: calc(100% - 68px); overflow-y: auto; }
+#match-summary .close { margin-left: auto; align-self: flex-start; }
+#hud.touch .pause-card { grid-template-columns: 1fr; }
+#hud.touch .pause-card .actions button { min-height: 44px; font-size: 15px; }
+#hud.intro #touch-controls, #hud.intro #touch-controls * { pointer-events: none; }
+#hud.touch #toasts { bottom: 140px; max-width: 240px; font-size: 13px; text-align: center; }
+/* Phones: the room code lives in the menu (the top buttons sit where the tag was), and banners shrink to fit */
+#hud.touch #room-tag { display: none; }
+#hud.touch #announce { top: 100px; max-width: 70vw; text-align: center; }
+#hud.touch #announce strong { font-size: 24px; letter-spacing: 2px; white-space: normal; line-height: 1.1; }
+#hud.touch #announce span { font-size: 12px; letter-spacing: 1px; }
+#hud.touch #toasts .toast { white-space: normal; }
 #hud.touch .slot { width: 54px; height: 54px; pointer-events: auto; }
 #hud.touch .slot .name { display: none; }
-#hud.touch .touch-help { max-width: 560px; font-size: 14px; line-height: 1.6; }
+#hud.touch .touch-help { font-size: 13px; line-height: 1.5; }
+
+/* First-time touch guide: labels pinned beside the real buttons */
+#touch-intro { background: rgba(8, 10, 14, 0.55); pointer-events: auto; z-index: 20; justify-content: flex-start; padding-top: 56px; }
+#touch-intro h2 { font-size: 20px; margin: 0; text-shadow: 0 1px 3px #000; }
+#touch-intro .callout { position: absolute; font-size: 12px; font-weight: 700; padding: 4px 8px; border-radius: 6px; background: var(--accent); color: #1a1205; white-space: nowrap; transform: translate(50%, 50%); box-shadow: 0 2px 8px #000a; line-height: 1.2; }
+#touch-intro .callout small { display: block; font-weight: 500; font-size: 11px; }
+#touch-intro .fire { right: calc(env(safe-area-inset-right) + 80px); bottom: 150px; }
+#touch-intro .aim { right: calc(env(safe-area-inset-right) + 172px); bottom: 180px; }
+#touch-intro .jump { right: calc(env(safe-area-inset-right) + 164px); bottom: 66px; }
+#touch-intro .crouch { right: calc(env(safe-area-inset-right) + 79px); bottom: 53px; }
+#touch-intro .reload { right: calc(env(safe-area-inset-right) + 80px); bottom: 230px; }
+#touch-intro .swap { right: calc(env(safe-area-inset-right) + 174px); bottom: 246px; }
+#touch-intro .stick { left: calc(env(safe-area-inset-left) + 110px); bottom: 106px; transform: translate(-50%, 50%); }
+#touch-intro .look { left: 62%; top: 40%; transform: translate(-50%, -50%); background: rgba(255, 255, 255, 0.15); color: #fff; border: 1px dashed rgba(255, 255, 255, 0.5); }
+#touch-intro .slots { left: 50%; bottom: 35px; transform: translate(-50%, 50%); }
+#touch-intro .top { left: calc(env(safe-area-inset-left) + 80px); top: 32px; transform: translate(-50%, -50%); }
+#touch-intro > button { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-height: 44px; padding: 10px 22px; }
 
 /* Portrait phone: ask to rotate (iOS can't lock orientation for web pages) */
 #rotate-hint { display: none; background: var(--bg); pointer-events: auto; z-index: 50; }
@@ -901,8 +1046,8 @@ kbd {
   .overlay { gap: 6px; padding: 10px 16px; justify-content: safe center; overflow-y: auto; }
   .overlay h2 { font-size: 24px; }
   .overlay button { padding: 6px 12px; }
-  #pause-overlay button { margin-top: 2px; }
-  .controls { margin: 4px 0; gap: 4px 14px; font-size: 13px; }
+  .pause-card { padding: 12px 14px; gap: 12px; }
+  .pause-card .keys { display: none; }
   #round-over h2 { font-size: 30px; }
   #round-over .podium li { padding: 5px 10px; }
   #mvp h2 { font-size: 24px; }
@@ -912,7 +1057,7 @@ kbd {
 /* ---------- Guns ---------- */
 
 #ammo .gun-slots { display: flex; gap: 4px; justify-content: flex-end; margin-bottom: 2px; }
-#ammo .gun-slot { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; color: var(--muted); background: rgba(255, 255, 255, 0.06); }
+#ammo .gun-slot { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; color: var(--muted); background: rgba(255, 255, 255, 0.06); }
 #ammo .gun-slot.on { color: #1a1205; background: var(--accent); }
 #ammo .gun-slot.empty { opacity: 0.4; }
 
@@ -932,4 +1077,30 @@ kbd {
 #scope .dot { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: #ff3b3b; box-shadow: 0 0 4px #ff3b3b; }
 #hud:has(#scope) #crosshair { display: none; }
 
-#touch-controls .swap { width: 52px; height: 52px; right: calc(env(safe-area-inset-right) + 130px); bottom: 228px; }
+#touch-controls .swap { width: 52px; height: 52px; right: calc(env(safe-area-inset-right) + 148px); bottom: 220px; }
+#touch-controls .tbtn.small.on { border-color: var(--accent); color: var(--accent); }
+
+/* ---------- Reduced motion ----------
+   Set on <html> from the setting (or the OS when it's "System"). Elements that stay mounted and
+   rely on ending at opacity 0 (#hitmarker, #damage-overlay) get fade-only keyframes, never none. */
+html.reduce-motion #hitmarker.show { animation: hitmarker-fade 0.28s ease-out; }
+html.reduce-motion #hitmarker.head.show { animation: hitmarker-fade 0.5s ease-out; }
+html.reduce-motion #hitmarker.head::after { display: none; }
+@keyframes hitmarker-fade { 0%, 60% { opacity: 1; } 100% { opacity: 0; } }
+html.reduce-motion #damage-overlay { animation: damage-soft 0.3s ease-out forwards; }
+@keyframes damage-soft { from { opacity: 0.45; } to { opacity: 0; } }
+html.reduce-motion #respawn-flash { animation: damage-soft 0.4s ease-out forwards; }
+html.reduce-motion #low-health { animation: none; opacity: 0.9; }
+html.reduce-motion #announce { animation: announce-fade 2.2s ease-out forwards; }
+@keyframes announce-fade { 0% { opacity: 0; } 12%, 75% { opacity: 1; } 100% { opacity: 0; } }
+html.reduce-motion #toasts .toast { animation: toast-fade 1.8s forwards; }
+@keyframes toast-fade { 0% { opacity: 0; } 10%, 80% { opacity: 1; } 100% { opacity: 0; } }
+html.reduce-motion .flag-banner,
+html.reduce-motion #scorebar .clock.urgent,
+html.reduce-motion .hud-banner.danger,
+html.reduce-motion #connecting-overlay .loading-logo,
+html.reduce-motion #mvp .bar,
+html.reduce-motion #mvp .card,
+html.reduce-motion .slot.shake { animation: none; }
+html.reduce-motion #rotate-hint .phone { animation: none; transform: rotate(-90deg); }
+html.reduce-motion .spinner { animation: none; border-right-color: currentColor; opacity: 0.6; }

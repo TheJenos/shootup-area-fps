@@ -1,8 +1,10 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import {
-  ACTIONS, CROSSHAIR_COLORS, CROSSHAIR_SIZE_MAX, CROSSHAIR_SIZE_MIN, FOV_MAX, FOV_MIN, QUALITIES, RESERVED_KEYS,
-  SENSITIVITY_MAX, SENSITIVITY_MIN, keyLabel, settings, type Action, type Settings,
+  ACTIONS, CROSSHAIR_COLORS, CROSSHAIR_SIZE_MAX, CROSSHAIR_SIZE_MIN, FOV_MAX, FOV_MIN, HUD_SCALE_MAX, HUD_SCALE_MIN,
+  MOTION_OPTIONS, QUALITIES, RESERVED_KEYS, SENSITIVITY_MAX, SENSITIVITY_MIN, keyLabel, settings, type Action, type Settings,
 } from '../game/settings';
+import { TOUCH } from '../game/device';
+import { hints } from '../game/hints';
 import { Crosshair } from './Crosshair';
 
 export function useSettings(): Settings {
@@ -13,10 +15,24 @@ interface Props {
   onClose(): void;
 }
 
-/** Mouse sensitivity and key bindings. Opened from the lobby or the pause menu. */
+/** Mouse, video, crosshair, audio, accessibility and key bindings. Opened from the lobby or the pause menu. */
 export function SettingsPanel({ onClose }: Props) {
   const current = useSettings();
   const [listening, setListening] = useState<Action | null>(null);
+  const [tipsReset, setTipsReset] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+
+  // Esc closes the panel (unless we're waiting for a key to bind, which handles Esc itself).
+  useEffect(() => {
+    if (listening) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'Escape') return;
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener('keydown', onKey, { capture: true });
+    return () => window.removeEventListener('keydown', onKey, { capture: true });
+  }, [listening, onClose]);
 
   // While waiting for a key, swallow it before the game (or the browser) sees it.
   useEffect(() => {
@@ -33,16 +49,16 @@ export function SettingsPanel({ onClose }: Props) {
 
   return (
     <div id="settings" className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="panel-box">
+      <div className="panel-box" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <header>
-          <h3>Settings</h3>
-          <button onClick={onClose}>Done</button>
+          <h3 id="settings-title">Settings</h3>
+          <button onClick={onClose} autoFocus>Done</button>
         </header>
 
         <section>
-          <h4>Mouse</h4>
+          <h4>{TOUCH ? 'Look' : 'Mouse'}</h4>
           <label className="setting">
-            <span>Sensitivity</span>
+            <span>{TOUCH ? 'Look sensitivity' : 'Sensitivity'}</span>
             <input
               type="range"
               min={SENSITIVITY_MIN}
@@ -76,14 +92,16 @@ export function SettingsPanel({ onClose }: Props) {
             />
             <span className="number-readout">{current.aimSensitivity.toFixed(2)}×</span>
           </label>
-          <label className="setting check">
-            <input
-              type="checkbox"
-              checked={current.aimToggle}
-              onChange={(e) => settings.update({ aimToggle: e.target.checked })}
-            />
-            <span>Toggle aim (click right mouse button once instead of holding it)</span>
-          </label>
+          {!TOUCH && (
+            <label className="setting check">
+              <input
+                type="checkbox"
+                checked={current.aimToggle}
+                onChange={(e) => settings.update({ aimToggle: e.target.checked })}
+              />
+              <span>Toggle aim (click right mouse button once instead of holding it)</span>
+            </label>
+          )}
           <label className="setting check">
             <input
               type="checkbox"
@@ -98,7 +116,11 @@ export function SettingsPanel({ onClose }: Props) {
               checked={current.fullscreen}
               onChange={(e) => settings.update({ fullscreen: e.target.checked })}
             />
-            <span>Fullscreen while playing (in Chrome / Edge this stops Ctrl+W from closing the tab)</span>
+            <span>
+              {TOUCH
+                ? 'Fullscreen while playing (also holds the screen in landscape on Android)'
+                : 'Fullscreen while playing (in Chrome / Edge this stops Ctrl+W from closing the tab)'}
+            </span>
           </label>
         </section>
 
@@ -215,6 +237,50 @@ export function SettingsPanel({ onClose }: Props) {
         </section>
 
         <section>
+          <h4>Accessibility</h4>
+          <div className="setting">
+            <span>Reduce motion</span>
+            <div className="choices" role="radiogroup" aria-label="Reduce motion">
+              {MOTION_OPTIONS.map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={current.reduceMotion === o.value}
+                  className={current.reduceMotion === o.value ? 'choice selected' : 'choice'}
+                  title={o.hint}
+                  // Turning it on also stops the camera shake; the checkbox above stays honest.
+                  onClick={() => settings.update({ reduceMotion: o.value, ...(o.value === 'reduce' ? { screenShake: false } : {}) })}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="muted hint">{MOTION_OPTIONS.find((o) => o.value === current.reduceMotion)?.hint}</p>
+          <label className="setting">
+            <span>HUD size</span>
+            <input
+              type="range"
+              min={HUD_SCALE_MIN}
+              max={HUD_SCALE_MAX}
+              step={0.05}
+              value={current.hudScale}
+              onChange={(e) => settings.update({ hudScale: Number(e.target.value) })}
+            />
+            <span className="number-readout">{Math.round(current.hudScale * 100)}%</span>
+          </label>
+          <p className="muted hint">Health, ammo, abilities and the score grow from their corners. Large sizes suit wide screens.</p>
+          <div className="setting">
+            <span>Tips</span>
+            <button type="button" onClick={() => { hints.reset(); setTipsReset(true); }}>
+              {tipsReset ? 'Tips will show again' : 'Show the one-time tips again'}
+            </button>
+          </div>
+        </section>
+
+        {!TOUCH && (
+        <section>
           <h4>Key bindings</h4>
           <p className="muted hint">
             Click a key, then press the new one. Taking a key used elsewhere swaps the two. <kbd>Esc</kbd> cancels.
@@ -234,9 +300,18 @@ export function SettingsPanel({ onClose }: Props) {
           </div>
           <p className="muted hint">Shooting is always left click; <kbd>Esc</kbd> always pauses.</p>
         </section>
+        )}
 
         <footer>
-          <button className="danger" onClick={() => settings.reset()}>Reset to defaults</button>
+          {confirmReset ? (
+            <span className="confirm">
+              Reset every setting?
+              <button className="danger" onClick={() => { settings.reset(); setConfirmReset(false); }}>Reset</button>
+              <button onClick={() => setConfirmReset(false)}>Keep</button>
+            </span>
+          ) : (
+            <button className="danger" onClick={() => setConfirmReset(true)}>Reset to defaults</button>
+          )}
         </footer>
       </div>
     </div>

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Game } from '../game/game';
 import type { Session } from './App';
 import { Hud } from './Hud';
-import { errorMessage } from './errors';
+import { friendlyError } from './errors';
 
 declare global {
   interface Window {
@@ -31,10 +31,12 @@ export function GameView({ session, onExit }: Props) {
     setGame(instance);
     if (import.meta.env.DEV) window.game = instance;
 
-    instance.start().catch((err: unknown) => {
-      console.error(err);
-      onExitRef.current(`Could not join room: ${errorMessage(err)}`);
-    });
+    instance.start()
+      .then(() => { if (session.notice) instance.hud.pushInfo(session.notice); })
+      .catch((err: unknown) => {
+        console.error(err);
+        onExitRef.current(`Could not join room: ${friendlyError(err)}`);
+      });
 
     return () => {
       if (window.game === instance) window.game = undefined;

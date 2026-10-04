@@ -48,7 +48,11 @@ export function setDiscordActivity(p: Presence): void {
  * token (that needs the app's client secret, so it can't happen in the browser).
  */
 export function connectDiscord(): Promise<DiscordSession> {
-  session ??= connect();
+  // A failed attempt isn't kept, so a Retry really reconnects.
+  session ??= connect().catch((err: unknown) => {
+    session = null;
+    throw err;
+  });
   return session;
 }
 

@@ -230,8 +230,45 @@ Discord, with no website to visit.
 The ⚙ panel (lobby or pause menu) has mouse sensitivity, aim sensitivity and aim toggle, invert Y, fullscreen,
 **field of view** (60–110°), **graphics quality** (Low: no shadows and a 1× resolution cap; Medium: soft
 shadows at native resolution; High: sharp shadows, up to 2×; phones default to Low), **crosshair colour and
-size** (with a live preview), sound effects and music volume, screen shake, and every key binding. Settings are
-saved in the browser.
+size** (with a live preview), sound effects and music volume, screen shake, **reduce motion** (System / On /
+Off: no pulsing, zooming or camera shake; "System" follows the OS setting), **HUD size** (80–140 %; panels grow
+from the corner they're pinned to), a button to show the one-time tips again, and every key binding (hidden on
+touch screens, where the mouse section becomes "Look"). Settings are saved in the browser.
+
+### Menu (Esc)
+
+Esc opens the menu. The left side shows what's going on: the mode and its goal, the round clock and score, a
+status line ("You're alive — the match is still running", "Dead — respawning in 2", "Round over — next map in
+5", "Spectating"), a thumbnail of the current map with its seed and the player count, and the room code with a
+**Copy invite link** button. The right side has Resume, Spectate, Switch team, Settings, Leave room (with a
+confirm step) and the key list with your own bindings. Clicking the dimmed backdrop resumes; clicking the card
+doesn't. The match keeps running while the menu is open. Round results and the MVP replay stay visible
+(dimmed) behind it, so a late joiner sees what's happening.
+
+### Feedback and tips
+
+- The first click to play shows the mode's name and goal. One-time tips appear as you meet mechanics: the first
+  sprint (slide), each ability you pick up (what it does and its key), the first gun pickup (how to switch),
+  the first aim down sights, and the first time your slots are full. They're remembered in the browser
+  (`fps-hints`); Settings can reset them.
+- Toasts queue up (three deep, no repeats) instead of overwriting each other, and show while spectating and
+  during the MVP replay.
+- The death screen says who got you, with what and whether it was a headshot ("You took yourself out" for your
+  own grenade), and whether your gun and abilities dropped where you fell. Respawning flashes the screen edges.
+- Pressing an empty ability slot or one on cooldown says so (and shakes the slot). The ammo panel shows
+  "R TO RELOAD", "NO AMMO — FIND A BOX" or "LOW AMMO" under the count.
+- In CTF, taking, losing, capturing and returning flags get centre-screen banners, and a dropped flag's icon
+  counts down to its return.
+- A "Waiting for players" banner with a Copy invite button shows while you're alone; "Reconnecting…" shows
+  when the connection to the server drops; "Connecting…" offers a way back to the lobby after 10 s.
+
+### Invite links
+
+The pause menu's **Copy invite link** copies `…/?room=CODE` (on phones it opens the share sheet). Opening it
+with a name saved in that browser shows "Joining CODE as NAME…" with a two-second countdown, **Join now** and
+**Change name**; without a saved name the lobby asks for one with the room pre-filled. If the room has closed,
+the lobby says so and offers to create a new one. `#CODE` links keep working, and Discord's 10-character codes
+fit too.
 
 ### Spectating
 
@@ -239,12 +276,6 @@ saved in the browser.
 listed as spectating in the summary and left out of the standings and the MVP pick. The camera follows a
 player from behind; left click goes to the next player, right click to the previous, and **space** switches
 to a free camera (move keys to fly, E up, crouch down, sprint for speed). **Back to the fight** respawns you.
-
-### Invite links
-
-The pause menu's **Copy invite link** copies `…/?room=CODE` (on phones it opens the share sheet). Opening it
-joins the room straight away if a name is saved in that browser; otherwise the lobby asks for a name with the
-room pre-filled. `#CODE` links keep working too.
 
 These are the defaults. **Settings** (in the lobby, or the pause menu) lets you change mouse sensitivity
 (0.1×–4×), invert vertical look and rebind every key except shooting (left click) and Esc. Binding a key
@@ -259,7 +290,10 @@ On a touch device the game switches to on-screen controls and plays in landscape
 - **Look:** drag anywhere on the right side.
 - **Buttons:** ● fire (drag on it to keep aiming while you shoot), ◎ aim down sights (toggle), ⤒ jump,
   ⤓ crouch (toggle; tap while sprinting to slide, and you stand back up when the slide ends), ↻ reload.
-  Tap an ability slot to use it. ☰ (hold) shows the scoreboard and ❚❚ opens the menu.
+  Tap an ability slot to use it. ☰ toggles the scoreboard (it has a Close button), 🎒 opens the inventory and
+  ❚❚ opens the menu.
+- The first time you play on a touch screen, a guide labels every button in place; the menu's **Controls
+  guide** button brings it back.
 - Several fingers work at once (move, look and shoot together).
 - **Landscape:**
   - Android browsers go fullscreen and lock to landscape when you tap to play.

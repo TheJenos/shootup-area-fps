@@ -4,12 +4,18 @@ import type { GameMode, GunKind, PlayerState, Team, WeaponKind } from '../types'
 const FEED_LIFETIME = 5_000;
 const FEED_MAX = 5;
 const TOAST_LIFETIME = 1_800;
+/** Toasts waiting their turn; older ones beyond this are dropped */
+const TOAST_QUEUE_MAX = 3;
 const ANNOUNCE_LIFETIME = 2_200;
 
 type Named = Pick<PlayerState, 'name' | 'color'>;
 
 export type FeedEntry =
-  | { id: number; kind: 'kill'; killer: Named; victim: Named; head: boolean; mine: boolean; weapon: WeaponKind }
+  | {
+    id: number; kind: 'kill'; killer: Named; victim: Named; head: boolean; mine: boolean; weapon: WeaponKind;
+    /** Teams in team modes, and which side of the kill we were on (for tags that don't rely on colour) */
+    killerTeam: Team | null; victimTeam: Team | null; me: 'killer' | 'victim' | null;
+  }
   | { id: number; kind: 'info'; text: string };
 
 export interface ScoreRow {
@@ -42,7 +48,10 @@ export interface ScoreView {
   leader: { name: string; kills: number } | null;
 }
 
-export type FlagStatus = { state: 'home' } | { state: 'dropped' } | { state: 'carried'; carrier: string; mine: boolean };
+export type FlagStatus =
+  | { state: 'home' }
+  | { state: 'dropped'; returnIn: number }
+  | { state: 'carried'; carrier: string; mine: boolean };
 
 /** A red arc around the crosshair pointing at whoever just hurt us. */
 export interface DamageIndicator {
@@ -79,6 +88,8 @@ export interface MatchEnd {
   mvp: MvpView | null;
   /** Seconds until the next phase (the MVP replay, or the next map) */
   nextIn: number;
+  /** Seconds until the next round starts, across both phases */
+  nextMapIn: number;
   nextMap: { name: string; seed: string } | null;
 }
 
@@ -121,7 +132,20 @@ export interface HudState {
   scoreboardOpen: boolean;
   scoreboard: ScoreRow[];
   /** Set while we're dead. */
-  death: { killerName: string; respawnIn: number } | null;
+  death: {
+    killerName: string;
+    /** Our own doing (e.g. our grenade) */
+    self: boolean;
+    weapon: WeaponKind;
+    head: boolean;
+    /** Something fell out of our hands where we died */
+    dropped: boolean;
+    respawnIn: number;
+  } | null;
+  /** Increments when we come back from the dead (for a flash) */
+  respawnFlash: number;
+  /** An ability slot refused (cooldown): shake it; `n` restarts the animation */
+  slotDenied: { n: number; slot: number } | null;
   /** The three ability slots */
   slots: (SlotView | null)[];
   /** Active timed effects; seconds / points left, rounded for display */
@@ -143,10 +167,14 @@ export interface HudState {
   clock: { left: number; urgent: boolean } | null;
   /** Set while the round-over screen is up */
   matchEnd: MatchEnd | null;
-  /** Announcer banner (multi-kills, streaks); `n` restarts the animation */
-  announce: { n: number; text: string; sub: string } | null;
+  /** Announcer banner (multi-kills, streaks); `n` restarts the animation, `ms` is how long it stays */
+  announce: { n: number; text: string; sub: string; ms: number } | null;
   /** Watching the match: who we're following (null = free camera) and how many players there are to follow */
   spectate: { target: string | null; count: number } | null;
+  /** Players in the match (not spectating), including us */
+  playerCount: number;
+  /** The connection to the server dropped; it reconnects by itself */
+  offline: boolean;
 }
 
 const initialState: HudState = {
@@ -169,6 +197,8 @@ const initialState: HudState = {
   scoreboardOpen: false,
   scoreboard: [],
   death: null,
+  respawnFlash: 0,
+  slotDenied: null,
   slots: [null, null, null],
   buffs: { speed: null, shield: null },
   toast: null,
@@ -184,6 +214,8 @@ const initialState: HudState = {
   matchEnd: null,
   announce: null,
   spectate: null,
+  playerCount: 0,
+  offline: false,
 };
 
 /**
@@ -196,6 +228,7 @@ export class HudStore {
   private readonly listeners = new Set<() => void>();
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private nextFeedId = 1;
+  private toastQueue: string[] = [];
 
   readonly get = (): HudState => this.state;
 
@@ -219,28 +252,53 @@ export class HudStore {
     this.update({ damageFlash: this.state.damageFlash + 1 });
   }
 
-  pushKill(killer: Named, victim: Named, head: boolean, mine: boolean, weapon: WeaponKind = 'rifle'): void {
-    this.pushFeed({ id: this.nextFeedId++, kind: 'kill', killer, victim, head, mine, weapon });
+  pushKill(
+    killer: Named, victim: Named, head: boolean, mine: boolean, weapon: WeaponKind = 'rifle',
+    teams: { killerTeam: Team | null; victimTeam: Team | null; me: 'killer' | 'victim' | null } = { killerTeam: null, victimTeam: null, me: null },
+  ): void {
+    this.pushFeed({ id: this.nextFeedId++, kind: 'kill', killer, victim, head, mine, weapon, ...teams });
   }
 
+  /**
+   * Short message near the bottom of the screen. Toasts play one after another rather than
+   * replacing each other; repeats of what's showing or already waiting are dropped.
+   */
   toast(text: string): void {
+    if (this.state.toast?.text === text || this.toastQueue.includes(text)) return;
+    if (this.state.toast) {
+      if (this.toastQueue.length < TOAST_QUEUE_MAX) this.toastQueue.push(text);
+      return;
+    }
+    this.showToast(text);
+  }
+
+  private showToast(text: string): void {
     const n = (this.state.toast?.n ?? 0) + 1;
     this.update({ toast: { n, text } });
     const timer = setTimeout(() => {
       this.timers.delete(timer);
-      if (this.state.toast?.n === n) this.update({ toast: null });
+      if (this.state.toast?.n !== n) return;
+      this.update({ toast: null });
+      const next = this.toastQueue.shift();
+      if (next) this.showToast(next);
     }, TOAST_LIFETIME);
     this.timers.add(timer);
   }
 
-  /** Big centre-screen banner for a moment or two. */
-  announce(text: string, sub = ''): void {
+  /** Drop whatever is showing and waiting (a new round starts). */
+  clearToasts(): void {
+    this.toastQueue = [];
+    this.update({ toast: null });
+  }
+
+  /** Big centre-screen banner for a moment or two (`ms` for longer ones, like the intro). */
+  announce(text: string, sub = '', ms = ANNOUNCE_LIFETIME): void {
     const n = (this.state.announce?.n ?? 0) + 1;
-    this.update({ announce: { n, text, sub } });
+    this.update({ announce: { n, text, sub, ms } });
     const timer = setTimeout(() => {
       this.timers.delete(timer);
       if (this.state.announce?.n === n) this.update({ announce: null });
-    }, ANNOUNCE_LIFETIME);
+    }, ms);
     this.timers.add(timer);
   }
 

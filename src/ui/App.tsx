@@ -10,7 +10,12 @@ export interface Session {
   name: string;
   /** The room's map seed */
   seed: string;
+  /** Something to tell the player once they're in (e.g. the mode they picked wasn't used) */
+  notice?: string;
 }
+
+/** Room codes are 5 characters, or 10 for Discord voice-channel rooms (DC + 8). */
+export const ROOM_CODE_MAX = 10;
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -38,5 +43,5 @@ export function App() {
 function inviteCode(): string {
   const hash = location.hash.slice(1);
   const query = new URLSearchParams(location.search).get('room') ?? '';
-  return (hash || query).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
+  return (hash || query).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, ROOM_CODE_MAX);
 }

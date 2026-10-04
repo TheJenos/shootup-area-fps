@@ -14,7 +14,9 @@ type PointerHandler = (e: ReactPointerEvent<HTMLElement>) => void;
  *   plus the scoreboard and menu up top. Ability slots are tapped directly in the HUD.
  * Uses pointer events, so several fingers work at once.
  */
-export function TouchControls({ game, aiming, hasSpecial }: { game: Game; aiming: boolean; hasSpecial: boolean }) {
+export function TouchControls(
+  { game, aiming, hasSpecial, scoreboardOpen }: { game: Game; aiming: boolean; hasSpecial: boolean; scoreboardOpen: boolean },
+) {
   const stick = useRef<{ id: number; x: number; y: number } | null>(null);
   const [knob, setKnob] = useState<{ x: number; y: number; dx: number; dy: number } | null>(null);
   /** Last position of each finger that is turning the view */
@@ -152,7 +154,13 @@ export function TouchControls({ game, aiming, hasSpecial }: { game: Game; aiming
       )}
 
       <div className="top-buttons">
-        <button type="button" className="tbtn small" aria-label="Scoreboard" {...hold(() => game.setTouchScoreboard(true), () => game.setTouchScoreboard(false))}>
+        <button
+          type="button"
+          className={scoreboardOpen ? 'tbtn small on' : 'tbtn small'}
+          aria-label="Scoreboard"
+          aria-pressed={scoreboardOpen}
+          onPointerDown={tap(() => game.setTouchScoreboard(!scoreboardOpen))}
+        >
           ☰
         </button>
         <button type="button" className="tbtn small" aria-label="Inventory" onPointerDown={tap(() => game.touchInventory())}>

@@ -24,6 +24,7 @@ export const ACTIONS: { action: Action; label: string }[] = [
 export type Bindings = Record<Action, string>;
 
 export type Quality = 'low' | 'medium' | 'high';
+export type MotionPref = 'system' | 'reduce' | 'full';
 
 export interface Settings {
   /** Multiplier on the base mouse speed */
@@ -47,6 +48,10 @@ export interface Settings {
   quality: Quality;
   /** Camera shake when hit */
   screenShake: boolean;
+  /** Pulsing / zooming HUD animations: follow the OS, or force on/off */
+  reduceMotion: MotionPref;
+  /** Size multiplier for the HUD panels */
+  hudScale: number;
   /** 0..1 */
   sfxVolume: number;
   musicVolume: number;
@@ -62,6 +67,13 @@ export const FOV_DEFAULT = 75;
 export const CROSSHAIR_SIZE_MIN = 0.6;
 export const CROSSHAIR_SIZE_MAX = 1.8;
 export const CROSSHAIR_COLORS = ['#ffffff', '#5ce08a', '#3ff0ff', '#ffe14d', '#ff4dd2', '#ff5a5a'];
+export const HUD_SCALE_MIN = 0.8;
+export const HUD_SCALE_MAX = 1.4;
+export const MOTION_OPTIONS: { value: MotionPref; label: string; hint: string }[] = [
+  { value: 'system', label: 'System', hint: "Follow the device's reduce-motion setting" },
+  { value: 'reduce', label: 'On', hint: 'No pulsing, zooming or camera shake' },
+  { value: 'full', label: 'Off', hint: 'All animations' },
+];
 export const QUALITIES: { value: Quality; label: string; hint: string }[] = [
   { value: 'low', label: 'Low', hint: 'No shadows, lower resolution' },
   { value: 'medium', label: 'Medium', hint: 'Soft shadows, native resolution' },
@@ -88,12 +100,14 @@ export const DEFAULT_BINDINGS: Bindings = {
 };
 
 const COARSE = typeof matchMedia === 'function' && matchMedia('(hover: none) and (pointer: coarse)').matches;
+const MOTION_QUERY = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
 
 const DEFAULTS: Settings = {
   sensitivity: 1, invertY: false, fullscreen: true, aimToggle: false, aimSensitivity: 1,
   fov: FOV_DEFAULT, crosshairColor: '#ffffff', crosshairSize: 1,
   // Phones start low; they can turn it up.
-  quality: COARSE ? 'low' : 'high', screenShake: true, sfxVolume: 1, musicVolume: 0.7,
+  quality: COARSE ? 'low' : 'high', screenShake: !MOTION_QUERY?.matches, sfxVolume: 1, musicVolume: 0.7,
+  reduceMotion: 'system', hudScale: 1,
   bindings: DEFAULT_BINDINGS,
 };
 
@@ -133,7 +147,9 @@ function load(): Settings {
         ? saved.crosshairColor : DEFAULTS.crosshairColor,
       crosshairSize: num(saved.crosshairSize, CROSSHAIR_SIZE_MIN, CROSSHAIR_SIZE_MAX, DEFAULTS.crosshairSize),
       quality: QUALITIES.some((q) => q.value === saved.quality) ? (saved.quality as Quality) : DEFAULTS.quality,
-      screenShake: saved.screenShake !== false,
+      screenShake: typeof saved.screenShake === 'boolean' ? saved.screenShake : DEFAULTS.screenShake,
+      reduceMotion: MOTION_OPTIONS.some((o) => o.value === saved.reduceMotion) ? (saved.reduceMotion as MotionPref) : DEFAULTS.reduceMotion,
+      hudScale: num(saved.hudScale, HUD_SCALE_MIN, HUD_SCALE_MAX, DEFAULTS.hudScale),
       sfxVolume: num(saved.sfxVolume, 0, 1, DEFAULTS.sfxVolume),
       musicVolume: num(saved.musicVolume, 0, 1, DEFAULTS.musicVolume),
       // Start from the defaults so actions added later still get a key.
@@ -192,6 +208,18 @@ export const settings = {
     set(DEFAULTS);
   },
 };
+
+/** Whether animations should be toned down right now: the setting, or the OS when it's 'system'. */
+export const reducedMotion = (s: Settings = current): boolean =>
+  s.reduceMotion === 'reduce' || (s.reduceMotion === 'system' && !!MOTION_QUERY?.matches);
+
+/** Keep `html.reduce-motion` in step with the setting and the OS, for the CSS. */
+export function watchReducedMotion(): void {
+  const apply = () => document.documentElement.classList.toggle('reduce-motion', reducedMotion());
+  apply();
+  settings.subscribe(apply);
+  MOTION_QUERY?.addEventListener('change', apply);
+}
 
 /** The key currently bound to `action`. */
 export const keyFor = (action: Action): string => current.bindings[action];

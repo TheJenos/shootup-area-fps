@@ -19,9 +19,9 @@ export function InventoryPanel({ game, slots, gun, gunRounds }: Props) {
   const slotKeys = [bindings.ability1, bindings.ability2, bindings.ability3].map(keyLabel);
   return (
     <div id="inventory" className="overlay">
-      <div className="panel-box">
+      <div className="panel-box" role="dialog" aria-modal="true" aria-labelledby="inventory-title" tabIndex={-1} ref={(el) => el?.focus()}>
         <header>
-          <h3>Inventory</h3>
+          <h3 id="inventory-title">Inventory</h3>
           {game.touch ? (
             <button type="button" onClick={() => game.closeInventory(true)}>Close</button>
           ) : (

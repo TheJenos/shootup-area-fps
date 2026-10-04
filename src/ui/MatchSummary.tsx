@@ -38,10 +38,12 @@ interface Props {
   map: { name: string; seed: string } | null;
   /** Seconds left in the round */
   clockLeft: number | null;
+  /** Touch screens: a Close button (the summary is toggled rather than held) */
+  onClose?(): void;
 }
 
 /** Held open with Tab: everyone's stats plus your own match summary. */
-export function MatchSummary({ roomCode, match, rows, myMatch, mode, score, map, clockLeft }: Props) {
+export function MatchSummary({ roomCode, match, rows, myMatch, mode, score, map, clockLeft, onClose }: Props) {
   const now = useNow();
   const me = rows.find((r) => r.me);
   const leader = rows[0];
@@ -74,10 +76,10 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, score, map,
   );
 
   return (
-    <div id="match-summary">
+    <div id="match-summary" role="dialog" aria-modal={!!onClose} aria-labelledby="summary-title">
       <header>
         <div>
-          <h3>{match?.roomName ?? 'Match'}</h3>
+          <h3 id="summary-title">{match?.roomName ?? 'Match'}</h3>
           <span className="muted">
             {MODES[mode].name} · {mode === 'gungame' ? `${MODES[mode].limit} guns` : `first to ${MODES[mode].limit}`} ·{' '}
             {map && <>{map.name} (seed {map.seed}) · </>}Room {roomCode} · {rows.length}{' '}
@@ -95,7 +97,8 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, score, map,
           <span className="muted">{clockLeft !== null ? 'Time left' : 'Match time'}</span>
           <strong>{clockLeft !== null ? formatClock(clockLeft * 1000) : match ? formatClock(now - match.startedAt) : '—'}</strong>
         </div>
-      </header>
+              {onClose && <button type="button" className="close" onClick={onClose} autoFocus>Close</button>}
+</header>
 
       <table>
         <thead>

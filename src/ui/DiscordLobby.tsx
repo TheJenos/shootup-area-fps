@@ -8,7 +8,8 @@ import { generateMap, randomSeed } from '../game/mapgen';
 import type { GameMode } from '../types';
 import type { Session } from './App';
 import { Brand } from './Brand';
-import { errorMessage } from './errors';
+import { friendlyError } from './errors';
+import { SettingsPanel } from './SettingsPanel';
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -37,6 +38,8 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
   const [mode, setMode] = useState<GameMode>('ffa');
   const [error, setError] = useState(initialError);
   const [busy, setBusy] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const roomCode = discord ? roomCodeFor(discord.instanceId) : '';
 
   useEffect(() => {
@@ -49,9 +52,9 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
         setDiscord(d);
         setExisting(setup);
       })
-      .catch((err: unknown) => { if (!cancelled) setError(errorMessage(err)); });
+      .catch((err: unknown) => { if (!cancelled) setError(friendlyError(err)); });
     return () => { cancelled = true; };
-  }, []);
+  }, [attempt]);
 
   const play = async () => {
     if (!discord || busy) return;
@@ -62,13 +65,17 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
       const playerId = randomId();
       // Someone may have started the match since we looked; then we just join theirs.
       const seed = randomSeed();
-      if (!existing) await createRoomWithCode(roomCode, 'Discord match', mode, seed, discord.name, playerId);
+      const created = existing ? false : await createRoomWithCode(roomCode, 'Discord match', mode, seed, discord.name, playerId);
       const setup = await getRoomSetup(roomCode);
       if (!setup) throw new Error('Could not start the match. Try again.');
-      onEnter({ roomCode, playerId, name: discord.name, seed: setup.seed });
+      // We lost the race to start: the mode we picked wasn't used.
+      const notice = !existing && !created && setup.mode !== mode
+        ? `Someone started first — you joined their ${MODES[setup.mode].name} match`
+        : undefined;
+      onEnter({ roomCode, playerId, name: discord.name, seed: setup.seed, ...(notice ? { notice } : {}) });
     } catch (err) {
       console.error(err);
-      setError(errorMessage(err));
+      setError(friendlyError(err));
       setBusy(false);
     }
   };
@@ -78,7 +85,12 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
       <div className="card discord">
         <Brand />
         {!discord ? (
-          <p className="subtitle">{error ? 'Could not connect to Discord.' : 'Connecting to Discord…'}</p>
+          <>
+            <p className="subtitle">
+              {error ? 'Could not connect to Discord.' : <><span className="spinner" aria-hidden="true" />Connecting to Discord…</>}
+            </p>
+            {error && <button type="button" onClick={() => { setError(''); setAttempt((a) => a + 1); }}>Retry</button>}
+          </>
         ) : (
           <>
             <p className="subtitle">Playing as <strong>{discord.name}</strong></p>
@@ -109,14 +121,18 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
               </div>
             )}
             <button className="primary play" disabled={busy} onClick={() => void play()}>
-              {existing ? 'Join match' : 'Start match'}
+              {busy ? <><span className="spinner" aria-hidden="true" />{existing ? 'Joining…' : 'Starting…'}</> : existing ? 'Join match' : 'Start match'}
             </button>
             <p className="muted hint">Everyone in this voice channel plays in the same match.</p>
           </>
         )}
         <p className="error">{error}</p>
+        <button type="button" className="settings-link" onClick={() => setSettingsOpen(true)}>
+          ⚙ Mouse &amp; key settings
+        </button>
         <p className="legal muted"><a href="/terms.html" target="_blank" rel="noreferrer">Terms</a> · <a href="/privacy.html" target="_blank" rel="noreferrer">Privacy</a></p>
       </div>
+      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
     </section>
   );
 }

@@ -72,5 +72,13 @@ export function MapPreview({ map, mode }: { map: MapLayout; mode: GameMode }) {
     }
   }, [map, mode]);
 
-  return <canvas ref={canvasRef} className="map-preview" style={{ width: SIZE, height: SIZE }} />;
+  return (
+    <canvas
+      ref={canvasRef}
+      className="map-preview"
+      role="img"
+      aria-label={`Map preview: ${map.theme.name}${mode === 'ctf' ? ', flag bases marked' : ''}`}
+      style={{ width: SIZE, height: SIZE }}
+    />
+  );
 }

@@ -32,7 +32,8 @@ export function randomId(len = 12): string {
   return s;
 }
 
-export function watchRooms(callback: (rooms: RoomSummary[]) => void): Unsubscribe {
+/** @param onError the subscription was refused (e.g. rules); the list won't load */
+export function watchRooms(callback: (rooms: RoomSummary[]) => void, onError?: (err: Error) => void): Unsubscribe {
   return onValue(ref(db(), 'lobby'), (snap) => {
     const rooms: RoomSummary[] = [];
     snap.forEach((child) => {
@@ -47,7 +48,7 @@ export function watchRooms(callback: (rooms: RoomSummary[]) => void): Unsubscrib
       rooms.push({ code, name: room.name, ...roomSetup(room), host: room.host, players: members });
     });
     callback(rooms);
-  });
+  }, (err) => onError?.(err));
 }
 
 export async function createRoom(
@@ -113,6 +114,8 @@ export interface RoomHandlers {
   onPickupAdded(id: string, pickup: PickupRecord): void;
   onPickupRemoved(id: string): void;
   onGame(game: GameState): void;
+  /** The connection to the server came or went */
+  onConnection?(connected: boolean): void;
 }
 
 export class RoomConnection {
@@ -158,6 +161,7 @@ export class RoomConnection {
     await new Promise<void>((resolve, reject) => {
       this.unsubs.push(
         onValue(ref(db(), '.info/connected'), async (snap) => {
+          this.handlers.onConnection?.(!!snap.val());
           if (!snap.val()) return;
           try {
             await this.registerPresence();

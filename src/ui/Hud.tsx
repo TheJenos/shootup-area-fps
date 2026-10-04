@@ -1,31 +1,61 @@
-import { useState, useSyncExternalStore, type MouseEvent } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { LOW_HEALTH, type Game } from '../game/game';
 import type { FeedEntry, FlagStatus, HudState, MatchEnd } from '../game/hudStore';
 import { ABILITIES, type SlotView } from '../game/abilities';
 import { MODES, MVP_TIME, TEAM_INFO, otherTeam } from '../game/modes';
-import type { Team } from '../types';
+import type { Team, WeaponKind } from '../types';
 import { MatchSummary } from './MatchSummary';
 import { SettingsPanel, useSettings } from './SettingsPanel';
-import { keyLabel, type Bindings } from '../game/settings';
+import { keyLabel } from '../game/settings';
 import { InventoryPanel } from './InventoryPanel';
 import { TouchControls } from './TouchControls';
+import { TouchIntro } from './TouchIntro';
+import { PauseMenu } from './PauseMenu';
 import { GUNS } from '../game/guns';
 import type { GunKind } from '../types';
 import { safeColor } from './colors';
 import { Crosshair } from './Crosshair';
 
-function controls(b: Bindings): [key: string, action: string][] {
-  const k = (...codes: string[]) => codes.map(keyLabel).join(' ');
-  return [
-    [k(b.forward, b.left, b.back, b.right), 'move'], ['Mouse', 'aim'], ['Click', 'shoot'], [k(b.jump), 'jump'],
-    ['Right-click', 'aim'], [k(b.sprint), 'sprint'], [k(b.crouch), 'crouch / slide'], [k(b.reload), 'reload'], [k(b.swap) + ' / wheel', 'switch gun'], [k(b.ability1, b.ability2, b.ability3), 'abilities'],
-    [k(b.inventory), 'inventory'], [k(b.scoreboard), 'match summary'],
-  ];
-}
+/** After this long on "Connecting…" we offer a way back to the lobby (ms). */
+const SLOW_CONNECT_MS = 10_000;
+const TOUCH_INTRO_KEY = 'fps-touch-intro';
 
 function useHud(game: Game): HudState {
   return useSyncExternalStore(game.hud.subscribe, game.hud.get);
 }
+
+/** The icon the kill feed and death screen use for a weapon. */
+export const weaponIcon = (w: WeaponKind): string => (w === 'grenade' ? '💣' : GUNS[w]?.icon ?? '▸');
+
+/** Copy (or, on phones, share) the invite link for this room. */
+export function useCopyInvite(game: Game, roomCode: string): { copy(): void; copied: boolean } {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    const url = `${location.origin}${location.pathname}?room=${roomCode}`;
+    if (game.touch && typeof navigator.share === 'function') {
+      navigator.share({ title: 'Arena FPS', text: `Join my match, room ${roomCode}`, url }).catch(() => {});
+      return;
+    }
+    void navigator.clipboard?.writeText(url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return { copy, copied };
+}
+
+const readFlag = (key: string): boolean => {
+  try {
+    return localStorage.getItem(key) === '1';
+  } catch {
+    return true; // no storage: don't nag every load
+  }
+};
+const writeFlag = (key: string): void => {
+  try {
+    localStorage.setItem(key, '1');
+  } catch { /* storage unavailable */ }
+};
 
 interface Props {
   game: Game;
@@ -35,60 +65,94 @@ interface Props {
 
 export function Hud({ game, roomCode, onLeave }: Props) {
   const hud = useHud(game);
+  const { hudScale } = useSettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Phones: the controls guide, once.
+  const [intro, setIntro] = useState(() => game.touch && !readFlag(TOUCH_INTRO_KEY));
+  // "Connecting…" that drags on gets a way out.
+  const [slowConnect, setSlowConnect] = useState(false);
+  useEffect(() => {
+    if (!hud.connecting) {
+      setSlowConnect(false);
+      return;
+    }
+    const timer = setTimeout(() => setSlowConnect(true), SLOW_CONNECT_MS);
+    return () => clearTimeout(timer);
+  }, [hud.connecting]);
+  const { copy, copied } = useCopyInvite(game, roomCode);
+
+  const classes = [
+    hud.matchEnd?.phase === 'mvp' && 'cinematic', // the MVP replay hides the crosshair, panels and abilities
+    game.touch && 'touch',
+    hud.paused && 'paused',
+    intro && 'intro',
+  ].filter(Boolean).join(' ');
+  const inMatch = !hud.connecting && !hud.spectate;
+  const waitingAlone = hud.playerCount === 1 && inMatch && !hud.paused && !hud.matchEnd && !hud.offline;
 
   return (
-    // The MVP replay is a cinematic: hide the crosshair, health, ammo and abilities.
-    <div
-      id="hud"
-      className={[hud.matchEnd?.phase === 'mvp' && 'cinematic', game.touch && 'touch'].filter(Boolean).join(' ') || undefined}
-    >
+    <div id="hud" className={classes || undefined} style={{ '--hud-scale': Math.min(hudScale, game.touch ? 1.2 : 1.4) } as React.CSSProperties}>
+      {/* What the visual banners say, for screen readers */}
+      <div className="sr-only" aria-live="polite" aria-atomic="true">{hud.toast?.text ?? ''}</div>
+      <div className="sr-only" aria-live="polite" aria-atomic="true">
+        {hud.announce ? `${hud.announce.text} ${hud.announce.sub}`.trim() : ''}
+      </div>
+
       {/* First, so every HUD panel draws on top of the scope's black surround. */}
       {hud.scoped && !hud.death && <ScopeOverlay />}
       {!hud.death && !hud.spectate && <Crosshair ads={hud.aiming} />}
       {hud.hitmarker.n > 0 && (
         // A new key remounts the element, which restarts the CSS animation.
-        <div key={`hit-${hud.hitmarker.n}`} id="hitmarker" className={hud.hitmarker.head ? 'show head' : 'show'} />
+        <div key={`hit-${hud.hitmarker.n}`} id="hitmarker" className={hud.hitmarker.head ? 'show head' : 'show'} aria-hidden="true" />
       )}
-      {hud.damageFlash > 0 && <div key={`dmg-${hud.damageFlash}`} id="damage-overlay" />}
-      {!hud.death && hud.hp <= LOW_HEALTH && !hud.connecting && (
-        <div id="low-health" style={{ '--lh': 1 - Math.max(0, hud.hp) / LOW_HEALTH } as React.CSSProperties} />
+      {hud.damageFlash > 0 && <div key={`dmg-${hud.damageFlash}`} id="damage-overlay" aria-hidden="true" />}
+      {hud.respawnFlash > 0 && <div key={`rs-${hud.respawnFlash}`} id="respawn-flash" aria-hidden="true" />}
+      {!hud.death && hud.hp <= LOW_HEALTH && inMatch && (
+        <div id="low-health" aria-hidden="true" style={{ '--lh': 1 - Math.max(0, hud.hp) / LOW_HEALTH } as React.CSSProperties} />
       )}
       {hud.announce && (
-        <div key={`ann-${hud.announce.n}`} id="announce">
+        <div key={`ann-${hud.announce.n}`} id="announce" aria-hidden="true" style={{ animationDuration: `${hud.announce.ms}ms` }}>
           <strong>{hud.announce.text}</strong>
           {hud.announce.sub && <span>{hud.announce.sub}</span>}
         </div>
       )}
+      {/* Always mounted, so toasts show while spectating and during the MVP replay too. */}
+      <div id="toasts" aria-hidden="true">
+        {hud.toast && <div key={`toast-${hud.toast.n}`} className="toast">{hud.toast.text}</div>}
+      </div>
       {hud.damageIndicators.length > 0 && !hud.death && <DamageDirections indicators={hud.damageIndicators} />}
 
       <div id="room-tag">Room <strong>{roomCode}</strong></div>
       <ScoreBar hud={hud} />
       <KillFeed entries={hud.feed} />
+      {hud.offline && !hud.connecting && (
+        <div id="offline-banner" className="hud-banner danger" role="status">
+          <span className="spinner" aria-hidden="true" />Reconnecting…
+        </div>
+      )}
+      {waitingAlone && (
+        <div id="waiting-banner" className="hud-banner" role="status">
+          Waiting for players — share room <strong>{roomCode}</strong>
+          <button type="button" onClick={copy}>{copied ? 'Copied!' : game.touch ? 'Share' : 'Copy invite'}</button>
+        </div>
+      )}
       {!hud.spectate && (
         <>
           <HealthPanel hp={hud.hp} />
-          <AmmoPanel hud={hud} />
+          <AmmoPanel hud={hud} touch={game.touch} />
           <AbilityBar
             slots={hud.slots}
             buffs={hud.buffs}
-            toast={hud.toast}
+            denied={hud.slotDenied}
             onUse={game.touch ? (i) => game.touchAbility(i) : undefined}
           />
         </>
       )}
-      {hud.spectate && !hud.paused && hud.matchEnd?.phase !== 'mvp' && (
-        <div id="spectate">
-          <span className="label">Spectating</span>
-          <strong>{hud.spectate.target ?? 'Free camera'}</strong>
-          <span className="muted">
-            {hud.spectate.count > 0 ? 'click: next · right-click: previous · ' : 'nobody to follow · '}
-            space: {hud.spectate.target ? 'free camera' : 'follow'} · Esc: menu
-          </span>
-        </div>
+      {hud.spectate && !hud.paused && hud.matchEnd?.phase !== 'mvp' && <SpectateBanner spectate={hud.spectate} touch={game.touch} />}
+      {game.touch && (!hud.paused || intro) && !hud.connecting && !hud.death && !hud.inventoryOpen && !hud.spectate
+        && hud.matchEnd?.phase !== 'mvp' && (
+        <TouchControls game={game} aiming={hud.aiming} hasSpecial={!!hud.special} scoreboardOpen={hud.scoreboardOpen} />
       )}
-      {game.touch && !hud.paused && !hud.connecting && !hud.death && !hud.inventoryOpen && !hud.spectate
-        && hud.matchEnd?.phase !== 'mvp' && <TouchControls game={game} aiming={hud.aiming} hasSpecial={!!hud.special} />}
       {game.touch && (
         <div id="rotate-hint" className="overlay">
           <div className="phone" />
@@ -109,39 +173,85 @@ export function Hud({ game, roomCode, onLeave }: Props) {
           clockLeft={hud.clock?.left ?? null}
           mode={hud.mode}
           score={hud.score}
+          onClose={game.touch ? () => game.setTouchScoreboard(false) : undefined}
         />
       )}
 
-      {hud.matchEnd?.phase === 'results' && !hud.paused && !hud.scoreboardOpen && <RoundResults end={hud.matchEnd} />}
-      {hud.matchEnd?.phase === 'mvp' && !hud.paused && <MvpShowcase end={hud.matchEnd} />}
+      {/* Round screens stay up behind the menu (dimmed) so a late joiner or a paused player still sees them. */}
+      {hud.matchEnd?.phase === 'results' && !hud.scoreboardOpen && <RoundResults end={hud.matchEnd} touch={game.touch} />}
+      {hud.matchEnd?.phase === 'mvp' && <MvpShowcase end={hud.matchEnd} />}
 
-      {hud.death && !hud.paused && !hud.matchEnd && !hud.spectate && (
-        <div id="death-overlay" className="overlay">
-          <h2>You were eliminated</h2>
-          <p>by <strong>{hud.death.killerName}</strong></p>
-          <p className="muted">Respawning in {hud.death.respawnIn}…</p>
-        </div>
+      {hud.death && !hud.paused && !hud.matchEnd && !hud.spectate && <DeathOverlay death={hud.death} />}
+
+      {intro && !hud.connecting && (
+        <TouchIntro hasSpecial={!!hud.special} onDone={() => { writeFlag(TOUCH_INTRO_KEY); setIntro(false); }} />
       )}
 
-      {hud.paused && (settingsOpen
+      {hud.paused && !intro && (settingsOpen
         ? <SettingsPanel onClose={() => setSettingsOpen(false)} />
         : (
           <PauseMenu
             game={game}
+            hud={hud}
             roomCode={roomCode}
             onLeave={onLeave}
-            team={hud.team}
-            map={hud.map}
             onSettings={() => setSettingsOpen(true)}
+            onIntro={game.touch ? () => setIntro(true) : undefined}
           />
         ))}
 
       {hud.connecting && (
-        <div id="connecting-overlay" className="overlay">
+        <div id="connecting-overlay" className="overlay" role="status">
           <img className="loading-logo" src="/brand/logo.svg" alt="" width={96} height={96} />
-          <h2>Connecting…</h2>
+          <h2>{slowConnect ? 'Still connecting…' : 'Connecting…'}</h2>
+          {slowConnect && (
+            <>
+              <p className="muted">The server isn't answering. Check your connection, or go back and try again.</p>
+              <button type="button" onClick={onLeave}>Back to lobby</button>
+            </>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+function DeathOverlay({ death }: { death: NonNullable<HudState['death']> }) {
+  return (
+    <div id="death-overlay" className="overlay" role="status">
+      <h2>{death.self ? 'You took yourself out' : 'You were eliminated'}</h2>
+      {!death.self && (
+        <p>
+          by <strong>{death.killerName}</strong>
+          <span className="weapon" title={death.weapon}>{weaponIcon(death.weapon)}</span>
+          {death.head && death.weapon !== 'grenade' && <span className="head">⌖ headshot</span>}
+        </p>
+      )}
+      {death.dropped && <p className="muted">Your gun and abilities dropped where you fell</p>}
+      <p className="muted">Respawning in {death.respawnIn}…</p>
+    </div>
+  );
+}
+
+function SpectateBanner({ spectate, touch }: { spectate: NonNullable<HudState['spectate']>; touch: boolean }) {
+  const { bindings } = useSettings();
+  const free = spectate.target === null;
+  return (
+    <div id="spectate">
+      <span className="label">Spectating</span>
+      <strong>{spectate.target ?? 'Free camera'}</strong>
+      <span className="muted">
+        {touch ? (
+          spectate.count > 0 ? 'tap: next player · ❚❚: menu' : 'nobody to follow · ❚❚: menu'
+        ) : (
+          <>
+            {spectate.count > 0 ? 'click: next · right-click: previous · ' : 'nobody to follow · '}
+            {keyLabel(bindings.jump)}: {free ? 'follow a player' : 'free camera'}
+            {free && ` · ${keyLabel(bindings.forward)}${keyLabel(bindings.left)}${keyLabel(bindings.back)}${keyLabel(bindings.right)} fly · E up · ${keyLabel(bindings.crouch)} down · ${keyLabel(bindings.sprint)} fast`}
+            {' · Esc: menu'}
+          </>
+        )}
+      </span>
     </div>
   );
 }
@@ -207,13 +317,14 @@ function formatClock(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
-function RoundClock({ clock }: { clock: HudState['clock'] }) {
+export function RoundClock({ clock }: { clock: HudState['clock'] }) {
   if (!clock) return null;
   return <span className={clock.urgent ? 'clock urgent' : 'clock'}>{formatClock(clock.left)}</span>;
 }
 
 /** First screen after a round: who won, why, and the top three. */
-function RoundResults({ end }: { end: MatchEnd }) {
+function RoundResults({ end, touch }: { end: MatchEnd; touch: boolean }) {
+  const { bindings } = useSettings();
   const outcome = end.draw ? 'draw' : end.won ? 'won' : 'lost';
   return (
     <div id="round-over" className={`overlay ${outcome}`}>
@@ -232,7 +343,8 @@ function RoundResults({ end }: { end: MatchEnd }) {
         </ol>
       )}
       <p className="muted">
-        {end.mvp ? `MVP in ${end.nextIn}…` : `Next map in ${end.nextIn}…`} · hold <kbd>Tab</kbd> for the scoreboard
+        {end.mvp ? `MVP in ${end.nextIn}…` : `Next map in ${end.nextIn}…`} ·{' '}
+        {touch ? 'tap ☰ for the scoreboard' : <>hold <kbd>{keyLabel(bindings.scoreboard)}</kbd> for the scoreboard</>}
       </p>
     </div>
   );
@@ -270,9 +382,11 @@ function MvpShowcase({ end }: { end: MatchEnd }) {
   );
 }
 
-function FlagIcon({ status }: { status: FlagStatus }) {
+export function FlagIcon({ status }: { status: FlagStatus }) {
   if (status.state === 'home') return <span className="flag home" title="At base">⚑ base</span>;
-  if (status.state === 'dropped') return <span className="flag dropped" title="Dropped">⚑ dropped</span>;
+  if (status.state === 'dropped') {
+    return <span className="flag dropped" title={`Returns in ${status.returnIn}s`}>⚑ dropped · {status.returnIn}s</span>;
+  }
   return <span className="flag carried" title={`Carried by ${status.carrier}`}>⚑ {status.carrier}</span>;
 }
 
@@ -307,16 +421,24 @@ function HealthPanel({ hp }: { hp: number }) {
     <div id="health" className="panel">
       <span className="label">HP</span>
       <span>{Math.max(0, Math.ceil(hp))}</span>
-      <div className="bar">
+      <div className="bar" aria-hidden="true">
         <div id="health-bar" style={{ width: `${Math.max(0, hp)}%`, background: color }} />
       </div>
     </div>
   );
 }
 
-function AmmoPanel({ hud }: { hud: HudState }) {
+function AmmoPanel({ hud, touch }: { hud: HudState; touch: boolean }) {
   const { ammo, magSize: max, reloading, gun, reserve, special } = hud;
-  const classes = [ammo <= max * 0.2 && 'low', reloading && 'reloading'].filter(Boolean).join(' ');
+  const { bindings } = useSettings();
+  const low = ammo <= max * 0.2;
+  const dry = ammo === 0 && reserve === 0;
+  const classes = [low && 'low', reloading && 'reloading', dry && 'dry'].filter(Boolean).join(' ');
+  // One line under the count, most urgent first.
+  const hint = reloading ? 'RELOADING'
+    : ammo === 0 && (reserve === null || reserve > 0) ? `${touch ? '↻' : keyLabel(bindings.reload)} TO RELOAD`
+      : dry ? 'NO AMMO — FIND A BOX'
+        : low ? 'LOW AMMO' : '';
   const slot = (kind: GunKind) => (
     <span className={kind === gun ? 'gun-slot on' : 'gun-slot'}>{GUNS[kind].name}</span>
   );
@@ -328,7 +450,7 @@ function AmmoPanel({ hud }: { hud: HudState }) {
       </div>
       <span id="ammo-value">{ammo}</span>
       <span className="label"> / {reserve === null ? '∞' : reserve}</span>
-      <div id="reload-hint">RELOADING</div>
+      <div id="reload-hint" className={hint ? 'show' : undefined}>{hint || 'RELOADING'}</div>
     </div>
   );
 }
@@ -345,6 +467,9 @@ function ScopeOverlay() {
 }
 
 function KillFeed({ entries }: { entries: FeedEntry[] }) {
+  const tag = (team: Team | null) => team && (
+    <span className={`tag ${team}`} title={`${TEAM_INFO[team].name} team`}>{TEAM_INFO[team].name[0]}</span>
+  );
   return (
     <ul id="killfeed">
       {entries.map((e) =>
@@ -352,12 +477,16 @@ function KillFeed({ entries }: { entries: FeedEntry[] }) {
           <li key={e.id}><span className="muted">{e.text}</span></li>
         ) : (
           <li key={e.id} className={e.mine ? 'me' : undefined}>
-            <span style={{ color: safeColor(e.killer.color) }}>{e.killer.name}</span>
+            <span style={{ color: safeColor(e.killer.color) }}>
+              {tag(e.killerTeam)}{e.killer.name}{e.me === 'killer' && <span className="you"> (you)</span>}
+            </span>
             <span className="weapon">
-              {e.weapon === 'grenade' ? '💣' : GUNS[e.weapon]?.icon ?? '▸'}
+              {weaponIcon(e.weapon)}
               {e.weapon !== 'grenade' && e.head && <span className="head"> ⌖ headshot</span>}
             </span>
-            <span style={{ color: safeColor(e.victim.color) }}>{e.victim.name}</span>
+            <span style={{ color: safeColor(e.victim.color) }}>
+              {tag(e.victimTeam)}{e.victim.name}{e.me === 'victim' && <span className="you"> (you)</span>}
+            </span>
           </li>
         ),
       )}
@@ -366,23 +495,27 @@ function KillFeed({ entries }: { entries: FeedEntry[] }) {
 }
 
 function AbilityBar(
-  { slots, buffs, toast, onUse }: Pick<HudState, 'slots' | 'buffs' | 'toast'> & { onUse?: (slot: number) => void },
+  { slots, buffs, denied, onUse }: Pick<HudState, 'slots' | 'buffs'> & { denied: HudState['slotDenied']; onUse?: (slot: number) => void },
 ) {
   return (
     <div id="abilities">
-      {toast && <div key={`toast-${toast.n}`} id="ability-toast">{toast.text}</div>}
       <div className="buffs">
         {buffs.speed !== null && <span className="buff speed">⚡ {buffs.speed.toFixed(1)}s</span>}
         {buffs.shield !== null && <span className="buff shield">🛡️ {buffs.shield}</span>}
       </div>
       <div className="slots">
-        {slots.map((slot, i) => <AbilitySlot key={i} index={i} slot={slot} onUse={onUse} />)}
+        {slots.map((slot, i) => (
+          // A denial remounts the slot so the shake restarts.
+          <AbilitySlot key={denied?.slot === i ? `${i}-${denied.n}` : i} index={i} slot={slot} shake={denied?.slot === i} onUse={onUse} />
+        ))}
       </div>
     </div>
   );
 }
 
-function AbilitySlot({ index, slot, onUse }: { index: number; slot: SlotView | null; onUse?: (slot: number) => void }) {
+function AbilitySlot(
+  { index, slot, shake, onUse }: { index: number; slot: SlotView | null; shake: boolean; onUse?: (slot: number) => void },
+) {
   const { bindings } = useSettings();
   const key = keyLabel([bindings.ability1, bindings.ability2, bindings.ability3][index] ?? '');
   if (!slot) {
@@ -396,7 +529,7 @@ function AbilitySlot({ index, slot, onUse }: { index: number; slot: SlotView | n
   const coolingDown = slot.cooldown > 0;
   return (
     <div
-      className={`slot ${coolingDown ? 'cooling' : 'ready'}`}
+      className={`slot ${coolingDown ? 'cooling' : 'ready'}${shake ? ' shake' : ''}`}
       title={`${def.name}: ${def.description}`}
       onPointerDown={onUse ? (e) => { e.stopPropagation(); onUse(index); } : undefined}
     >
@@ -413,62 +546,6 @@ function AbilitySlot({ index, slot, onUse }: { index: number; slot: SlotView | n
           <span>{Math.ceil(slot.cooldown)}</span>
         </div>
       )}
-    </div>
-  );
-}
-
-function PauseMenu(
-  { game, roomCode, onLeave, team, map, onSettings }: Props & Pick<HudState, 'team' | 'map'> & { onSettings(): void },
-) {
-  const [copied, setCopied] = useState(false);
-  const { bindings } = useSettings();
-
-  const resume = (e: MouseEvent) => {
-    if (!(e.target as Element).closest('button')) game.requestPointerLock();
-  };
-
-  const copyLink = () => {
-    const url = `${location.origin}${location.pathname}?room=${roomCode}`;
-    // Phones: the share sheet; otherwise the clipboard.
-    if (game.touch && typeof navigator.share === 'function') {
-      navigator.share({ title: 'Arena FPS', text: `Join my match, room ${roomCode}`, url }).catch(() => {});
-      return;
-    }
-    void navigator.clipboard?.writeText(url).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
-
-  return (
-    <div id="pause-overlay" className="overlay" onClick={resume}>
-      <h2>{game.touch ? 'Tap to play' : 'Click to play'}</h2>
-      {game.touch ? (
-        <p className="muted touch-help">
-          Left thumb: move (push all the way to sprint) · Right side: drag to look · ● fire · ◎ aim · ⤒ jump ·
-          ⤓ crouch (tap while sprinting to slide) · tap an ability to use it
-        </p>
-      ) : (
-        <div className="controls">
-          {controls(bindings).map(([key, action]) => (
-            <span key={key}><kbd>{key}</kbd> {action}</span>
-          ))}
-        </div>
-      )}
-      {team && (
-        <p>
-          You're on <strong style={{ color: TEAM_INFO[team].color }}>{TEAM_INFO[team].name} team</strong>{' '}
-          <button onClick={() => game.switchTeam()}>Switch to {TEAM_INFO[otherTeam(team)].name}</button>
-        </p>
-      )}
-      <p className="muted">Room code <strong>{roomCode}</strong> — share it with friends</p>
-      {map && <p className="muted">Map <strong>{map.name}</strong> · seed <strong>{map.seed}</strong></p>}
-      <button onClick={() => (game.isSpectating ? game.stopSpectating() : game.startSpectating())}>
-        {game.isSpectating ? 'Back to the fight' : 'Spectate'}
-      </button>
-      <button onClick={onSettings}>Settings (sensitivity, keys)</button>
-      <button onClick={copyLink}>{copied ? 'Copied!' : 'Copy invite link'}</button>
-      <button className="danger" onClick={onLeave}>Leave room</button>
     </div>
   );
 }

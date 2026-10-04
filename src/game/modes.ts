@@ -24,21 +24,27 @@ export interface ModeDef {
   timeLimit: number;
   /** Whether guns, abilities and ammo spawn on the map */
   pickups: boolean;
+  /** One line telling a new player what to do */
+  goal: string;
 }
 
 export const MODES: Record<GameMode, ModeDef> = {
   ffa: {
     name: 'Free-for-all', short: 'FFA', description: 'Everyone for themselves', teams: false, limit: 25, timeLimit: 8 * 60, pickups: true,
+    goal: 'Every kill counts — first to 25 wins',
   },
   tdm: {
     name: 'Team Deathmatch', short: 'TDM', description: 'Red vs Blue, team kills count', teams: true, limit: 50, timeLimit: 10 * 60, pickups: true,
+    goal: 'Kills score for your team — first team to 50 wins',
   },
   ctf: {
     name: 'Capture the Flag', short: 'CTF', description: 'Bring the enemy flag to yours', teams: true, limit: 3, timeLimit: 12 * 60, pickups: true,
+    goal: 'Take the enemy flag to your base — first to 3 captures. Your own flag must be home to score.',
   },
   gungame: {
     name: 'Gun Game', short: 'GG', description: 'Every kill gives the next gun; finish the ladder to win', teams: false,
     limit: GUN_GAME_LADDER.length, timeLimit: 10 * 60, pickups: false,
+    goal: `Every kill hands you the next gun — clear all ${GUN_GAME_LADDER.length} to win`,
   },
 };
 

@@ -26,11 +26,12 @@ import { MomentTracker } from './moments';
 import { ReplayDirector, ReplayRecorder } from './replay';
 import { RoomConnection, randomId } from '../net/network';
 import * as sfx from './audio';
-import { actionFor, keyLabel, settings, type Action, type Quality } from './settings';
+import { actionFor, keyFor, keyLabel, settings, type Action, type Quality } from './settings';
 import { IN_DISCORD } from '../discord/patch';
 import { setDiscordActivity } from '../discord/discord';
 import { TOUCH } from './device';
 import { StepTracker, type StepEvent } from './footsteps';
+import { hints, type HintId } from './hints';
 import type {
   GameEvent, GameMode, GameState, GunKind, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, Team, Vec3Tuple, WeaponKind,
 } from '../types';
@@ -238,6 +239,12 @@ export class Game {
   private presenceKey = '';
   private presenceTimer = 0;
 
+  /** Onboarding: the mode banner on the first click to play, and how long we've been sprinting (slide tip) */
+  private introDone = false;
+  private sprintFor = 0;
+  private deniedAt = 0;
+  private offline = false;
+
   /** Camera shake left from recent hits (0..1) and the low-health heartbeat timer */
   private shake = 0;
   private heartbeatTimer = 0;
@@ -285,6 +292,7 @@ export class Game {
       onPickupAdded: (id, pickup) => this.pickups.add(id, pickup),
       onPickupRemoved: (id) => this.pickups.remove(id),
       onGame: (game) => this.onGame(game),
+      onConnection: (connected) => this.onConnection(connected),
     });
 
     this.bindInput(signal);
@@ -342,7 +350,7 @@ export class Game {
     this.aimHeld = false;
     this.weapon.releaseTrigger();
     this.player.setEnabled(false);
-    this.hud.update({ paused: this.joined });
+    this.hud.update({ paused: this.joined, scoreboardOpen: false });
   }
 
   /** Finger drag on the look area (or the fire button), in screen pixels. */
@@ -434,7 +442,8 @@ export class Game {
     if (document.pointerLockElement === this.renderer.domElement) return;
     // Browsers throttle re-locking right after Esc; older ones return void instead of a promise.
     const result = this.renderer.domElement.requestPointerLock() as Promise<void> | undefined;
-    result?.catch(() => {});
+    // Browsers refuse a lock for about a second after Esc; the click looks like it did nothing otherwise.
+    result?.catch(() => { if (!IN_DISCORD) this.hud.toast('Click again to resume'); });
   }
 
   /**
@@ -463,7 +472,10 @@ export class Game {
 
     window.addEventListener('resize', () => this.resize(), { signal });
 
-    document.addEventListener('pointerlockerror', () => { if (IN_DISCORD) this.enterFreeMouse(); }, { signal });
+    document.addEventListener('pointerlockerror', () => {
+      if (IN_DISCORD) this.enterFreeMouse();
+      else if (!this.touch) this.hud.toast('Click again to resume');
+    }, { signal });
     document.addEventListener('pointerlockchange', () => {
       if (this.freeMouse) return;
       this.locked = document.pointerLockElement === canvas;
@@ -619,7 +631,7 @@ export class Game {
     this.hud.update({ death: null, hp: 0 });
     void this.net.sendState({ alive: false, hp: 0, spec: true, shield: false });
     this.cycleSpectate(1);
-    this.hud.toast('Spectating · click: next player · space: free camera');
+    this.hud.toast(this.touch ? 'Spectating · tap: next player' : `Spectating · click: next player · ${keyLabel(keyFor('jump'))}: free camera`);
   }
 
   /** Back into the fight: respawn as usual. */
@@ -857,7 +869,12 @@ export class Game {
       const killer = this.players[evt.killer] ?? UNKNOWN_PLAYER;
       const victim = this.players[evt.victim] ?? UNKNOWN_PLAYER;
       const mine = evt.killer === this.playerId || evt.victim === this.playerId;
-      this.hud.pushKill(killer, victim, evt.head, mine, evt.weapon ?? 'rifle');
+      const teamOf = (id: string) => (id === this.playerId ? this.team : this.players[id]?.team) ?? null;
+      this.hud.pushKill(killer, victim, evt.head, mine, evt.weapon ?? 'rifle', {
+        killerTeam: teamOf(evt.killer),
+        victimTeam: teamOf(evt.victim),
+        me: evt.victim === this.playerId ? 'victim' : evt.killer === this.playerId ? 'killer' : null,
+      });
       if (evt.killer === this.playerId && evt.victim !== this.playerId) {
         sfx.playKill();
         this.onOwnKill(evt.victim, evt.head, t);
@@ -875,6 +892,19 @@ export class Game {
     const left = GUN_GAME_LADDER.length - kills;
     this.hud.toast(`Level ${kills + 1}: ${GUNS[gun].name} · ${left} to go`);
     sfx.playSwitch();
+  }
+
+  /** Connection dropped or came back: tell the player, and hold pose updates while offline. */
+  private onConnection(connected: boolean): void {
+    if (!this.joined || this.offline === !connected) return;
+    this.offline = !connected;
+    this.hud.update({ offline: this.offline });
+    this.hud.pushInfo(connected ? 'Back online' : 'Connection lost');
+  }
+
+  /** Show a tip once per browser. */
+  private hint(id: HintId, text: () => string): void {
+    if (hints.once(id)) this.hud.toast(text());
   }
 
   /** Feed our kills into the highlight tracker. */
@@ -964,23 +994,36 @@ export class Game {
     if (samePlacement(was, is)) return;
     const flag = `${TEAM_INFO[team].name} flag`;
     const who = (id: string) => (id === this.playerId ? 'You' : this.players[id]?.name || 'Someone');
+    const ours = team === this.team;
     if (is.at === 'carried') {
       this.hud.pushInfo(`${who(is.carrier)} took the ${flag}`);
-      if (is.carrier === this.playerId) sfx.playPickup();
-      else if (team === this.team) sfx.playDenied();
+      if (is.carrier === this.playerId) {
+        sfx.playPickup();
+        this.hud.announce('FLAG TAKEN', 'Run it to your base');
+      } else if (ours) {
+        sfx.playDenied();
+        this.hud.announce('YOUR FLAG IS GONE', `${who(is.carrier)} has it`);
+      }
     } else if (was.at === 'carried' && is.at === 'ground') {
       this.hud.pushInfo(`${who(was.carrier)} dropped the ${flag}`);
     } else if (was.at === 'carried' && is.at === 'base') {
       this.hud.pushInfo(`${who(was.carrier)} captured the ${flag}!`);
-      if (team !== this.team) sfx.playKill();
+      if (!ours) {
+        sfx.playKill();
+        this.hud.announce('CAPTURED', `${who(was.carrier)} scored`);
+      } else {
+        this.hud.announce('ENEMY SCORED', '');
+      }
     } else if (is.at === 'base') {
       this.hud.pushInfo(`The ${flag} was returned`);
+      if (ours) this.hud.announce('FLAG RETURNED', '');
     }
   }
 
   /** A new round began (on a new map): everyone resets their own score and respawns. */
   private startRound(): void {
     this.stopReplay();
+    this.hud.clearToasts();
     this.kills = 0;
     if (this.mode === 'gungame') this.weapon.setForcedGun(gunGameGun(0));
     this.deaths = 0;
@@ -1232,7 +1275,12 @@ export class Game {
           const carrier = at.carrier === this.playerId ? 'You' : this.players[at.carrier]?.name || 'Someone';
           return [team, { state: 'carried', carrier, mine: at.carrier === this.playerId }];
         }
-        return [team, { state: at.at === 'ground' ? 'dropped' : 'home' }];
+        if (at.at !== 'ground') return [team, { state: 'home' }];
+        const droppedAt = this.flagDroppedAt[team];
+        const returnIn = droppedAt === undefined
+          ? FLAG_RETURN_TIME
+          : Math.max(0, Math.ceil(FLAG_RETURN_TIME - (performance.now() - droppedAt) / 1000));
+        return [team, { state: 'dropped', returnIn }];
       })) as HudState['flags']
       : null;
 
@@ -1243,10 +1291,11 @@ export class Game {
     }
 
     const matchEnd = this.matchEndView(now);
-    const key = JSON.stringify([score, flags, clock, matchEnd]);
+    const playerCount = Object.values(this.players).filter((p) => !p.spec).length;
+    const key = JSON.stringify([score, flags, clock, matchEnd, playerCount]);
     if (key === this.lastScoreKey) return;
     this.lastScoreKey = key;
-    this.hud.update({ score, flags, clock, matchEnd });
+    this.hud.update({ score, flags, clock, matchEnd, playerCount });
   }
 
   private matchEndView(now: number): MatchEnd | null {
@@ -1287,6 +1336,7 @@ export class Game {
       top,
       mvp,
       nextIn: Math.max(0, Math.ceil((phaseEnds - now) / 1000)),
+      nextMapIn: Math.max(0, Math.ceil((this.endedAt + this.intermissionMs() - now) / 1000)),
       nextMap: next,
     };
   }
@@ -1469,7 +1519,7 @@ export class Game {
     this.triggerHeld = false;
     this.aimHeld = false;
     // Our picked-up gun and abilities fall around the body for anyone to grab; their effects end.
-    this.dropLoot();
+    const dropped = this.dropLoot();
     this.clearAbilities();
     this.stats.streak = 0;
     this.moments.onDeath();
@@ -1478,24 +1528,28 @@ export class Game {
     void this.net.sendState({ alive: false, hp: 0, deaths: this.deaths, shield: false });
     this.net.sendEvent({ type: 'kill', killer: killerId, victim: this.playerId, head, weapon });
     if (killerId && killerId !== this.playerId) this.creditKiller(killerId);
+    const self = !killerId || killerId === this.playerId;
     this.hud.update({
       hp: 0,
-      death: { killerName: this.players[killerId]?.name || 'someone', respawnIn: RESPAWN_TIME },
+      death: {
+        killerName: self ? '' : this.players[killerId]?.name || 'someone', self, weapon, head, dropped, respawnIn: RESPAWN_TIME,
+      },
     });
   }
 
   /** Scatter the picked-up gun and abilities (with their ammo / uses left) on the floor around where we died. */
-  private dropLoot(): void {
-    if (!MODES[this.mode].pickups) return;
+  private dropLoot(): boolean {
+    if (!MODES[this.mode].pickups) return false;
     const gun = this.weapon.takeSpecial();
     const items: PickupRecord[] = [
       ...(gun && gun.rounds > 0 && isPickupGun(gun.kind) ? [{ type: gun.kind, uses: gun.rounds, x: 0, z: 0 }] : []),
       ...this.inventory.takeAll().map((a) => ({ type: a.type, uses: a.usesLeft, x: 0, z: 0 })),
     ];
-    if (!items.length) return;
+    if (!items.length) return false;
     const p = this.player.position;
     const spots = this.pickups.scatterAround(p.x, p.z, items.length);
     items.forEach((item, i) => void this.net.spawnPickup({ ...item, ...spots[i]! }));
+    return true;
   }
 
   /** Give the kill to `killerId`, and the point to their team in TDM. */
@@ -1527,7 +1581,9 @@ export class Game {
     this.alive = true;
     this.weapon.reset();
     this.hitSources.clear();
+    const wasDead = !!this.hud.get().death;
     this.hud.update({ hp: 100, death: null });
+    if (wasDead) this.hud.update({ respawnFlash: this.hud.get().respawnFlash + 1 });
     void this.net.sendState({ ...this.poseState(), hp: 100, alive: true });
   }
 
@@ -1636,7 +1692,16 @@ export class Game {
     const now = performance.now();
     const check = this.inventory.check(slot, now);
     if (!check.ok) {
-      if (check.reason === 'cooldown') sfx.playDenied();
+      if (now - this.deniedAt < 700) return;
+      this.deniedAt = now;
+      const view = this.inventory.view(now)[slot];
+      if (check.reason === 'empty' || !view) {
+        this.hud.toast('Empty slot — pick up an ability');
+      } else {
+        this.hud.toast(`${ABILITIES[view.type].name} ready in ${view.cooldown.toFixed(1)} s`);
+        this.hud.update({ slotDenied: { n: (this.hud.get().slotDenied?.n ?? 0) + 1, slot } });
+      }
+      sfx.playDenied();
       return;
     }
     const type = check.type;
@@ -1916,7 +1981,10 @@ export class Game {
       return;
     }
     if (kind === 'ability' && !this.inventory.hasRoom) {
-      if (this.fullToastFor !== id) this.hud.toast('Slots full — use an ability to make room');
+      if (this.fullToastFor !== id) {
+        this.hud.toast('Slots full — use an ability to make room');
+        this.hint('full-slots', () => (this.touch ? 'Open 🎒 to drop an ability' : `Open the inventory (${keyLabel(keyFor('inventory'))}) to drop one`));
+      }
       this.fullToastFor = id;
       return;
     }
@@ -1941,10 +2009,16 @@ export class Game {
           sfx.playPickup();
         } else if (isPickupGun(pickup.type)) {
           this.takeGun(pickup.type, pickup.uses);
-        } else if (this.inventory.add(pickup.type, pickup.uses) >= 0) {
-          this.hud.toast(`Picked up ${ABILITIES[pickup.type].name}`);
-          this.bumpMyMatch('pickups');
-          sfx.playPickup();
+        } else {
+          const i = this.inventory.add(pickup.type, pickup.uses);
+          if (i >= 0) {
+            const def = ABILITIES[pickup.type];
+            this.hud.toast(`Picked up ${def.name}`);
+            this.hint(`ability:${pickup.type}`, () =>
+              `${def.name}: ${def.description} — ${this.touch ? 'tap the slot' : keyLabel(settings.get().bindings[ABILITY_ACTIONS[i] ?? 'ability1'])}`);
+            this.bumpMyMatch('pickups');
+            sfx.playPickup();
+          }
         }
       })
       .catch((err: unknown) => console.warn('Pickup claim failed', err))
@@ -1989,7 +2063,8 @@ export class Game {
       return;
     }
     this.aimHeld = false;
-    this.hud.toast(had === kind ? `+${def.name} ammo` : `Picked up ${def.name} — Q / wheel to switch`);
+    this.hud.toast(had === kind ? `+${def.name} ammo` : `Picked up ${def.name}`);
+    if (had !== kind) this.hint('gun-swap', () => (this.touch ? '⇄ switches guns' : `${keyLabel(keyFor('swap'))} / wheel to switch guns`));
     this.bumpMyMatch('pickups');
     sfx.playSwitch();
   }
@@ -2028,8 +2103,16 @@ export class Game {
       if (this.respawnTimer <= 0) this.respawn();
     }
 
+    if (this.joined && this.locked && !this.introDone) {
+      // First click to play: say what this mode is about (the pause card repeats it).
+      this.introDone = true;
+      this.hud.announce(MODES[this.mode].name, MODES[this.mode].goal, 3800);
+    }
     const aiming = this.aimHeld && this.alive && this.locked && !this.roundOver && !this.inventoryOpen;
     this.player.aiming = aiming;
+    if (aiming) {
+      this.hint('ads', () => `Aiming down sights: tighter spread, slower moves${settings.get().aimToggle ? ' — right-click again to stop' : ''}`);
+    }
     // Nobody moves between rounds.
     this.player.update(dt, this.alive && !this.roundOver);
     if (this.spectating && !this.replay) this.updateSpectator(dt);
@@ -2037,6 +2120,10 @@ export class Game {
     this.updateHeartbeat(dt);
     const speed = this.player.horizontalSpeed;
     const sprinting = this.player.sprintHeld && speed > 7;
+    this.sprintFor = sprinting && this.alive ? this.sprintFor + dt : 0;
+    if (this.sprintFor > 0.6) {
+      this.hint('slide', () => (this.touch ? 'Tap ⤓ while sprinting to slide' : `Press ${keyLabel(keyFor('crouch'))} while sprinting to slide`));
+    }
 
     if (this.triggerHeld && this.alive && this.locked && this.joined && !this.roundOver && this.weapon.tryFire()) this.shoot();
     if (this.weapon.specialEmpty) {
@@ -2101,7 +2188,7 @@ export class Game {
         const moment = this.moments.get();
         const statsKey = JSON.stringify([this.stats, moment]);
         const statsChanged = statsKey !== this.lastStatsKey;
-        if (key !== this.lastSent || statsChanged || this.heartbeat > HEARTBEAT) {
+        if (!this.offline && (key !== this.lastSent || statsChanged || this.heartbeat > HEARTBEAT)) {
           this.lastSent = key;
           this.lastStatsKey = statsKey;
           this.heartbeat = 0;
