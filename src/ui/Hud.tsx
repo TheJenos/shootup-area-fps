@@ -73,7 +73,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
         </div>
       )}
 
-      {hud.inventoryOpen && <InventoryPanel game={game} slots={hud.slots} />}
+      {hud.inventoryOpen && <InventoryPanel game={game} slots={hud.slots} gun={hud.special} gunRounds={hud.specialRounds} />}
 
       {hud.scoreboardOpen && !hud.paused && (
         <MatchSummary

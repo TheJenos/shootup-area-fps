@@ -40,10 +40,9 @@ The room's creator picks the mode; the lobby shows it next to each room.
 | **CTF** — Capture the Flag | Grab the enemy flag and bring it to your own base | 12 min | 3 captures |
 
 - **Teams:** you join the smaller team. Every player's uniform takes their team colour (65%, with a faint glow
-  and a glowing visor, so teams stay readable in shadow). Teammates' names are always visible, and a
-  teammate hidden behind cover is drawn over the walls as a flat 2D silhouette of their character (same pose
-  and animation, gun included) in team colour, with their name above it
-  (`src/game/xray.ts`, `src/game/allyMarker.ts`; enemies are never shown through walls),
+  and a glowing visor, so teams stay readable in shadow). Teammates' names show whenever they're in sight, and a
+  teammate hidden behind cover is drawn over the walls as just a flat 2D silhouette of their character (same pose
+  and animation, gun included) in team colour (`src/game/xray.ts`; enemies are never shown through walls),
   bullets and grenades pass through them, and you spawn on your own half (red owns +z, blue −z).
   The pause menu (Esc) has a **Switch team** button.
 - **Capture the Flag:** each base is a glowing pad near the back wall with the team's flag on it.
@@ -247,8 +246,8 @@ stocked separately from abilities) and go into a second slot when you walk over 
 
 - Switch with **Q** or the mouse wheel (or the ⇄ button on touch screens). The ammo panel shows both slots,
   the magazine and the spare rounds.
-- Walking over a different gun swaps it in and drops yours with its remaining ammo; the same gun just adds
-  ammo. When a picked-up gun runs completely dry you go back to the rifle. When you die it drops next to your body
+- You carry one picked-up gun at a time. A different gun stays on the floor until you drop yours from the
+  inventory (**I**, or the 🎒 button on touch screens); walking over the same gun just adds ammo. When a picked-up gun runs completely dry you go back to the rifle. When you die it drops next to your body
   with the ammo it had left.
 - Each gun has its own model, iron sights or scope, aimed field of view, spread, recoil and synthesized
   report. Other players see the gun you're holding, and the kill feed shows which gun got the kill.
@@ -396,7 +395,6 @@ src/
     player.ts        first-person controller + collisions
     remotePlayer.ts  other players' avatars + interpolation
     xray.ts          flat team-colour silhouette of teammates behind cover
-    allyMarker.ts    name label over that silhouette
     nameTag.ts       name + health tag revealed to the shooter
     modes.ts         game modes, score + time limits, teams, flag bases
     moments.ts       tracks our highlights (multi-kills, flag runs, ...) for MVP

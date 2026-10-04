@@ -155,6 +155,9 @@ export function TouchControls({ game, aiming, hasSpecial }: { game: Game; aiming
         <button type="button" className="tbtn small" aria-label="Scoreboard" {...hold(() => game.setTouchScoreboard(true), () => game.setTouchScoreboard(false))}>
           ☰
         </button>
+        <button type="button" className="tbtn small" aria-label="Inventory" onPointerDown={tap(() => game.touchInventory())}>
+          🎒
+        </button>
         <button type="button" className="tbtn small" aria-label="Menu" onPointerDown={tap(() => game.pauseTouchPlay())}>
           ❚❚
         </button>

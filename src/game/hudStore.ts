@@ -102,6 +102,8 @@ export interface HudState {
   gun: GunKind;
   reserve: number | null;
   special: GunKind | null;
+  /** Rounds left in the picked-up gun (shown in the inventory) */
+  specialRounds: number | null;
   /** Looking through the sniper scope */
   scoped: boolean;
   reloading: boolean;
@@ -149,6 +151,7 @@ const initialState: HudState = {
   gun: 'rifle',
   reserve: null,
   special: null,
+  specialRounds: null,
   scoped: false,
   reloading: false,
   hitmarker: { n: 0, head: false },

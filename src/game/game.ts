@@ -24,7 +24,7 @@ import { MomentTracker } from './moments';
 import { ReplayDirector, ReplayRecorder } from './replay';
 import { RoomConnection, randomId } from '../net/network';
 import * as sfx from './audio';
-import { actionFor, settings, type Action } from './settings';
+import { actionFor, keyLabel, settings, type Action } from './settings';
 import { IN_DISCORD } from '../discord/patch';
 import { TOUCH } from './device';
 import { StepTracker, type StepEvent } from './footsteps';
@@ -1465,6 +1465,28 @@ export class Game {
     sfx.playAbility();
   }
 
+  /** Put our picked-up gun on the floor in front of us, with its rounds left (back to the rifle). */
+  dropGun(): void {
+    if (!this.alive || !this.joined) return;
+    const gun = this.weapon.takeSpecial();
+    if (!gun || !isPickupGun(gun.kind)) return;
+    if (gun.rounds > 0) {
+      const spot = this.dropSpot();
+      const id = this.net.spawnPickup({ type: gun.kind, uses: gun.rounds, ...spot });
+      if (id) this.ignorePickup = { id, ...spot };
+    }
+    this.hud.toast(`Dropped ${GUNS[gun.kind].name}`);
+    sfx.playSwitch();
+  }
+
+  /** The on-screen bag button: open the inventory (touch devices have no keyboard). */
+  touchInventory(): void {
+    // The on-screen controls hide behind the panel, so let go of anything they were holding.
+    this.setTouchMove(null);
+    this.setTouchFire(false);
+    this.openInventory();
+  }
+
   private dropSpot(): { x: number; z: number } {
     const p = this.player.position;
     const ahead = { x: p.x - Math.sin(this.player.yaw) * DROP_DISTANCE, z: p.z - Math.cos(this.player.yaw) * DROP_DISTANCE };
@@ -1579,6 +1601,16 @@ export class Game {
       this.fullToastFor = id;
       return;
     }
+    // One picked-up gun at a time: a different one stays on the floor until ours is dropped.
+    const carried = this.weapon.special;
+    if (touchingType && isPickupGun(touchingType) && carried && carried !== touchingType) {
+      if (this.fullToastFor !== id) {
+        const how = this.touch ? 'the 🎒 button' : `${keyLabel(settings.get().bindings.inventory)} → Inventory`;
+        this.hud.toast(`Drop your ${GUNS[carried].name} first (${how})`);
+      }
+      this.fullToastFor = id;
+      return;
+    }
     this.claimingPickup = id;
     this.net.claimPickup(id)
       .then((pickup) => {
@@ -1615,17 +1647,19 @@ export class Game {
     void this.net.spawnPickup(pickup);
   }
 
-  /** Walked over a gun: it goes in the second slot; a different gun we had is dropped with its ammo. */
+  /** Walked over a gun: it goes in the empty second slot, or adds ammo to the same gun. */
   private takeGun(kind: Exclude<GunKind, 'rifle'>, rounds: number | undefined): void {
     const def = GUNS[kind];
     const had = this.weapon.special;
-    const dropped = this.weapon.giveGun(kind, rounds ?? def.mag + def.reserve);
-    this.aimHeld = false;
-    if (dropped) {
+    const total = rounds ?? def.mag + def.reserve;
+    if (!this.weapon.giveGun(kind, total)) {
+      // We picked up another gun while this claim was in flight: put this one back.
       const spot = this.dropSpot();
-      const id = this.net.spawnPickup({ type: dropped.kind as Exclude<GunKind, 'rifle'>, uses: dropped.rounds, ...spot });
+      const id = this.net.spawnPickup({ type: kind, uses: total, ...spot });
       if (id) this.ignorePickup = { id, ...spot };
+      return;
     }
+    this.aimHeld = false;
     this.hud.toast(had === kind ? `+${def.name} ammo` : `Picked up ${def.name} — Q / wheel to switch`);
     this.bumpMyMatch('pickups');
     sfx.playSwitch();
@@ -1686,6 +1720,7 @@ export class Game {
       reserve: this.weapon.reserve,
       gun: this.weapon.gun,
       special: this.weapon.special,
+      specialRounds: this.weapon.specialRounds,
       reloading: this.weapon.reloading,
     });
 

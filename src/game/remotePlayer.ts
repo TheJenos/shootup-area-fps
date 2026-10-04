@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { NameTag } from './nameTag';
-import { AllyMarker } from './allyMarker';
 import { makeXrayMaterial, makeXrayMeshes } from './xray';
 import { REMOTE_GUN_SIZE } from './guns';
 import { wornMetalTexture } from './textures';
@@ -117,10 +116,9 @@ export class RemotePlayer {
   private gunMesh!: THREE.Mesh;
   private gunNow: GunKind = 'rifle';
   private ally = false;
-  /** Flat silhouette and name label drawn over the walls while a teammate is behind cover (made on first need) */
+  /** Flat silhouette drawn over the walls while a teammate is behind cover (made on first need) */
   private xray: THREE.Mesh[] = [];
   private xrayMaterial: THREE.ShaderMaterial | null = null;
-  private marker: AllyMarker | null = null;
   private occluded = false;
   private teamNow: Team | undefined;
   /** 0..1 blend toward the crouch and slide poses */
@@ -233,10 +231,7 @@ export class RemotePlayer {
     this.targetYaw = data.yaw ?? this.targetYaw;
     this.targetPitch = data.pitch ?? this.targetPitch;
     if (data.color || data.team) this.setColor(data.color ?? this.colorNow, data.team ?? this.teamNow);
-    if (data.name) {
-      this.tag.setName(data.name);
-      this.marker?.setName(data.name);
-    }
+    if (data.name) this.tag.setName(data.name);
     this.shield.visible = !!data.shield && this.alive;
     if (data.gun && data.gun !== this.gunNow) this.setGun(data.gun);
     if (data.stance) {
@@ -321,15 +316,15 @@ export class RemotePlayer {
   }
 
   /**
-   * A teammate is behind cover: show a flat 2D silhouette of their character in team colour,
-   * with their name above it, over the walls (in place of their name tag).
+   * A teammate is behind cover: show a flat 2D silhouette of their character in team colour
+   * over the walls. Their name tag is hidden meanwhile; it comes back once they're in sight.
    * Only for allies; enemies behind walls stay hidden.
    */
   setOccluded(occluded: boolean): void {
     const show = occluded && this.ally && this.alive;
     if (show === this.occluded) return;
     this.occluded = show;
-    if (show && !this.marker) {
+    if (show && !this.xray.length) {
       this.xrayMaterial = makeXrayMaterial(this.colorNow ?? '#ffffff');
       this.xray = makeXrayMeshes(this.model, this.xrayMaterial);
       // The gun they're holding is part of the silhouette too (it follows gun swaps, being its child).
@@ -337,11 +332,8 @@ export class RemotePlayer {
       gunCopy.renderOrder = 10;
       this.gunMesh.add(gunCopy);
       this.xray.push(gunCopy);
-      this.marker = new AllyMarker(this.tag.name);
-      this.group.add(this.marker.sprite);
     }
     for (const mesh of this.xray) mesh.visible = show;
-    if (this.marker) this.marker.sprite.visible = show;
   }
 
   /** Points to test for line of sight: chest and head, in world space. */
@@ -374,10 +366,6 @@ export class RemotePlayer {
     this.fall = THREE.MathUtils.clamp(this.fall + (this.alive ? -dt * 4 : dt * 2.5), 0, 1);
     this.group.rotation.x = (-Math.PI / 2) * this.fall * this.fall;
     this.tag.update(this.alive && !this.occluded);
-    if (this.occluded && this.marker) {
-      // Just above the head, following crouches and slides.
-      this.marker.sprite.position.y = this.tag.sprite.position.y - 0.25;
-    }
   }
 
   /** Blend the crouch / slide pose and shrink the hitbox, name tag and shield to match. */
@@ -468,7 +456,6 @@ export class RemotePlayer {
     this.scene.remove(this.group);
     for (const mat of this.materials) mat.dispose();
     this.xrayMaterial?.dispose();
-    this.marker?.dispose();
     this.tag.dispose();
   }
 }

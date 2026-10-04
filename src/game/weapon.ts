@@ -101,21 +101,27 @@ export class Weapon {
   }
 
   /**
-   * Take a picked-up gun into the second slot and switch to it. Returns the gun it replaced
-   * (with its rounds left) so it can be dropped, or null.
+   * Take a picked-up gun into the empty second slot and switch to it, or, for the gun we already
+   * carry, just take its ammo. Returns false when the slot holds a different gun (drop it first).
    */
-  giveGun(kind: GunKind, rounds: number): { kind: GunKind; rounds: number } | null {
+  giveGun(kind: GunKind, rounds: number): boolean {
     const def = GUNS[kind];
     const old = this.slots[1];
     if (old?.kind === kind) {
-      // Same gun again: just take the ammo.
       old.reserve = Math.min(old.reserve + rounds, def.mag * 4);
-      return null;
+      return true;
     }
+    if (old) return false;
     const mag = Math.min(def.mag, rounds);
     this.slots[1] = { kind, mag, reserve: Math.max(0, rounds - mag) };
     this.selectSlot(1);
-    return old ? { kind: old.kind, rounds: old.mag + old.reserve } : null;
+    return true;
+  }
+
+  /** Rounds left in the picked-up gun (magazine + spare), or null without one. */
+  get specialRounds(): number | null {
+    const held = this.slots[1];
+    return held ? held.mag + held.reserve : null;
   }
 
   /** Rifle <-> picked-up gun. Returns false when there's nothing to switch to. */
@@ -125,7 +131,7 @@ export class Weapon {
     return true;
   }
 
-  /** Takes the picked-up gun out of our hands with its rounds left (to drop on death), or null. */
+  /** Takes the picked-up gun out of our hands with its rounds left (to drop it), or null. */
   takeSpecial(): { kind: GunKind; rounds: number } | null {
     const held = this.slots[1];
     if (!held) return null;

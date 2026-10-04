@@ -18,7 +18,7 @@ export class NameTag {
   private readonly g: CanvasRenderingContext2D;
   private readonly texture: THREE.CanvasTexture;
   private readonly material: THREE.SpriteMaterial;
-  private _name: string;
+  private name: string;
   private hp = 100;
   private visibleUntil = 0;
   /** Teammates' tags stay up the whole time */
@@ -27,7 +27,7 @@ export class NameTag {
   constructor(name: string) {
     const { canvas, g } = canvas2d(WIDTH, HEIGHT);
     this.g = g;
-    this._name = name;
+    this.name = name;
     this.texture = new THREE.CanvasTexture(canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
     this.material = new THREE.SpriteMaterial({ map: this.texture, transparent: true, depthWrite: false });
@@ -53,10 +53,6 @@ export class NameTag {
     this.pinned = pinned;
   }
 
-  get name(): string {
-    return this._name;
-  }
-
   setHp(hp: number): void {
     const clamped = THREE.MathUtils.clamp(Math.round(hp), 0, 100);
     if (clamped === this.hp) return;
@@ -65,8 +61,8 @@ export class NameTag {
   }
 
   setName(name: string): void {
-    if (name === this._name) return;
-    this._name = name;
+    if (name === this.name) return;
+    this.name = name;
     this.draw();
   }
 
@@ -96,9 +92,9 @@ export class NameTag {
     g.textBaseline = 'middle';
     g.lineWidth = 6;
     g.strokeStyle = 'rgba(0,0,0,0.75)';
-    g.strokeText(this._name, WIDTH / 2, 24);
+    g.strokeText(this.name, WIDTH / 2, 24);
     g.fillStyle = '#ffffff';
-    g.fillText(this._name, WIDTH / 2, 24);
+    g.fillText(this.name, WIDTH / 2, 24);
 
     const barW = 180;
     const barH = 14;
