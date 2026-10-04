@@ -3,6 +3,7 @@ import { NameTag } from './nameTag';
 import { makeXrayMaterial, makeXrayMeshes } from './xray';
 import { REMOTE_GUN_SIZE } from './guns';
 import { wornMetalTexture } from './textures';
+import { reach, setWorldQuaternion } from './ik';
 import { cloneCharacter, GAITS, type CharacterAsset, type Gait } from './character';
 import { TEAMS, TEAM_INFO } from './modes';
 import type { GunKind, PlayerState, Stance, Team } from '../types';
@@ -21,6 +22,42 @@ const FADE = 0.2;
 const BONE_SCALE = 100;
 // How much of the aim pitch the upper body takes.
 const SPINE_PITCH = 0.7;
+// The rest of the aim pitch goes to the head.
+const HEAD_PITCH = 0.3;
+
+/*
+ * Aim pose, layered over the walk/run animation with arm IK: the gun points exactly where the player
+ * is looking. Normally it's held at the ready (stock low at the shoulder); aiming down sights brings it
+ * up to the eye. Positions are in metres in the aim frame: forward along the look direction, up, right.
+ * The rifle-sized guns are placed by the back of the stock; the pistol by its grip, out in front.
+ */
+const READY_STOCK = { forward: 0.12, up: -0.2, right: 0.0 };
+const ADS_STOCK = { forward: 0.06, up: -0.07, right: 0.035 };
+const PISTOL_READY = { forward: 0.42, up: -0.28, right: -0.06 };
+const PISTOL_ADS = { forward: 0.5, up: -0.08, right: -0.02 };
+/** Where the eye is relative to the head bone: up the skull and a bit forward (m) */
+const EYE_UP = 0.09;
+const EYE_FORWARD = 0.08;
+/** Blend speeds for the ready pose (on/off) and for raising the sights */
+const READY_SPEED = 8;
+const ADS_SPEED = 12;
+
+const _dir = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _up = new THREE.Vector3();
+const _anchor = new THREE.Vector3();
+const _gunAt = new THREE.Vector3();
+const _handAt = new THREE.Vector3();
+const _offset = new THREE.Vector3();
+const _support = new THREE.Vector3();
+const _pole = new THREE.Vector3();
+const _gunQuat = new THREE.Quaternion();
+const _handQuat = new THREE.Quaternion();
+const _basis = new THREE.Matrix4();
+const _scale = new THREE.Vector3();
+const GUN_IN_HAND_INV = new THREE.Quaternion();
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
+
 // After we hit someone, trust our own damage estimate over slightly stale server updates for this long.
 const HP_PREDICTION_MS = 600;
 
@@ -80,6 +117,7 @@ const GUN_IN_HAND = new THREE.Quaternion().setFromRotationMatrix(
 );
 // Grip in the palm (bone units are cm), with most of the rifle in front of the hand.
 const GUN_OFFSET = new THREE.Vector3(0, 9, 0).addScaledVector(HAND_FORWARD, 14);
+GUN_IN_HAND_INV.copy(GUN_IN_HAND).invert();
 
 function angleLerp(a: number, b: number, t: number): number {
   let d = (b - a) % (Math.PI * 2);
@@ -111,6 +149,17 @@ export class RemotePlayer {
   private readonly thighs: THREE.Object3D[];
   private readonly shins: THREE.Object3D[];
   private readonly feet: THREE.Object3D[];
+  private readonly head: THREE.Object3D;
+  /** Upper arm, forearm, hand: right then left */
+  private readonly rightArm: [THREE.Object3D, THREE.Object3D, THREE.Object3D];
+  private readonly leftArm: [THREE.Object3D, THREE.Object3D, THREE.Object3D];
+  /** Aiming down sights, as last reported */
+  private aiming = false;
+  /** 0..1 blend from the animation's arms to the aim pose, and from the ready pose to the sights */
+  private readyAmount = 1;
+  private adsAmount = 0;
+  /** The animation's arm rotations, kept to blend the aim pose over them */
+  private readonly armAnim: THREE.Quaternion[] = Array.from({ length: 6 }, () => new THREE.Quaternion());
   private stanceNow: Stance = 'stand';
   private colorNow: string | undefined;
   private gunMesh!: THREE.Mesh;
@@ -179,6 +228,10 @@ export class RemotePlayer {
     this.thighs = [bone(this.model, 'mixamorigLeftUpLeg'), bone(this.model, 'mixamorigRightUpLeg')];
     this.shins = [bone(this.model, 'mixamorigLeftLeg'), bone(this.model, 'mixamorigRightLeg')];
     this.feet = [bone(this.model, 'mixamorigLeftFoot'), bone(this.model, 'mixamorigRightFoot')];
+    this.head = bone(this.model, 'mixamorigHead');
+    this.rightArm = [bone(this.model, 'mixamorigRightArm'), bone(this.model, 'mixamorigRightForeArm'), bone(this.model, 'mixamorigRightHand')];
+    this.leftArm = [bone(this.model, 'mixamorigLeftArm'), bone(this.model, 'mixamorigLeftForeArm'), bone(this.model, 'mixamorigLeftHand')];
+    this.aiming = !!data.aim;
     this.stanceNow = data.stance ?? 'stand';
 
     const gun = new THREE.Mesh(gunGeo, rifleMaterial());
@@ -234,6 +287,7 @@ export class RemotePlayer {
     if (data.name) this.tag.setName(data.name);
     this.shield.visible = !!data.shield && this.alive;
     if (data.gun && data.gun !== this.gunNow) this.setGun(data.gun);
+    if (data.aim !== undefined) this.aiming = data.aim;
     if (data.stance) {
       if (data.stance === 'slide' && this.stanceNow !== 'slide') this.slideStarted = true;
       this.stanceNow = data.stance;
@@ -362,6 +416,7 @@ export class RemotePlayer {
     // Lean the upper body to match where they're aiming (applied after the animation).
     this.spine.rotateX(-this.pitch * SPINE_PITCH);
     this.applyStance(dt);
+    this.applyAim(dt);
 
     this.fall = THREE.MathUtils.clamp(this.fall + (this.alive ? -dt * 4 : dt * 2.5), 0, 1);
     this.group.rotation.x = (-Math.PI / 2) * this.fall * this.fall;
@@ -391,6 +446,69 @@ export class RemotePlayer {
     this.tag.sprite.position.y = 2.15 - 0.6 * c - 0.95 * sl;
     this.shield.scale.y = 1.05 * body;
     this.shield.position.y = 0.95 * body;
+  }
+
+  /**
+   * Point the gun where they're looking: the head takes the rest of the pitch, then both arms are
+   * solved with IK, the right hand holding the gun along the look direction and the left hand on
+   * its fore-end. Blended over the animation; off while sprinting, sliding or dead.
+   */
+  private applyAim(dt: number): void {
+    const ready = this.alive && (this.aiming || (this.gait !== 'Run' && this.slideAmount < 0.5)) ? 1 : 0;
+    this.readyAmount += (ready - this.readyAmount) * (1 - Math.exp(-READY_SPEED * dt));
+    this.adsAmount += ((this.aiming && this.alive ? 1 : 0) - this.adsAmount) * (1 - Math.exp(-ADS_SPEED * dt));
+    this.head.rotateX(-this.pitch * HEAD_PITCH);
+    const w = this.readyAmount;
+    if (w < 0.01) return;
+
+    const bones = [...this.rightArm, ...this.leftArm];
+    bones.forEach((b, i) => this.armAnim[i]!.copy(b.quaternion));
+    this.group.updateMatrixWorld(true);
+
+    // Aim frame: where they're looking (the model faces -Z at yaw 0).
+    const yaw = this.group.rotation.y;
+    const cp = Math.cos(this.pitch);
+    _dir.set(-Math.sin(yaw) * cp, Math.sin(this.pitch), -Math.cos(yaw) * cp);
+    _right.set(Math.cos(yaw), 0, -Math.sin(yaw));
+    _up.crossVectors(_right, _dir).normalize();
+
+    // The gun lies along the look direction, upright (x = up × forward, i.e. to their left).
+    _basis.makeBasis(_offset.crossVectors(_up, _dir), _up, _dir);
+    _gunQuat.setFromRotationMatrix(_basis);
+    _handQuat.copy(_gunQuat).multiply(GUN_IN_HAND_INV);
+
+    const pistol = this.gunNow === 'deagle';
+    const length = (REMOTE_GUN_SIZE[this.gunNow] ?? REMOTE_GUN_SIZE.rifle)[2];
+    const a = this.adsAmount;
+    const low = pistol ? PISTOL_READY : READY_STOCK;
+    const high = pistol ? PISTOL_ADS : ADS_STOCK;
+    const lerp = THREE.MathUtils.lerp;
+    // Anchor: the eye when aiming, the shoulder at the ready.
+    this.head.getWorldPosition(_anchor).addScaledVector(WORLD_UP, EYE_UP).addScaledVector(_dir, EYE_FORWARD);
+    this.rightArm[0].getWorldPosition(_gunAt);
+    _anchor.lerp(_gunAt, 1 - a);
+    _gunAt.copy(_anchor)
+      .addScaledVector(_dir, lerp(low.forward, high.forward, a) + (pistol ? 0 : length / 2))
+      .addScaledVector(_up, lerp(low.up, high.up, a))
+      .addScaledVector(_right, lerp(low.right, high.right, a));
+
+    // The hand sits where the gun's centre minus its offset in the palm puts it.
+    const hand = this.rightArm[2];
+    hand.getWorldScale(_scale);
+    _offset.copy(GUN_OFFSET).multiplyScalar(_scale.x).applyQuaternion(_handQuat);
+    _handAt.copy(_gunAt).sub(_offset);
+
+    _pole.copy(_right).multiplyScalar(lerp(0.5, 1, a)).addScaledVector(WORLD_UP, -1);
+    reach(this.rightArm[0], this.rightArm[1], hand, _handAt, _pole);
+    setWorldQuaternion(hand, _handQuat);
+
+    // Support hand under the fore-end (or wrapped round the pistol grip).
+    if (pistol) _support.copy(_handAt).addScaledVector(_right, -0.05).addScaledVector(_up, -0.02);
+    else _support.copy(_gunAt).addScaledVector(_dir, length * 0.22).addScaledVector(_up, -0.05);
+    _pole.copy(_right).multiplyScalar(-0.6).addScaledVector(WORLD_UP, -1);
+    reach(this.leftArm[0], this.leftArm[1], this.leftArm[2], _support, _pole);
+
+    if (w < 0.999) bones.forEach((b, i) => b.quaternion.slerpQuaternions(this.armAnim[i]!, b.quaternion, w));
   }
 
   /** Lower the hips so the lowest foot is back at standing height after the legs were bent. */

@@ -17,6 +17,8 @@ export interface PlayerState {
   stance?: Stance;
   /** The gun in hand (others see it); missing means the rifle */
   gun?: GunKind;
+  /** Aiming down sights (others see the gun raised to the eye) */
+  aim?: boolean;
   /** Team in TDM / CTF; absent in free-for-all */
   team?: Team;
   /** Match stats, reported by each player about themselves */
@@ -75,7 +77,7 @@ export type PlayerStats = Required<Pick<PlayerState, 'damage' | 'shots' | 'hits'
 
 export type Stance = 'stand' | 'crouch' | 'slide';
 
-export type Pose = Pick<PlayerState, 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'stance'>;
+export type Pose = Pick<PlayerState, 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'stance' | 'aim'>;
 
 export type Vec3Tuple = [number, number, number];
 

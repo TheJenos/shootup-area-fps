@@ -26,6 +26,7 @@ interface PoseSample {
   pitch: number;
   alive: boolean;
   stance?: Stance;
+  aim?: boolean;
 }
 
 interface Track {
@@ -58,7 +59,7 @@ export class ReplayRecorder {
   }
 
   pose(
-    id: string, data: Pick<PlayerState, 'name' | 'color' | 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'alive' | 'stance'>, t: number,
+    id: string, data: Pick<PlayerState, 'name' | 'color' | 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'alive' | 'stance' | 'aim'>, t: number,
   ): void {
     let track = this.tracks.get(id);
     if (!track) {
@@ -70,10 +71,11 @@ export class ReplayRecorder {
     const alive = data.alive !== false;
     const last = track.samples[track.samples.length - 1];
     const stance = data.stance ?? 'stand';
-    // Always keep deaths, respawns and stance changes, otherwise thin out to the sample rate.
-    if (last && t - last.t < SAMPLE_GAP && last.alive === alive && last.stance === stance) return;
+    const aim = !!data.aim;
+    // Always keep deaths, respawns, stance and aim changes, otherwise thin out to the sample rate.
+    if (last && t - last.t < SAMPLE_GAP && last.alive === alive && last.stance === stance && !!last.aim === aim) return;
     track.samples.push({
-      t, x: data.x || 0, y: data.y || 0, z: data.z || 0, yaw: data.yaw || 0, pitch: data.pitch || 0, alive, stance,
+      t, x: data.x || 0, y: data.y || 0, z: data.z || 0, yaw: data.yaw || 0, pitch: data.pitch || 0, alive, stance, aim,
     });
   }
 
@@ -115,6 +117,7 @@ function sampleAt(samples: PoseSample[], t: number): PoseSample | null {
     pitch: a.pitch + (b.pitch - a.pitch) * k,
     alive: true,
     stance: a.stance,
+    aim: a.aim,
   };
 }
 
@@ -201,7 +204,7 @@ export class ReplayDirector {
       const pose = track ? sampleAt(track.samples, this.time) : null;
       ghost.setVisible(!!pose);
       if (pose) {
-        ghost.setData({ x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw, pitch: pose.pitch, alive: pose.alive, stance: pose.stance ?? 'stand' });
+        ghost.setData({ x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw, pitch: pose.pitch, alive: pose.alive, stance: pose.stance ?? 'stand', aim: !!pose.aim });
       }
       ghost.update(dt);
     }

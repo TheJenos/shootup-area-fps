@@ -584,6 +584,7 @@ export class Game {
     const p = this.player.position;
     return {
       x: r2(p.x), y: r2(p.y), z: r2(p.z), yaw: r3(this.player.yaw), pitch: r3(this.player.pitch), stance: this.player.stance,
+      aim: this.player.aiming,
     };
   }
 

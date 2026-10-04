@@ -425,6 +425,10 @@ The logo lives in `public/brand/`: `logo.svg` (source), PNG exports (`icon-512.p
 
 `public/models/Soldier.glb` is the soldier from the [three.js examples](https://github.com/mrdoob/three.js/tree/r186/examples/models/gltf)
 (originally a [Mixamo](https://www.mixamo.com) character), with Idle / Walk / Run animations.
-Other players use it; the rifle, hitboxes, aim lean, player-color tint and death fall are added in code
-(`src/game/remotePlayer.ts`). To swap in another Mixamo-rigged model, keep the clip names
-and the `mixamorigSpine2` / `mixamorigHead` / `mixamorigRightHand` bones.
+Other players use it; the gun, hitboxes, aim pose, player-color tint and death fall are added in code
+(`src/game/remotePlayer.ts`). The aim pose is layered over the animation with two-bone arm IK
+(`src/game/ik.ts`): both hands hold the gun pointed exactly where the player is looking, at the ready
+normally and raised to the eye while they aim down sights (sent as `aim` with their pose), with the
+upper body and head taking the look pitch. Sprinting, sliding and dying drop the pose back to the
+animation. To swap in another Mixamo-rigged model, keep the clip names and the `mixamorigSpine2` /
+`mixamorigHead` / arm (`…Arm`, `…ForeArm`, `…Hand`, both sides) bones.
