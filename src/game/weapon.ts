@@ -5,6 +5,12 @@ import { woodTexture, wornMetalTexture } from './textures';
 const FIRE_INTERVAL = 0.1;
 const MAG_SIZE = 30;
 const RELOAD_TIME = 1.4;
+/** Height of the sight line (tops of the rear notch and front post) in gun space */
+const SIGHT_HEIGHT = 0.118;
+/** Where the gun sits when aiming: centred, sights on the screen centre */
+const ADS_POS = new THREE.Vector3(0, -SIGHT_HEIGHT, -0.3);
+/** How quickly the gun moves between hip and sights (1/s) */
+const ADS_SPEED = 14;
 
 function buildGun(): THREE.Group {
   const gun = new THREE.Group();
@@ -26,6 +32,10 @@ function buildGun(): THREE.Group {
   part(new THREE.BoxGeometry(0.07, 0.16, 0.09), accent, 0, -0.12, 0.17, -0.3);
   part(new THREE.BoxGeometry(0.08, 0.09, 0.2), accent, 0, -0.01, 0.32);
   part(new THREE.BoxGeometry(0.03, 0.04, 0.12), dark, 0, 0.075, -0.05);
+  // Iron sights: a notched rear sight on the rail and a post at the muzzle, lined up along SIGHT_HEIGHT.
+  part(new THREE.BoxGeometry(0.012, 0.03, 0.012), dark, -0.014, 0.11, 0.0);
+  part(new THREE.BoxGeometry(0.012, 0.03, 0.012), dark, 0.014, 0.11, 0.0);
+  part(new THREE.BoxGeometry(0.008, 0.08, 0.012), dark, 0, SIGHT_HEIGHT - 0.04, -0.5);
   return gun;
 }
 
@@ -46,6 +56,8 @@ export class Weapon {
   private kick = 0;
   private flashTimer = 0;
   private bobTime = 0;
+  /** 0 at the hip, 1 fully aimed down the sights */
+  aim = 0;
 
   constructor(aspect: number) {
     this.camera = new THREE.PerspectiveCamera(60, aspect, 0.01, 10);
@@ -119,7 +131,10 @@ export class Weapon {
     this.kick = 0;
   }
 
-  update(dt: number, speed: number, sprinting: boolean): void {
+  /** @param aiming aim down the sights (blends in over a moment) */
+  update(dt: number, speed: number, sprinting: boolean, aiming = false): void {
+    this.aim += ((aiming && !this.reloading ? 1 : 0) - this.aim) * (1 - Math.exp(-ADS_SPEED * dt));
+    if (this.aim < 0.001) this.aim = 0;
     this.cooldown = Math.max(0, this.cooldown - dt);
     if (this.reloadTimer > 0) {
       this.reloadTimer -= dt;
@@ -137,13 +152,17 @@ export class Weapon {
     const reloadDip = this.reloading ? Math.sin((1 - this.reloadTimer / RELOAD_TIME) * Math.PI) : 0;
     const sprintDip = sprinting ? 1 : 0;
 
+    // Aiming steadies the gun: much less bob and kick.
+    const steady = 1 - 0.8 * this.aim;
+    const hipX = this.basePos.x + Math.cos(this.bobTime) * 0.012 * bob;
+    const hipY = this.basePos.y - Math.abs(Math.sin(this.bobTime)) * 0.015 * bob - reloadDip * 0.15 - sprintDip * 0.05;
     this.model.position.set(
-      this.basePos.x + Math.cos(this.bobTime) * 0.012 * bob,
-      this.basePos.y - Math.abs(Math.sin(this.bobTime)) * 0.015 * bob - reloadDip * 0.15 - sprintDip * 0.05,
-      this.basePos.z + this.kick * 0.04,
+      THREE.MathUtils.lerp(hipX, ADS_POS.x + Math.cos(this.bobTime) * 0.002 * bob, this.aim),
+      THREE.MathUtils.lerp(hipY, ADS_POS.y - Math.abs(Math.sin(this.bobTime)) * 0.003 * bob, this.aim),
+      THREE.MathUtils.lerp(this.basePos.z, ADS_POS.z, this.aim) + this.kick * 0.04 * steady,
     );
     this.model.rotation.set(
-      this.kick * 0.05 - reloadDip * 0.6 - sprintDip * 0.3,
+      this.kick * 0.05 * steady - reloadDip * 0.6 - sprintDip * 0.3,
       sprintDip * 0.5,
       reloadDip * 0.4,
     );

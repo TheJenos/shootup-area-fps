@@ -7,6 +7,7 @@ const JUMP_SPEED = 7.6;
 const WALK_SPEED = 6;
 const SPRINT_SPEED = 9;
 const CROUCH_SPEED = 3.2;
+const AIM_SPEED = 3.8;
 const RADIUS = 0.35;
 const HEIGHT = 1.75;
 const CROUCH_HEIGHT = 1.15;
@@ -42,6 +43,10 @@ export class LocalPlayer {
   stance: Stance = 'stand';
   /** Set for one update when a slide starts (for the sound) */
   slideStarted = false;
+  /** Aiming down sights: slower, no sprinting or sliding */
+  aiming = false;
+  /** Scales mouse look (lower while zoomed in) */
+  lookScale = 1;
 
   private readonly camera: THREE.PerspectiveCamera;
   private readonly colliders: THREE.Box3[];
@@ -62,7 +67,7 @@ export class LocalPlayer {
     document.addEventListener('mousemove', (e) => {
       if (!this.enabled) return;
       const { sensitivity, invertY } = settings.get();
-      const scale = MOUSE_SENSITIVITY * sensitivity;
+      const scale = MOUSE_SENSITIVITY * sensitivity * this.lookScale;
       this.look(-e.movementX * scale, -e.movementY * scale * (invertY ? -1 : 1));
     }, { signal });
   }
@@ -98,7 +103,7 @@ export class LocalPlayer {
   }
 
   get sprintHeld(): boolean {
-    return this.keys.has(keyFor('sprint'));
+    return !this.aiming && this.keys.has(keyFor('sprint'));
   }
 
   get crouching(): boolean {
@@ -164,7 +169,9 @@ export class LocalPlayer {
     this.updateStance(dt, move);
     const forward = move ? held('forward') - held('back') : 0;
     const strafe = move ? held('right') - held('left') : 0;
-    const base = this.crouching ? CROUCH_SPEED : move && this.sprintHeld && forward > 0 ? SPRINT_SPEED : WALK_SPEED;
+    const base = this.crouching
+      ? CROUCH_SPEED
+      : this.aiming ? AIM_SPEED : move && this.sprintHeld && forward > 0 ? SPRINT_SPEED : WALK_SPEED;
     const speed = base * this.speedMultiplier;
 
     const sin = Math.sin(this.yaw);

@@ -54,6 +54,9 @@ const INDICATOR_HOLD = 0.6;
 const INDICATOR_FADE = 1;
 /** How often we record our own pose for the MVP replay (s) */
 const RECORD_INTERVAL = 0.1;
+/** Field of view at the hip and fully aimed down the sights (degrees) */
+const HIP_FOV = 75;
+const ADS_FOV = 50;
 
 export function colorFor(id: string): string {
   let h = 2166136261;
@@ -130,6 +133,8 @@ export class Game {
   private deaths = 0;
   private respawnTimer = 0;
   private triggerHeld = false;
+  /** Right mouse button: aim down sights (held, or toggled in settings) */
+  private aimHeld = false;
   private locked = false;
   private joinedAt = 0;
   private sendTimer = 0;
@@ -282,6 +287,7 @@ export class Game {
     this.freeMouse = false;
     this.locked = false;
     this.triggerHeld = false;
+    this.aimHeld = false;
     this.player.setEnabled(false);
     this.renderer.domElement.style.cursor = '';
     this.hud.update({ paused: this.joined && !this.inventoryOpen });
@@ -320,7 +326,10 @@ export class Game {
       if (this.freeMouse) return;
       this.locked = document.pointerLockElement === canvas;
       this.player.setEnabled(this.locked);
-      if (!this.locked) this.triggerHeld = false;
+      if (!this.locked) {
+        this.triggerHeld = false;
+        this.aimHeld = false;
+      }
       if (this.locked && this.inventoryOpen) this.closeInventory(false);
       this.hud.update({ paused: !this.locked && this.joined && !this.inventoryOpen });
     }, { signal });
@@ -330,6 +339,7 @@ export class Game {
     const isFire = (e: MouseEvent) => e.button === 0 || (e.button === 2 && e.ctrlKey);
     window.addEventListener('mousedown', (e) => {
       if (isFire(e) && this.locked) this.triggerHeld = true;
+      else if (e.button === 2 && this.locked) this.aimHeld = settings.get().aimToggle ? !this.aimHeld : true;
     }, { signal });
     window.addEventListener('contextmenu', (e) => { if (this.locked) e.preventDefault(); }, { signal });
     // Rebinding keys mid-game: lock the new set.
@@ -337,6 +347,7 @@ export class Game {
       if (document.fullscreenElement) keyboardLock()?.lock(keysToLock()).catch(() => {});
     }), { once: true });
     window.addEventListener('mouseup', (e) => {
+      if (e.button === 2 && !e.ctrlKey && !settings.get().aimToggle) this.aimHeld = false;
       if (isFire(e)) {
         this.triggerHeld = false;
         this.weapon.releaseTrigger();
@@ -1101,6 +1112,7 @@ export class Game {
     this.deaths++;
     this.respawnTimer = RESPAWN_TIME;
     this.triggerHeld = false;
+    this.aimHeld = false;
     // Abilities and their effects are lost on death.
     this.clearAbilities();
     this.stats.streak = 0;
@@ -1170,7 +1182,8 @@ export class Game {
 
     const moving = this.player.horizontalSpeed > 1;
     // Crouching steadies your aim; sliding doesn't.
-    const steady = this.player.stance === 'crouch' ? 0.6 : 1;
+    // Aiming down sights tightens it a lot more.
+    const steady = (this.player.stance === 'crouch' ? 0.6 : 1) * (1 - 0.7 * this.weapon.aim);
     const spread = (0.002
       + (moving ? 0.012 : 0)
       + (this.player.onGround ? 0 : 0.04)
@@ -1205,7 +1218,8 @@ export class Game {
       sfx.playHit(head);
     }
     sfx.playShot(0.7);
-    this.player.look((Math.random() - 0.5) * 0.006, 0.012);
+    const recoil = 1 - 0.45 * this.weapon.aim;
+    this.player.look((Math.random() - 0.5) * 0.006 * recoil, 0.012 * recoil);
 
     const shot = { o: toArr(muzzle), e: toArr(end) };
     this.net.sendEvent({ type: 'shot', ...shot, hit: hitId, dmg, head });
@@ -1466,13 +1480,16 @@ export class Game {
       if (this.respawnTimer <= 0) this.respawn();
     }
 
+    const aiming = this.aimHeld && this.alive && this.locked && !this.roundOver && !this.inventoryOpen;
+    this.player.aiming = aiming;
     // Nobody moves between rounds.
     this.player.update(dt, this.alive && !this.roundOver);
     const speed = this.player.horizontalSpeed;
     const sprinting = this.player.sprintHeld && speed > 7;
 
     if (this.triggerHeld && this.alive && this.locked && this.joined && !this.roundOver && this.weapon.tryFire()) this.shoot();
-    this.weapon.update(dt, speed, sprinting && !this.triggerHeld);
+    this.weapon.update(dt, speed, sprinting && !this.triggerHeld && !aiming, aiming);
+    this.updateZoom();
     this.hud.update({ ammo: this.weapon.ammo, reloading: this.weapon.reloading });
 
     if (this.alive) {
@@ -1558,6 +1575,22 @@ export class Game {
     if (key === this.lastIndicatorKey) return;
     this.lastIndicatorKey = key;
     this.hud.update({ damageIndicators: indicators });
+  }
+
+  /**
+   * Zoom with the aim: narrower field of view, and mouse look slowed by the same ratio so
+   * the same hand movement covers the same part of the screen (times the aim sensitivity setting).
+   */
+  private updateZoom(): void {
+    const aim = this.weapon.aim;
+    const fov = THREE.MathUtils.lerp(HIP_FOV, ADS_FOV, aim);
+    if (Math.abs(this.camera.fov - fov) > 0.01) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
+    const zoom = Math.tan(THREE.MathUtils.degToRad(fov / 2)) / Math.tan(THREE.MathUtils.degToRad(HIP_FOV / 2));
+    this.player.lookScale = zoom * THREE.MathUtils.lerp(1, settings.get().aimSensitivity, aim);
+    this.hud.update({ aiming: aim > 0.6 });
   }
 
   /** Our own movement for the replay recording (other players' come in with their updates). */

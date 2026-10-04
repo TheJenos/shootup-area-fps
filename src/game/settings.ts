@@ -31,6 +31,10 @@ export interface Settings {
    * which otherwise closes the tab.
    */
   fullscreen: boolean;
+  /** Right-click toggles aiming instead of having to hold it */
+  aimToggle: boolean;
+  /** Extra multiplier on mouse speed while aiming (on top of the zoom) */
+  aimSensitivity: number;
   /** KeyboardEvent.code for each action */
   bindings: Bindings;
 }
@@ -56,7 +60,9 @@ export const DEFAULT_BINDINGS: Bindings = {
   scoreboard: 'Tab',
 };
 
-const DEFAULTS: Settings = { sensitivity: 1, invertY: false, fullscreen: true, bindings: DEFAULT_BINDINGS };
+const DEFAULTS: Settings = {
+  sensitivity: 1, invertY: false, fullscreen: true, aimToggle: false, aimSensitivity: 1, bindings: DEFAULT_BINDINGS,
+};
 
 /** Esc always releases the mouse, so it can't be bound. */
 export const RESERVED_KEYS = new Set(['Escape']);
@@ -83,6 +89,10 @@ function load(): Settings {
         : DEFAULTS.sensitivity,
       invertY: saved.invertY === true,
       fullscreen: saved.fullscreen !== false,
+      aimToggle: saved.aimToggle === true,
+      aimSensitivity: Number.isFinite(Number(saved.aimSensitivity))
+        ? Math.min(SENSITIVITY_MAX, Math.max(SENSITIVITY_MIN, Number(saved.aimSensitivity)))
+        : DEFAULTS.aimSensitivity,
       // Start from the defaults so actions added later still get a key.
       bindings: { ...DEFAULT_BINDINGS, ...pickStrings(saved.bindings) },
     };

@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { NameTag } from './nameTag';
 import { wornMetalTexture } from './textures';
 import { cloneCharacter, GAITS, type CharacterAsset, type Gait } from './character';
-import type { PlayerState, Stance } from '../types';
+import { TEAMS, TEAM_INFO } from './modes';
+import type { PlayerState, Stance, Team } from '../types';
 
 /** Attached to hitbox meshes so a raycast hit can be traced back to a player. */
 export interface HitboxData {
@@ -33,6 +34,20 @@ const FOOT_REST = 0.12;
 /** Body hitbox height (scale) and how far a crouch / slide lowers the head tag and chest */
 const CROUCH_BODY = 0.68;
 const SLIDE_BODY = 0.42;
+
+/*
+ * Tinting. In free-for-all each player gets a light wash of their own colour so the uniform's
+ * texture still shows. In team modes the whole uniform takes the team colour, with a faint glow
+ * so teams stay readable in shadow and at a distance.
+ */
+const FFA_TINT = 0.45;
+const TEAM_TINT = 0.65;
+const TEAM_GLOW = 0.1;
+const TEAM_VISOR_GLOW = 0.7;
+
+/** The team a colour belongs to (replay stand-ins only know the colour). */
+const teamOfColor = (color: string | undefined): Team | undefined =>
+  TEAMS.find((t) => TEAM_INFO[t].color.toLowerCase() === color?.toLowerCase());
 
 // Hitboxes are invisible but still raycastable.
 const hitboxMat = new THREE.MeshBasicMaterial({ visible: false });
@@ -95,6 +110,8 @@ export class RemotePlayer {
   private readonly shins: THREE.Object3D[];
   private readonly feet: THREE.Object3D[];
   private stanceNow: Stance = 'stand';
+  private colorNow: string | undefined;
+  private teamNow: Team | undefined;
   /** 0..1 blend toward the crouch and slide poses */
   private crouchAmount = 0;
   private slideAmount = 0;
@@ -140,7 +157,7 @@ export class RemotePlayer {
       mesh.material = mat;
       this.materials.push(mat);
     });
-    this.setColor(data.color);
+    this.setColor(data.color, data.team);
 
     this.mixer = new THREE.AnimationMixer(this.model);
     this.actions = Object.fromEntries(
@@ -202,7 +219,7 @@ export class RemotePlayer {
     this.target.copy(next);
     this.targetYaw = data.yaw ?? this.targetYaw;
     this.targetPitch = data.pitch ?? this.targetPitch;
-    if (data.color) this.setColor(data.color);
+    if (data.color || data.team) this.setColor(data.color ?? this.colorNow, data.team ?? this.teamNow);
     if (data.name) this.tag.setName(data.name);
     this.shield.visible = !!data.shield && this.alive;
     if (data.stance) {
@@ -356,13 +373,22 @@ export class RemotePlayer {
     this.actions.Run.timeScale = direction;
   }
 
-  private setColor(color: string | undefined): void {
+  private setColor(color: string | undefined, team?: Team): void {
     if (!color) return;
+    if (color === this.colorNow && team === this.teamNow) return;
+    this.colorNow = color;
+    this.teamNow = team;
+    const onTeam = !!(team ?? teamOfColor(color));
     const tint = new THREE.Color(color);
     for (const mat of this.materials) {
-      // Visor in full player color; the uniform only tinted so its texture still shows.
-      if (mat.name.includes('Visor')) mat.color.copy(tint);
-      else mat.color.setRGB(1, 1, 1).lerp(tint, 0.45);
+      if (mat.name.includes('Visor')) {
+        // Visor in full colour; in team modes it glows too.
+        mat.color.copy(tint);
+        mat.emissive.copy(tint).multiplyScalar(onTeam ? TEAM_VISOR_GLOW : 0);
+      } else {
+        mat.color.setRGB(1, 1, 1).lerp(tint, onTeam ? TEAM_TINT : FFA_TINT);
+        mat.emissive.copy(tint).multiplyScalar(onTeam ? TEAM_GLOW : 0);
+      }
     }
   }
 

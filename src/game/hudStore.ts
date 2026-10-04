@@ -103,6 +103,8 @@ export interface HudState {
   hitmarker: { n: number; head: boolean };
   /** Increments every time we take damage. */
   damageFlash: number;
+  /** Aiming down sights: the crosshair shrinks to a dot */
+  aiming: boolean;
   damageIndicators: DamageIndicator[];
   feed: FeedEntry[];
   scoreboardOpen: boolean;
@@ -141,6 +143,7 @@ const initialState: HudState = {
   reloading: false,
   hitmarker: { n: 0, head: false },
   damageFlash: 0,
+  aiming: false,
   damageIndicators: [],
   feed: [],
   scoreboardOpen: false,

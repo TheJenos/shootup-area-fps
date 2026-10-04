@@ -14,7 +14,7 @@ function controls(b: Bindings): [key: string, action: string][] {
   const k = (...codes: string[]) => codes.map(keyLabel).join(' ');
   return [
     [k(b.forward, b.left, b.back, b.right), 'move'], ['Mouse', 'aim'], ['Click', 'shoot'], [k(b.jump), 'jump'],
-    [k(b.sprint), 'sprint'], [k(b.crouch), 'crouch / slide'], [k(b.reload), 'reload'], [k(b.ability1, b.ability2, b.ability3), 'abilities'],
+    ['Right-click', 'aim'], [k(b.sprint), 'sprint'], [k(b.crouch), 'crouch / slide'], [k(b.reload), 'reload'], [k(b.ability1, b.ability2, b.ability3), 'abilities'],
     [k(b.inventory), 'inventory'], [k(b.scoreboard), 'match summary'],
   ];
 }
@@ -36,7 +36,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
   return (
     // The MVP replay is a cinematic: hide the crosshair, health, ammo and abilities.
     <div id="hud" className={hud.matchEnd?.phase === 'mvp' ? 'cinematic' : undefined}>
-      {!hud.death && <div id="crosshair" />}
+      {!hud.death && <div id="crosshair" className={hud.aiming ? 'ads' : undefined} />}
       {hud.hitmarker.n > 0 && (
         // A new key remounts the element, which restarts the CSS animation.
         <div key={`hit-${hud.hitmarker.n}`} id="hitmarker" className={hud.hitmarker.head ? 'show head' : 'show'} />

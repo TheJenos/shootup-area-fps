@@ -62,6 +62,26 @@ export function SettingsPanel({ onClose }: Props) {
               }}
             />
           </label>
+          <label className="setting">
+            <span>Aim sensitivity</span>
+            <input
+              type="range"
+              min={SENSITIVITY_MIN}
+              max={SENSITIVITY_MAX}
+              step={0.05}
+              value={current.aimSensitivity}
+              onChange={(e) => settings.update({ aimSensitivity: Number(e.target.value) })}
+            />
+            <span className="number-readout">{current.aimSensitivity.toFixed(2)}×</span>
+          </label>
+          <label className="setting check">
+            <input
+              type="checkbox"
+              checked={current.aimToggle}
+              onChange={(e) => settings.update({ aimToggle: e.target.checked })}
+            />
+            <span>Toggle aim (click right mouse button once instead of holding it)</span>
+          </label>
           <label className="setting check">
             <input
               type="checkbox"

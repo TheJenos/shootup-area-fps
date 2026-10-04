@@ -39,7 +39,8 @@ The room's creator picks the mode; the lobby shows it next to each room.
 | **TDM** — Team Deathmatch | Red vs Blue; every kill scores for the killer's team | 10 min | 50 team kills |
 | **CTF** — Capture the Flag | Grab the enemy flag and bring it to your own base | 12 min | 3 captures |
 
-- **Teams:** you join the smaller team. Teammates show up in the team color with their name always visible,
+- **Teams:** you join the smaller team. Every player's uniform takes their team colour (65%, with a faint glow
+  and a glowing visor, so teams stay readable in shadow). Teammates' names are always visible,
   bullets and grenades pass through them, and you spawn on your own half (red owns +z, blue −z).
   The pause menu (Esc) has a **Switch team** button.
 - **Capture the Flag:** each base is a glowing pad near the back wall with the team's flag on it.
@@ -193,6 +194,7 @@ Discord, with no website to visit.
 | WASD | Move |
 | Mouse | Aim |
 | Left click (hold) | Shoot (automatic) |
+| Right click (hold) | Aim down sights |
 | Space | Jump |
 | Shift | Sprint |
 | Ctrl (hold) | Crouch; press while sprinting to slide |
@@ -205,6 +207,18 @@ Discord, with no website to visit.
 These are the defaults. **Settings** (in the lobby, or the pause menu) lets you change mouse sensitivity
 (0.1×–4×), invert vertical look and rebind every key except shooting (left click) and Esc. Binding a key
 that's already in use swaps the two. Settings are saved in your browser (`src/game/settings.ts`).
+
+## Aim down sights
+
+Hold right-click (or turn on **Toggle aim** in Settings) to raise the rifle's iron sights:
+
+- The view zooms in from a 75° to a 50° field of view, and the gun slides to the centre so the front post sits in
+  the rear notch. The crosshair shrinks to a dot.
+- Shots are about 3× tighter, and recoil and weapon bob are smaller.
+- You walk at 3.8 m/s and can't sprint or slide while aiming. Reloading lowers the sights.
+- Mouse look slows by the same ratio as the zoom, so a hand movement covers the same part of the screen.
+  **Aim sensitivity** in Settings scales it further.
+- On a Mac, Ctrl+click still fires rather than aiming (Ctrl is crouch).
 
 ## Crouch and slide
 
