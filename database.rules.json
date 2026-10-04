@@ -18,6 +18,54 @@
           "$pid": {
             ".validate": "newData.isString() && newData.val().length <= 16"
           }
+        },
+        "rules": {
+          ".validate": "newData.hasChildren(['base', 'name', 'short', 'loadout', 'limit', 'minutes', 'health', 'respawn', 'speed', 'gravity']) && newData.child('base').val() === newData.parent().child('mode').val()",
+          "base": {
+            ".validate": "newData.val() === 'ffa' || newData.val() === 'tdm' || newData.val() === 'ctf'"
+          },
+          "name": {
+            ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 24"
+          },
+          "short": {
+            ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 4"
+          },
+          "loadout": {
+            ".validate": "newData.val() === 'standard' || newData.val() === 'gungame' || newData.val() === 'rifle' || newData.val() === 'shotgun' || newData.val() === 'sniper' || newData.val() === 'deagle'"
+          },
+          "guns": {
+            ".validate": "newData.isBoolean()"
+          },
+          "abilities": {
+            ".validate": "newData.isBoolean()"
+          },
+          "ammo": {
+            ".validate": "newData.isBoolean()"
+          },
+          "headshotsOnly": {
+            ".validate": "newData.isBoolean()"
+          },
+          "limit": {
+            ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 150"
+          },
+          "minutes": {
+            ".validate": "newData.isNumber() && newData.val() >= 3 && newData.val() <= 20"
+          },
+          "health": {
+            ".validate": "newData.isNumber() && newData.val() >= 25 && newData.val() <= 200"
+          },
+          "respawn": {
+            ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 10"
+          },
+          "speed": {
+            ".validate": "newData.isNumber() && newData.val() >= 0.7 && newData.val() <= 1.5"
+          },
+          "gravity": {
+            ".validate": "newData.isNumber() && newData.val() >= 0.3 && newData.val() <= 1.5"
+          },
+          "$other": {
+            ".validate": false
+          }
         }
       }
     },
@@ -31,7 +79,7 @@
               ".validate": "newData.isString() && newData.val().length <= 16"
             },
             "hp": {
-              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 200"
             }
           }
         }

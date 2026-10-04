@@ -45,6 +45,9 @@ export class LocalPlayer {
   enabled = false;
   /** Scales walk/sprint speed (Speed Boost ability) */
   speedMultiplier = 1;
+  /** The mode's movement speed and gravity (custom mode rules) */
+  speedScale = 1;
+  gravityScale = 1;
   stance: Stance = 'stand';
   /** Set for one update when a slide starts (for the sound) */
   slideStarted = false;
@@ -170,7 +173,7 @@ export class LocalPlayer {
     ) {
       // Launch along the way we're already going, so it follows the sprint.
       const dir = new THREE.Vector3(this.velocity.x, 0, this.velocity.z).normalize();
-      const speed = Math.max(SLIDE_SPEED * this.speedMultiplier, this.horizontalSpeed);
+      const speed = Math.max(SLIDE_SPEED * this.speedMultiplier * this.speedScale, this.horizontalSpeed);
       this.velocity.x = dir.x * speed;
       this.velocity.z = dir.z * speed;
       this.stance = 'slide';
@@ -201,7 +204,7 @@ export class LocalPlayer {
     const base = this.crouching
       ? CROUCH_SPEED
       : this.aiming ? AIM_SPEED : move && this.sprintHeld && forward > 0 ? SPRINT_SPEED : WALK_SPEED;
-    const speed = base * this.speedMultiplier;
+    const speed = base * this.speedMultiplier * this.speedScale;
 
     const sin = Math.sin(this.yaw);
     const cos = Math.cos(this.yaw);
@@ -230,7 +233,7 @@ export class LocalPlayer {
       this.onGround = false;
       this.stance = 'stand';
     }
-    this.velocity.y -= GRAVITY * dt;
+    this.velocity.y -= GRAVITY * this.gravityScale * dt;
 
     this.wasOnGround = this.onGround;
     this.onGround = false;

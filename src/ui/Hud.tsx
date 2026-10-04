@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { LOW_HEALTH, type Game } from '../game/game';
 import type { FeedEntry, FlagStatus, HudState, MatchEnd } from '../game/hudStore';
 import { ABILITIES, type SlotView } from '../game/abilities';
-import { MODES, MVP_TIME, TEAM_INFO, otherTeam } from '../game/modes';
+import { MVP_TIME, TEAM_INFO, otherTeam } from '../game/modes';
 import type { Team, WeaponKind } from '../types';
 import { MatchSummary } from './MatchSummary';
 import { SettingsPanel, useSettings } from './SettingsPanel';
@@ -107,8 +107,8 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       )}
       {hud.damageFlash > 0 && <div key={`dmg-${hud.damageFlash}`} id="damage-overlay" aria-hidden="true" />}
       {hud.respawnFlash > 0 && <div key={`rs-${hud.respawnFlash}`} id="respawn-flash" aria-hidden="true" />}
-      {!hud.death && hud.hp <= LOW_HEALTH && inMatch && (
-        <div id="low-health" aria-hidden="true" style={{ '--lh': 1 - Math.max(0, hud.hp) / LOW_HEALTH } as React.CSSProperties} />
+      {!hud.death && hud.hp <= hud.maxHp * LOW_HEALTH && inMatch && (
+        <div id="low-health" aria-hidden="true" style={{ '--lh': 1 - Math.max(0, hud.hp) / (hud.maxHp * LOW_HEALTH) } as React.CSSProperties} />
       )}
       {hud.announce && (
         <div key={`ann-${hud.announce.n}`} id="announce" aria-hidden="true" style={{ animationDuration: `${hud.announce.ms}ms` }}>
@@ -138,7 +138,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       )}
       {!hud.spectate && (
         <>
-          <HealthPanel hp={hud.hp} />
+          <HealthPanel hp={hud.hp} max={hud.maxHp} />
           <AmmoPanel hud={hud} touch={game.touch} />
           <AbilityBar
             slots={hud.slots}
@@ -172,6 +172,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
           map={hud.map}
           clockLeft={hud.clock?.left ?? null}
           mode={hud.mode}
+          rules={hud.rules}
           score={hud.score}
           onClose={game.touch ? () => game.setTouchScoreboard(false) : undefined}
         />
@@ -257,12 +258,12 @@ function SpectateBanner({ spectate, touch }: { spectate: NonNullable<HudState['s
 }
 
 function ScoreBar({ hud }: { hud: HudState }) {
-  const { mode, team, score, flags } = hud;
-  const limit = MODES[mode].limit;
-  if (mode === 'gungame') {
+  const { team, score, flags, rules } = hud;
+  const { limit, short } = rules;
+  if (rules.loadout === 'gungame') {
     return (
       <div id="scorebar" className="ffa">
-        <span className="mode">{MODES[mode].short}</span>
+        <span className="mode">{short}</span>
         <RoundClock clock={hud.clock} />
         <span>Level <strong>{Math.min(score.mine + 1, limit)}</strong><span className="muted">/{limit}</span> · {GUNS[hud.gun].name}</span>
         {score.leader && (
@@ -274,7 +275,7 @@ function ScoreBar({ hud }: { hud: HudState }) {
   if (!team) {
     return (
       <div id="scorebar" className="ffa">
-        <span className="mode">{MODES[mode].short}</span>
+        <span className="mode">{short}</span>
         <RoundClock clock={hud.clock} />
         <span>You <strong>{score.mine}</strong></span>
         {score.leader && (
@@ -297,7 +298,7 @@ function ScoreBar({ hud }: { hud: HudState }) {
       <div id="scorebar">
         {teamBox('red')}
         <div className="center">
-          <span className="mode">{MODES[mode].short}</span>
+          <span className="mode">{short}</span>
           <RoundClock clock={hud.clock} />
           <span className="muted">to {limit}</span>
         </div>
@@ -415,14 +416,15 @@ function DamageDirections({ indicators }: { indicators: HudState['damageIndicato
   );
 }
 
-function HealthPanel({ hp }: { hp: number }) {
-  const color = hp > 60 ? 'var(--good)' : hp > 30 ? 'var(--accent)' : 'var(--danger)';
+function HealthPanel({ hp, max }: { hp: number; max: number }) {
+  const pct = Math.max(0, Math.min(100, (hp / max) * 100));
+  const color = pct > 60 ? 'var(--good)' : pct > 30 ? 'var(--accent)' : 'var(--danger)';
   return (
     <div id="health" className="panel">
       <span className="label">HP</span>
       <span>{Math.max(0, Math.ceil(hp))}</span>
       <div className="bar" aria-hidden="true">
-        <div id="health-bar" style={{ width: `${Math.max(0, hp)}%`, background: color }} />
+        <div id="health-bar" style={{ width: `${pct}%`, background: color }} />
       </div>
     </div>
   );

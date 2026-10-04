@@ -4,7 +4,7 @@ import {
   runTransaction, type DatabaseReference, type Unsubscribe,
 } from 'firebase/database';
 import { db } from './firebase';
-import { isGameMode } from '../game/modes';
+import { rulesOfRoom, type ModeRules } from '../game/rules';
 import { CLASSIC_SEED, normalizeSeed } from '../game/mapgen';
 import type {
   GameEvent, GameMode, GameRecord, GameState, LobbyRecord, OutgoingEvent, PickupRecord, PlayerState, RoomSummary,
@@ -52,7 +52,7 @@ export function watchRooms(callback: (rooms: RoomSummary[]) => void, onError?: (
 }
 
 export async function createRoom(
-  name: string, mode: GameMode, seed: string, host: string, playerId: string,
+  name: string, rules: ModeRules, seed: string, host: string, playerId: string,
 ): Promise<string> {
   let code: string;
   do {
@@ -60,7 +60,8 @@ export async function createRoom(
   } while ((await get(ref(db(), `lobby/${code}`))).exists());
   await set(ref(db(), `lobby/${code}`), {
     name,
-    mode,
+    mode: rules.base,
+    rules,
     seed,
     host,
     createdAt: serverTimestamp(),
@@ -77,27 +78,29 @@ export async function createRoom(
  * we created it (otherwise just join).
  */
 export async function createRoomWithCode(
-  code: string, name: string, mode: GameMode, seed: string, host: string, playerId: string,
+  code: string, name: string, rules: ModeRules, seed: string, host: string, playerId: string,
 ): Promise<boolean> {
   const result = await runTransaction(ref(db(), `lobby/${code}`), (current: LobbyRecord | null) => {
     // A record without members is a leftover from an abandoned room: take it over.
     if (current && Object.keys(current.members || {}).length > 0) return undefined;
-    return { name, mode, seed, host, createdAt: Date.now(), members: { [playerId]: host } };
+    return { name, mode: rules.base, rules, seed, host, createdAt: Date.now(), members: { [playerId]: host } };
   }, { applyLocally: false });
   if (!result.committed) return false;
   await set(ref(db(), `rooms/${code}/game`), { round: 0, seed, startedAt: serverTimestamp() });
   return true;
 }
 
-/** Mode and map seed of an existing room, or null if there's no such room. */
-export async function getRoomSetup(code: string): Promise<{ mode: GameMode; seed: string } | null> {
+/** Mode rules and map seed of an existing room, or null if there's no such room. */
+export async function getRoomSetup(code: string): Promise<{ mode: GameMode; rules: ModeRules; seed: string } | null> {
   const room = (await get(ref(db(), `lobby/${code}`))).val() as LobbyRecord | null;
   return room ? roomSetup(room) : null;
 }
 
-function roomSetup(room: LobbyRecord): { mode: GameMode; seed: string } {
+function roomSetup(room: LobbyRecord): { mode: GameMode; rules: ModeRules; seed: string } {
+  const rules = rulesOfRoom(room.rules, room.mode);
   return {
-    mode: isGameMode(room.mode) ? room.mode : 'ffa',
+    mode: rules.base,
+    rules,
     seed: (typeof room.seed === 'string' && normalizeSeed(room.seed)) || CLASSIC_SEED,
   };
 }
@@ -281,10 +284,10 @@ export class RoomConnection {
   }
 
   /** Room name, mode and creation time. */
-  async roomInfo(): Promise<{ name: string; mode: GameMode; createdAt: number } | null> {
+  async roomInfo(): Promise<{ name: string; rules: ModeRules; createdAt: number } | null> {
     const snap = await get(this.lobbyRef);
     const room = snap.val() as LobbyRecord | null;
-    return room ? { name: room.name, mode: isGameMode(room.mode) ? room.mode : 'ffa', createdAt: room.createdAt } : null;
+    return room ? { name: room.name, rules: rulesOfRoom(room.rules, room.mode), createdAt: room.createdAt } : null;
   }
 
   /** Everyone currently in the room (used to balance teams before we join). */

@@ -64,7 +64,7 @@ h2 {
 }
 
 .field { display: block; margin-bottom: 14px; }
-.field span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.field > span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
 
 .row { display: flex; gap: 8px; margin-bottom: 10px; }
 .row input { flex: 1; min-width: 0; }
@@ -562,6 +562,111 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 .pause-card .status { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .pause-card .status header { display: flex; gap: 10px; align-items: flex-start; }
 .pause-card .status header .mode-badge { margin-top: 4px; }
+.pause-card h3 { margin: 0; font-size: 20px; }
+.pause-card .goal { margin: 2px 0 0; font-size: 13px; line-height: 1.4; }
+.pause-card .row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 15px; }
+.pause-card .row .clock { font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.pause-card .score .flag { margin-left: 4px; font-size: 12px; }
+.pause-card .state { margin: 0; font-weight: 600; padding: 8px 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.05); border-left: 3px solid var(--accent); }
+.pause-card .map { display: flex; gap: 12px; align-items: center; }
+.pause-card .map > div { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.pause-card .map .map-preview { width: 112px !important; height: 112px !important; border-radius: 8px; }
+.pause-card .room { margin: 0; display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.pause-card .room button { padding: 5px 10px; font-size: 13px; }
+.pause-card .help { min-width: 0; }
+/* The buttons: one row across the bottom of the card */
+.pause-card .actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+.pause-card .actions button { margin: 0; padding: 10px 14px; white-space: nowrap; }
+.pause-card .actions .primary { min-width: 120px; }
+.pause-card .actions .spacer { flex: 1; }
+.pause-card .confirm { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+.pause-card .confirm button { padding: 8px 12px; font-size: 13px; }
+.pause-card .keys { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; font-size: 12px; color: var(--muted); }
+.pause-card .keys li { display: flex; gap: 8px; align-items: baseline; }
+.pause-card .keys kbd { min-width: 54px; text-align: center; white-space: nowrap; }
+.pause-card .touch-help { margin: 8px 0 0; font-size: 13px; line-height: 1.5; }
+#hud.paused #round-over, #hud.paused #mvp .card, #hud.paused #mvp .next-map { opacity: 0.4; }
+@media (max-width: 640px) { .pause-card { grid-template-columns: 1fr; } }
+kbd {
+  background: #222a38;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  #match-summary .stats { grid-template-columns: repeat(2, 1fr); }
+  #inventory .items { grid-template-columns: 1fr; }
+  #inventory .item { min-height: 0; }
+  .slot { width: 58px; height: 58px; }
+  .slot .name { display: none; }
+  #health .bar { width: 90px; }
+}
+
+/* ---------- Game modes ---------- */
+
+.modes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+/* Mode picker: prebuilt modes, the player's own, and "create custom mode" */
+.mode-picker .modes { max-height: 330px; overflow-y: auto; padding-right: 4px; }
+.mode {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #1c2230;
+  min-width: 0;
+}
+.mode .mode-pick, .mode.create {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  height: 100%;
+  text-align: left;
+  white-space: normal;
+  padding: 9px 11px;
+  border: 0;
+  background: transparent;
+  border-radius: 10px;
+}
+.mode.create { border: 1px dashed var(--line); background: transparent; }
+.mode.create:hover { border-color: var(--accent); }
+.mode strong { font-size: 13px; display: flex; align-items: center; min-width: 0; }
+.mode strong .mode-badge { flex-shrink: 0; }
+.mode small { font-size: 12px; color: var(--muted); line-height: 1.3; }
+.mode.selected { border-color: var(--accent); background: rgba(255, 181, 71, 0.1); }
+.mode .mode-tools { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px; }
+.mode .mode-tools button { padding: 1px 6px; font-size: 12px; line-height: 1.4; }
+.mode-summary { font-size: 13px; margin: 8px 0 0; line-height: 1.5; }
+@media (max-width: 480px) { .modes { grid-template-columns: 1fr; } }
+
+/* Custom mode editor (reuses the settings panel look) */
+#mode-editor { background: rgba(8, 10, 14, 0.75); pointer-events: auto; z-index: 12; }
+#mode-editor .panel-box { width: min(560px, 100%); max-height: calc(100% - 16px); overflow-y: auto; background: rgba(16, 20, 27, 0.97); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; text-align: left; }
+#mode-editor header, #mode-editor footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#mode-editor footer { margin-top: 14px; justify-content: flex-end; }
+#mode-editor h3 { margin: 0; font-size: 20px; }
+#mode-editor h4 { margin: 16px 0 8px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+#mode-editor .setting { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; font-size: 14px; }
+#mode-editor .setting > span:first-child { width: 120px; flex-shrink: 0; }
+#mode-editor .setting.check > span { width: auto; }
+#mode-editor .setting.disabled { opacity: 0.45; }
+#mode-editor input[type='range'] { flex: 1; padding: 0; accent-color: var(--accent); }
+#mode-editor input[type='checkbox'] { width: 16px; height: 16px; accent-color: var(--accent); }
+#mode-editor select { flex: 1; padding: 8px 10px; background: #0f1218; color: var(--text); border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+#mode-editor .number-readout { width: 64px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+#mode-editor .choices { display: flex; gap: 6px; }
+#mode-editor .choice { flex: 1; padding: 8px; font-size: 13px; }
+#mode-editor .choice.selected { border-color: var(--accent); color: var(--accent); background: rgba(255, 181, 71, 0.1); }
+#mode-editor .name-row { margin: 10px 0 0; }
+#mode-editor .tag-input { flex: 0 0 72px; text-transform: uppercase; text-align: center; letter-spacing: 1px; }
+#mode-editor .hint { font-size: 12px; margin: 0 0 8px; }
+#mode-editor .mode-preview { margin: 14px 0 0; padding: 10px 12px; border-radius: 8px; background: rgba(255, 255, 255, 0.05); border-left: 3px solid var(--accent); font-size: 13px; line-height: 1.5; }
+
+.mode-badge { margin-top: 4px; }
 .pause-card h3 { margin: 0; font-size: 20px; }
 .pause-card .goal { margin: 2px 0 0; font-size: 13px; line-height: 1.4; }
 .pause-card .row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 15px; }

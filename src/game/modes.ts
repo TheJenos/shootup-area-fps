@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import type { GameMode, GunKind, Team } from '../types';
 
 /**
- * Gun Game: everyone starts on the first gun and each kill moves them to the next; the first
- * through the whole ladder wins. No pickups, endless ammo.
+ * Gun Game ladder (a loadout, see rules.ts): everyone starts on the first gun and each kill moves
+ * them to the next; the first through the whole ladder wins.
  */
 export const GUN_GAME_LADDER: GunKind[] = [
   'rifle', 'deagle', 'shotgun', 'sniper', 'rifle', 'shotgun', 'deagle', 'sniper', 'rifle', 'deagle', 'shotgun', 'sniper',
@@ -24,15 +24,11 @@ export interface ModeDef {
   timeLimit: number;
   /** Whether guns, abilities and ammo spawn on the map */
   pickups: boolean;
-  /**
-   * Everyone holds this one gun, with endless ammo; gun pickups and ammo boxes don't spawn
-   * (abilities still do, if `pickups` is on).
-   */
-  fixedGun?: GunKind;
   /** One line telling a new player what to do */
   goal: string;
 }
 
+/** The three base types every mode (prebuilt or custom) is built on; see rules.ts for the rest. */
 export const MODES: Record<GameMode, ModeDef> = {
   ffa: {
     name: 'Free-for-all', short: 'FFA', description: 'Everyone for themselves', teams: false, limit: 25, timeLimit: 8 * 60, pickups: true,
@@ -45,21 +41,6 @@ export const MODES: Record<GameMode, ModeDef> = {
   ctf: {
     name: 'Capture the Flag', short: 'CTF', description: 'Bring the enemy flag to yours', teams: true, limit: 3, timeLimit: 12 * 60, pickups: true,
     goal: 'Take the enemy flag to your base — first to 3 captures. Your own flag must be home to score.',
-  },
-  sniper: {
-    name: 'Sniper Only', short: 'SNP', description: 'Everyone gets a sniper, nothing else', teams: false,
-    limit: 20, timeLimit: 8 * 60, pickups: true, fixedGun: 'sniper',
-    goal: 'Snipers only, endless ammo — first to 20 kills wins. Aim to use the scope.',
-  },
-  snipertdm: {
-    name: 'Sniper TDM', short: 'SNT', description: 'Red vs Blue, snipers only', teams: true,
-    limit: 40, timeLimit: 10 * 60, pickups: true, fixedGun: 'sniper',
-    goal: 'Snipers only, endless ammo — kills score for your team, first team to 40 wins.',
-  },
-  gungame: {
-    name: 'Gun Game', short: 'GG', description: 'Every kill gives the next gun; finish the ladder to win', teams: false,
-    limit: GUN_GAME_LADDER.length, timeLimit: 10 * 60, pickups: false,
-    goal: `Every kill hands you the next gun — clear all ${GUN_GAME_LADDER.length} to win`,
   },
 };
 

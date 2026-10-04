@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { MatchInfo, MyMatch, ScoreRow, ScoreView } from '../game/hudStore';
 import { MODES, TEAMS, TEAM_INFO } from '../game/modes';
 import type { GameMode } from '../types';
+import type { ModeRules } from '../game/rules';
 import { safeColor } from './colors';
 
 function formatClock(ms: number): string {
@@ -34,6 +35,7 @@ interface Props {
   rows: ScoreRow[];
   myMatch: MyMatch;
   mode: GameMode;
+  rules: ModeRules;
   score: ScoreView;
   map: { name: string; seed: string } | null;
   /** Seconds left in the round */
@@ -43,7 +45,7 @@ interface Props {
 }
 
 /** Held open with Tab: everyone's stats plus your own match summary. */
-export function MatchSummary({ roomCode, match, rows, myMatch, mode, score, map, clockLeft, onClose }: Props) {
+export function MatchSummary({ roomCode, match, rows, myMatch, mode, rules, score, map, clockLeft, onClose }: Props) {
   const now = useNow();
   const me = rows.find((r) => r.me);
   const leader = rows[0];
@@ -81,7 +83,7 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, score, map,
         <div>
           <h3 id="summary-title">{match?.roomName ?? 'Match'}</h3>
           <span className="muted">
-            {MODES[mode].name} · {mode === 'gungame' ? `${MODES[mode].limit} guns` : `first to ${MODES[mode].limit}`} ·{' '}
+            {rules.name} · {rules.loadout === 'gungame' ? `${rules.limit} guns` : `first to ${rules.limit}`} ·{' '}
             {map && <>{map.name} (seed {map.seed}) · </>}Room {roomCode} · {rows.length}{' '}
             {rows.length === 1 ? 'player' : 'players'}
           </span>

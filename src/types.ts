@@ -1,3 +1,5 @@
+import type { ModeRules } from './game/rules';
+
 /** A player's record at rooms/{code}/players/{id}. */
 export interface PlayerState {
   name: string;
@@ -176,6 +178,8 @@ export interface RoomSummary {
   code: string;
   name: string;
   mode: GameMode;
+  /** The room's mode rules (prebuilt or custom) */
+  rules: ModeRules;
   /** Map seed (see mapgen.ts) */
   seed: string;
   host: string;
@@ -184,8 +188,10 @@ export interface RoomSummary {
 
 export interface LobbyRecord {
   name: string;
-  /** Missing on rooms made before modes existed, which are free-for-all */
-  mode?: GameMode;
+  /** Base mode. Older rooms may hold a legacy name ('sniper', 'gungame', …) mapped to a preset. */
+  mode?: string;
+  /** The mode's rules (see game/rules.ts); missing on rooms made before custom modes */
+  rules?: ModeRules;
   /** Map seed; missing on rooms made before seeds existed, which use the classic map */
   seed?: string;
   host: string;
@@ -193,7 +199,8 @@ export interface LobbyRecord {
   members?: Record<string, string>;
 }
 
-export type GameMode = 'ffa' | 'tdm' | 'ctf' | 'gungame' | 'sniper' | 'snipertdm';
+/** Base mode types; prebuilt and custom modes are rule sets on top (see game/rules.ts). */
+export type GameMode = 'ffa' | 'tdm' | 'ctf';
 
 export type Team = 'red' | 'blue';
 

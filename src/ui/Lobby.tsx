@@ -5,8 +5,9 @@ import { generateMap, normalizeSeed, randomSeed, SEED_MAX_LENGTH } from '../game
 import { MapPreview } from './MapPreview';
 import { initAudio } from '../game/audio';
 import { loadCharacter } from '../game/character';
-import { GAME_MODES, MODES } from '../game/modes';
-import type { GameMode, RoomSummary } from '../types';
+import { ModePicker } from './ModePicker';
+import { PRESETS, type ModeRules } from '../game/rules';
+import type { RoomSummary } from '../types';
 import { ROOM_CODE_MAX, type Session } from './App';
 import { Brand } from './Brand';
 import { friendlyError } from './errors';
@@ -83,7 +84,7 @@ interface Props {
 export function Lobby({ initialCode, initialError, onEnter }: Props) {
   const [name, setName] = useState(loadName);
   const [roomName, setRoomName] = useState('');
-  const [mode, setMode] = useState<GameMode>('ffa');
+  const [rules, setRules] = useState<ModeRules>(PRESETS[0]!.rules);
   const [seed, setSeed] = useState(randomSeed);
   // Blank means "surprise me": a fresh random seed is used when the room is created.
   const map = useMemo(() => (seed ? generateMap(seed) : null), [seed]);
@@ -159,7 +160,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
     const playerId = randomId();
     const title = roomName.trim().slice(0, 24) || `${playerName}'s room`;
     const roomSeed = seed || randomSeed();
-    const roomCode = await createRoom(title, mode, roomSeed, playerName, playerId);
+    const roomCode = await createRoom(title, rules, roomSeed, playerName, playerId);
     onEnter({ roomCode, playerId, name: playerName, seed: roomSeed, profileId });
   });
 
@@ -234,27 +235,13 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
 
         <div className="field">
           <span>Game mode</span>
-          <div className="modes" role="radiogroup" aria-label="Game mode">
-            {GAME_MODES.map((m) => (
-              <button
-                key={m}
-                type="button"
-                role="radio"
-                aria-checked={mode === m}
-                className={mode === m ? 'mode selected' : 'mode'}
-                onClick={() => setMode(m)}
-              >
-                <strong>{MODES[m].name}</strong>
-                <small>{MODES[m].description}</small>
-              </button>
-            ))}
-          </div>
+          <ModePicker value={rules} onChange={setRules} />
         </div>
 
         <div className="field">
           <span>Map</span>
           <div className="map-picker">
-            {map ? <MapPreview map={map} mode={mode} /> : <div className="map-preview empty">Random map</div>}
+            {map ? <MapPreview map={map} mode={rules.base} /> : <div className="map-preview empty">Random map</div>}
             <div className="map-controls">
               <strong>{map ? map.theme.name : 'Surprise me'}</strong>
               <div className="row">
@@ -327,11 +314,11 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
               <li key={room.code}>
                 <div className="info">
                   <div className="name">
-                    <span className={`mode-badge ${room.mode}`}>{MODES[room.mode].short}</span>
+                    <span className={`mode-badge ${room.mode}`} title={room.rules.name}>{room.rules.short}</span>
                     {room.name}
                   </div>
                   <div className="meta">
-                    {room.code} · {mapName(room.seed)} · {room.players.length} playing ·{' '}
+                    {room.rules.name} · {room.code} · {mapName(room.seed)} · {room.players.length} playing ·{' '}
                     {room.players.slice(0, 4).join(', ')}
                   </div>
                 </div>

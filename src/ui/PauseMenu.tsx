@@ -1,9 +1,10 @@
 import { useMemo, useState, type MouseEvent } from 'react';
 import type { Game } from '../game/game';
 import type { HudState } from '../game/hudStore';
-import { MODES, TEAM_INFO, otherTeam } from '../game/modes';
+import { TEAM_INFO, otherTeam } from '../game/modes';
 import { GUNS } from '../game/guns';
 import { generateMap } from '../game/mapgen';
+import { goalOf } from '../game/rules';
 import { keyLabel, type Bindings } from '../game/settings';
 import { MapPreview } from './MapPreview';
 import { FlagIcon, RoundClock, useCopyInvite } from './Hud';
@@ -49,7 +50,7 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onIntro }:
   const { copy, copied } = useCopyInvite(game, roomCode);
   const [confirmLeave, setConfirmLeave] = useState(false);
   const layout = useMemo(() => (hud.map ? generateMap(hud.map.seed) : null), [hud.map?.seed]);
-  const mode = MODES[hud.mode];
+  const { rules } = hud;
   const team = hud.team;
 
   const resume = (e: MouseEvent) => {
@@ -77,8 +78,8 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onIntro }:
         </span>
       );
     }
-    if (hud.mode === 'gungame') {
-      return <span className="score">Level <strong>{Math.min(hud.score.mine + 1, mode.limit)}</strong>/{mode.limit} · {GUNS[hud.gun].name}</span>;
+    if (rules.loadout === 'gungame') {
+      return <span className="score">Level <strong>{Math.min(hud.score.mine + 1, rules.limit)}</strong>/{rules.limit} · {GUNS[hud.gun].name}</span>;
     }
     return (
       <span className="score">
@@ -93,10 +94,10 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onIntro }:
       <div className="panel-box pause-card" role="dialog" aria-modal="true" aria-labelledby="pause-title">
         <section className="status">
           <header>
-            <span className={`mode-badge ${hud.mode}`}>{mode.short}</span>
+            <span className={`mode-badge ${hud.mode}`}>{rules.short}</span>
             <div>
-              <h3 id="pause-title">{mode.name}</h3>
-              <p className="muted goal">{mode.goal}</p>
+              <h3 id="pause-title">{rules.name}</h3>
+              <p className="muted goal">{goalOf(rules)}</p>
             </div>
           </header>
           <div className="row">

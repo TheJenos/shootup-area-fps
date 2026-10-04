@@ -1,4 +1,5 @@
 import type { SlotView } from './abilities';
+import { baseRules, type ModeRules } from './rules';
 import type { GameMode, GunKind, PlayerState, Team, WeaponKind } from '../types';
 
 const FEED_LIFETIME = 5_000;
@@ -110,6 +111,10 @@ export interface HudState {
   connecting: boolean;
   paused: boolean;
   hp: number;
+  /** Full health in this mode (100 normally; custom modes change it) */
+  maxHp: number;
+  /** The room's mode rules: name, badge, limit, loadout… */
+  rules: ModeRules;
   ammo: number;
   magSize: number;
   /** The gun in hand, its spare rounds (null = endless), and the picked-up gun if any */
@@ -183,6 +188,8 @@ const initialState: HudState = {
   connecting: true,
   paused: false,
   hp: 100,
+  maxHp: 100,
+  rules: baseRules('ffa'),
   ammo: 0,
   magSize: 0,
   gun: 'rifle',

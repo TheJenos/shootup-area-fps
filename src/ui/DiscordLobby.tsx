@@ -3,9 +3,9 @@ import { connectDiscord, type DiscordSession } from '../discord/discord';
 import { createRoomWithCode, getRoomSetup, randomId } from '../net/network';
 import { initAudio } from '../game/audio';
 import { loadCharacter } from '../game/character';
-import { GAME_MODES, MODES } from '../game/modes';
+import { ModePicker } from './ModePicker';
+import { PRESETS, type ModeRules } from '../game/rules';
 import { generateMap, randomSeed } from '../game/mapgen';
-import type { GameMode } from '../types';
 import type { Session } from './App';
 import { Brand } from './Brand';
 import { friendlyError } from './errors';
@@ -26,7 +26,7 @@ function roomCodeFor(instanceId: string): string {
   return code;
 }
 
-type Existing = { mode: GameMode; seed: string } | null;
+type Existing = { rules: ModeRules; seed: string } | null;
 
 interface Props {
   initialError: string;
@@ -37,7 +37,7 @@ interface Props {
 export function DiscordLobby({ initialError, onEnter }: Props) {
   const [discord, setDiscord] = useState<DiscordSession | null>(null);
   const [existing, setExisting] = useState<Existing | undefined>(undefined);
-  const [mode, setMode] = useState<GameMode>('ffa');
+  const [rules, setRules] = useState<ModeRules>(PRESETS[0]!.rules);
   const [error, setError] = useState(initialError);
   const [busy, setBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -67,12 +67,12 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
       const playerId = randomId();
       // Someone may have started the match since we looked; then we just join theirs.
       const seed = randomSeed();
-      const created = existing ? false : await createRoomWithCode(roomCode, 'Discord match', mode, seed, discord.name, playerId);
+      const created = existing ? false : await createRoomWithCode(roomCode, 'Discord match', rules, seed, discord.name, playerId);
       const setup = await getRoomSetup(roomCode);
       if (!setup) throw new Error('Could not start the match. Try again.');
       // We lost the race to start: the mode we picked wasn't used.
-      const notice = !existing && !created && setup.mode !== mode
-        ? `Someone started first — you joined their ${MODES[setup.mode].name} match`
+      const notice = !existing && !created && setup.rules.name !== rules.name
+        ? `Someone started first — you joined their ${setup.rules.name} match`
         : undefined;
       onEnter({
         roomCode, playerId, name: discord.name, seed: setup.seed, profileId: discordProfileId(discord.userId), ...(notice ? { notice } : {}),
@@ -103,28 +103,14 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
             <p className="subtitle">Playing as <strong>{discord.name}</strong></p>
             {existing ? (
               <div className="match-info">
-                <span className={`mode-badge ${existing.mode}`}>{MODES[existing.mode].short}</span>
-                {MODES[existing.mode].name} on <strong>{generateMap(existing.seed).theme.name}</strong>
+                <span className={`mode-badge ${existing.rules.base}`}>{existing.rules.short}</span>
+                {existing.rules.name} on <strong>{generateMap(existing.seed).theme.name}</strong>
                 <p className="muted">A match is running in this channel.</p>
               </div>
             ) : (
               <div className="field">
                 <span>Game mode</span>
-                <div className="modes" role="radiogroup" aria-label="Game mode">
-                  {GAME_MODES.map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      role="radio"
-                      aria-checked={mode === m}
-                      className={mode === m ? 'mode selected' : 'mode'}
-                      onClick={() => setMode(m)}
-                    >
-                      <strong>{MODES[m].name}</strong>
-                      <small>{MODES[m].description}</small>
-                    </button>
-                  ))}
-                </div>
+                <ModePicker value={rules} onChange={setRules} />
               </div>
             )}
             <button className="primary play" disabled={busy} onClick={() => void play()}>

@@ -187,6 +187,8 @@ export class RemotePlayer {
   private ragdollBones: RagdollBones;
   /** The killing hit, if it arrives before the body exists */
   private pendingHit: { dir: THREE.Vector3; strength: number; head: boolean } | null = null;
+  /** The mode's full health, so the name tag's bar reads right in 50 / 200 HP modes */
+  private maxHp = 100;
   /** Ground velocity, smoothed (m/s), so a body keeps the momentum it died with */
   private readonly velocity = new THREE.Vector3();
   /** 0..1 blend from the animation's arms to the aim pose, and from the ready pose to the sights */
@@ -356,7 +358,7 @@ export class RemotePlayer {
       this.hp = data.hp;
       const predicting = performance.now() - this.lastHitAt < HP_PREDICTION_MS;
       if (!predicting || this.hp < this.shownHp || respawned) this.shownHp = this.hp;
-      this.tag.setHp(this.shownHp);
+      this.tag.setHp(this.hpPercent(this.shownHp));
     }
     if (!this.alive) this.tag.hide();
   }
@@ -366,7 +368,15 @@ export class RemotePlayer {
     if (!this.alive) return;
     this.lastHitAt = performance.now();
     this.shownHp = Math.max(0, Math.min(this.shownHp, this.hp) - damage);
-    this.tag.reveal(this.shownHp);
+    this.tag.reveal(this.hpPercent(this.shownHp));
+  }
+
+  setMaxHealth(max: number): void {
+    this.maxHp = Math.max(1, max);
+  }
+
+  private hpPercent(hp: number): number {
+    return (hp / this.maxHp) * 100;
   }
 
   /** Our best guess of their health right now (server value, minus our unconfirmed hits). */

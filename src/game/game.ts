@@ -27,6 +27,7 @@ import { MomentTracker } from './moments';
 import { ReplayDirector, ReplayRecorder } from './replay';
 import { RoomConnection, randomId } from '../net/network';
 import { recordRound } from '../net/leaderboard';
+import { baseRules, goalOf, type ModeRules } from './rules';
 import * as sfx from './audio';
 import { actionFor, keyFor, keyLabel, settings, type Action, type Quality } from './settings';
 import { IN_DISCORD } from '../discord/patch';
@@ -40,7 +41,6 @@ import type {
 
 const SEND_INTERVAL = 1 / 15;
 const HEARTBEAT = 2;
-const RESPAWN_TIME = 3;
 /** Most damage one hit of each kind can deal; anything above that from another client is clamped. */
 const maxDamage = (weapon: WeaponKind) =>
   (weapon === 'grenade' ? GRENADE_DAMAGE : weapon === 'flag' ? MELEE_HEAD_DAMAGE : maxShotDamage(weapon));
@@ -64,8 +64,8 @@ const RECORD_INTERVAL = 0.1;
 /** How hard a killing hit shoves the body, per weapon (m/s at the chest) */
 const KNOCKBACK: Partial<Record<WeaponKind, number>> = { rifle: 3, deagle: 4, shotgun: 6, sniper: 6, grenade: 7, flag: 4.5 };
 
-/** Health at or below which the screen darkens at the edges and the heart pounds */
-export const LOW_HEALTH = 30;
+/** Fraction of full health at or below which the screen darkens at the edges and the heart pounds */
+export const LOW_HEALTH = 0.3;
 /** Resolution cap per graphics quality setting (device pixel ratio) */
 const PIXEL_RATIO: Record<Quality, number> = { low: 1, medium: 1.5, high: 2 };
 /** How often to check whether teammates are hidden behind cover (s) */
@@ -149,6 +149,8 @@ export class Game {
   private readonly remotes = new Map<string, RemotePlayer>();
   private readonly players: Record<string, PlayerState> = {};
   private hp = 100;
+  /** The room's mode rules (base type plus loadout, pickups, health, speed…) */
+  private rules: ModeRules = baseRules('ffa');
   private alive = true;
   private kills = 0;
   private deaths = 0;
@@ -590,12 +592,14 @@ export class Game {
     ]);
     this.character = character;
     if (this.disposed) return;
-    this.mode = info?.mode ?? 'ffa';
+    this.rules = info?.rules ?? baseRules('ffa');
+    this.mode = this.rules.base;
+    this.applyRules();
     this.applyLoadout();
     if (MODES[this.mode].teams) this.setTeam(await this.pickTeam());
     if (this.mode === 'ctf') this.flagField = new FlagField(this.scene);
     if (info) this.hud.update({ match: { roomName: info.name, startedAt: info.createdAt } });
-    this.hud.update({ mode: this.mode });
+    this.hud.update({ mode: this.mode, rules: this.rules });
     if (this.disposed) return;
 
     const spawn = this.pickSpawn();
@@ -796,7 +800,7 @@ export class Game {
       if (kills > this.kills) {
         this.stats.streak += kills - this.kills;
         this.stats.best = Math.max(this.stats.best, this.stats.streak);
-        if (this.mode === 'gungame') this.gunGameLevelUp(kills);
+        if (this.rules.loadout === 'gungame') this.gunGameLevelUp(kills);
       }
       this.kills = kills;
       return;
@@ -904,8 +908,17 @@ export class Game {
 
   /** Modes that decide what you hold: the Gun Game ladder starts on its first gun, Sniper Only is snipers. */
   private applyLoadout(): void {
-    const fixed = this.mode === 'gungame' ? gunGameGun(0) : MODES[this.mode].fixedGun;
-    if (fixed) this.weapon.setForcedGun(fixed);
+    const { loadout } = this.rules;
+    if (loadout === 'gungame') this.weapon.setForcedGun(gunGameGun(0));
+    else if (loadout !== 'standard') this.weapon.setForcedGun(loadout);
+  }
+
+  /** The mode's movement, gravity and health (custom mode rules). */
+  private applyRules(): void {
+    this.player.speedScale = this.rules.speed;
+    this.player.gravityScale = this.rules.gravity;
+    this.hp = this.rules.health;
+    this.hud.update({ hp: this.hp, maxHp: this.rules.health });
   }
 
   /** Gun Game: a kill hands us the next gun on the ladder. */
@@ -1176,7 +1189,7 @@ export class Game {
   /** One point for `team`; the point that reaches the limit ends the round. */
   private addTeamScore(team: Team): void {
     const round = this.game.round;
-    const limit = MODES[this.mode].limit;
+    const limit = this.rules.limit;
     this.net.mutateGame((g) => {
       if (g.round !== round || g.ended) return false;
       const score = (g.score[team] ?? 0) + 1;
@@ -1207,7 +1220,7 @@ export class Game {
   private checkTimeLimit(): void {
     const g = this.game;
     if (this.roundOver || !g.startedAt || this.timeUpRequested === g.round) return;
-    if (this.net.serverNow() < g.startedAt + MODES[this.mode].timeLimit * 1000) return;
+    if (this.net.serverNow() < g.startedAt + this.rules.minutes * 60_000) return;
     this.timeUpRequested = g.round;
     const round = g.round;
     this.net.mutateGame((next) => {
@@ -1346,7 +1359,7 @@ export class Game {
 
     let clock: HudState['clock'] = null;
     if (g.startedAt) {
-      const left = g.ended ? 0 : Math.max(0, Math.ceil((g.startedAt + MODES[this.mode].timeLimit * 1000 - now) / 1000));
+      const left = g.ended ? 0 : Math.max(0, Math.ceil((g.startedAt + this.rules.minutes * 60_000 - now) / 1000));
       clock = { left, urgent: !g.ended && left <= CLOCK_WARNING };
     }
 
@@ -1465,7 +1478,7 @@ export class Game {
       this.flagHomeToast = true;
       return;
     }
-    const limit = MODES[this.mode].limit;
+    const limit = this.rules.limit;
     this.flagTransaction((g) => {
       if (!guard(g) || g.flags[enemy]?.by !== this.playerId || placementOf(g.flags[team]).at !== 'base') return false;
       delete g.flags[enemy];
@@ -1552,6 +1565,8 @@ export class Game {
     dmg: number | undefined, fromId: string, head: boolean, weapon: WeaponKind, source: THREE.Vector3,
   ): void {
     if (!this.alive || this.roundOver || this.isAlly(fromId)) return;
+    // Headshots-only modes: body hits and blasts don't count (the flag club still does).
+    if (this.rules.headshotsOnly && !head && weapon !== 'flag') return;
     // Never trust the number another client sent beyond what the game allows.
     let amount = Math.min(Math.max(Number(dmg) || 0, 0), maxDamage(weapon));
     // Show where it came from even when the shield soaks it up.
@@ -1575,7 +1590,7 @@ export class Game {
     this.alive = false;
     this.hp = 0;
     this.deaths++;
-    this.respawnTimer = RESPAWN_TIME;
+    this.respawnTimer = this.rules.respawn;
     this.triggerHeld = false;
     this.aimHeld = false;
     // Our picked-up gun and abilities fall around the body for anyone to grab; their effects end.
@@ -1592,14 +1607,14 @@ export class Game {
     this.hud.update({
       hp: 0,
       death: {
-        killerName: self ? '' : this.players[killerId]?.name || 'someone', self, weapon, head, dropped, respawnIn: RESPAWN_TIME,
+        killerName: self ? '' : this.players[killerId]?.name || 'someone', self, weapon, head, dropped, respawnIn: this.rules.respawn,
       },
     });
   }
 
   /** Scatter the picked-up gun and abilities (with their ammo / uses left) on the floor around where we died. */
   private dropLoot(): boolean {
-    if (!MODES[this.mode].pickups) return false;
+    if (!this.rules.guns && !this.rules.abilities && !this.rules.ammo) return false;
     const gun = this.weapon.takeSpecial();
     const items: PickupRecord[] = [
       ...(gun && gun.rounds > 0 && isPickupGun(gun.kind) ? [{ type: gun.kind, uses: gun.rounds, x: 0, z: 0 }] : []),
@@ -1620,7 +1635,7 @@ export class Game {
     if (MODES[this.mode].teams && this.mode !== 'ctf' && killer?.team && killer.team !== this.team) this.addTeamScore(killer.team);
     this.net.creditKill(killerId)
       .then((kills) => {
-        if (!MODES[this.mode].teams && kills !== null && kills >= MODES[this.mode].limit) {
+        if (!MODES[this.mode].teams && kills !== null && kills >= this.rules.limit) {
           this.endRound(round, killerId, killer?.name || 'Someone');
         }
       })
@@ -1638,14 +1653,14 @@ export class Game {
   private respawn(): void {
     const spawn = this.pickSpawn();
     this.player.teleport(spawn, Math.atan2(spawn.x, spawn.z));
-    this.hp = 100;
+    this.hp = this.rules.health;
     this.alive = true;
     this.weapon.reset();
     this.hitSources.clear();
     const wasDead = !!this.hud.get().death;
-    this.hud.update({ hp: 100, death: null });
+    this.hud.update({ hp: this.hp, death: null });
     if (wasDead) this.hud.update({ respawnFlash: this.hud.get().respawnFlash + 1 });
-    void this.net.sendState({ ...this.poseState(), hp: 100, alive: true });
+    void this.net.sendState({ ...this.poseState(), hp: this.hp, alive: true });
   }
 
   /** Prefer spawn points far away from living enemies. */
@@ -1697,6 +1712,8 @@ export class Game {
       if (hit) this.effects.impact(end, id ? 0xff3b3b : 0xffc35c);
       if (!id || !hit) continue;
       const head = !!hitbox?.head;
+      // Headhunter rules: a body shot does nothing.
+      if (this.rules.headshotsOnly && !head) continue;
       anyHead ||= head;
       damageTo.set(id, (damageTo.get(id) ?? 0) + shotDamage(gun, head, hit.distance));
     }
@@ -1807,7 +1824,7 @@ export class Game {
     }
     const type = check.type;
     // Refuse instead of wasting a use
-    if (type === 'medkit' && this.hp >= 100) {
+    if (type === 'medkit' && this.hp >= this.rules.health) {
       this.hud.toast('Already at full health');
       sfx.playDenied();
       return;
@@ -1815,7 +1832,7 @@ export class Game {
 
     switch (type) {
       case 'medkit':
-        this.hp = Math.min(100, this.hp + MEDKIT_HEAL);
+        this.hp = Math.min(this.rules.health, this.hp + MEDKIT_HEAL);
         this.hud.update({ hp: this.hp });
         void this.net.sendState({ hp: this.hp });
         break;
@@ -2137,13 +2154,12 @@ export class Game {
     if (!this.isLeader()) return;
     this.spawnTimer -= dt;
     if (this.spawnTimer > 0) return;
-    if (!MODES[this.mode].pickups) return;
-    // With a fixed gun (Sniper Only) there's no point in other guns or ammo boxes: abilities only.
-    const fixed = !!MODES[this.mode].fixedGun;
+    // What spawns is up to the mode (a fixed-gun loadout already switched guns and ammo off).
+    const { guns, abilities, ammo } = this.rules;
     const stock: { kind: PickupKind; have: number; max: number }[] = [
-      { kind: 'ability', have: this.pickups.countOf('ability'), max: MAX_PICKUPS },
-      { kind: 'gun', have: this.pickups.countOf('gun'), max: fixed ? 0 : MAX_GUN_PICKUPS },
-      { kind: 'ammo', have: this.pickups.countOf('ammo'), max: fixed ? 0 : MAX_AMMO_PICKUPS },
+      { kind: 'ability', have: this.pickups.countOf('ability'), max: abilities ? MAX_PICKUPS : 0 },
+      { kind: 'gun', have: this.pickups.countOf('gun'), max: guns ? MAX_GUN_PICKUPS : 0 },
+      { kind: 'ammo', have: this.pickups.countOf('ammo'), max: ammo ? MAX_AMMO_PICKUPS : 0 },
     ];
     // Fill up quickly when the map is bare, then trickle in.
     this.spawnTimer = stock.some((s) => s.have < s.max / 2) ? 1.5 : 7;
@@ -2154,7 +2170,8 @@ export class Game {
     if (!spot) return;
     const pick = <T,>(list: T[]) => list[Math.floor(Math.random() * list.length)];
     const type = short.kind === 'gun' ? pick(PICKUP_GUNS) ?? 'shotgun'
-      : short.kind === 'ammo' ? 'ammo' : pick(ABILITY_TYPES) ?? 'medkit';
+      // Headshots-only modes leave grenades out: a blast can't land a headshot.
+      : short.kind === 'ammo' ? 'ammo' : pick(ABILITY_TYPES.filter((t) => !this.rules.headshotsOnly || t !== 'grenade')) ?? 'medkit';
     const pickup: PickupRecord = { type, ...spot };
     void this.net.spawnPickup(pickup);
   }
@@ -2219,7 +2236,7 @@ export class Game {
     if (this.joined && this.locked && !this.introDone) {
       // First click to play: say what this mode is about (the pause card repeats it).
       this.introDone = true;
-      this.hud.announce(MODES[this.mode].name, MODES[this.mode].goal, 3800);
+      this.hud.announce(this.rules.name, goalOf(this.rules), 3800);
     }
     // Carrying the enemy flag: guns stowed, the flag is the only weapon.
     const melee = this.alive && this.carryingFlag();
@@ -2281,6 +2298,7 @@ export class Game {
 
     for (const [id, r] of this.remotes) {
       r.setAlly(this.isAlly(id));
+      r.setMaxHealth(this.rules.health);
       r.setCarrying(this.mode === 'ctf' && TEAMS.some((t) => this.game.flags[t]?.by === id));
       r.update(dt);
       this.updateRemoteSteps(id, r, dt);
@@ -2380,13 +2398,14 @@ export class Game {
 
   /** Below 30 health the heart pounds, faster and louder the closer to death. */
   private updateHeartbeat(dt: number): void {
-    if (!this.alive || !this.joined || this.hp > LOW_HEALTH) {
+    const low = this.rules.health * LOW_HEALTH;
+    if (!this.alive || !this.joined || this.hp > low) {
       this.heartbeatTimer = 0;
       return;
     }
     this.heartbeatTimer -= dt;
     if (this.heartbeatTimer > 0) return;
-    const danger = 1 - Math.max(0, this.hp) / LOW_HEALTH;
+    const danger = 1 - Math.max(0, this.hp) / low;
     this.heartbeatTimer = 1.1 - 0.5 * danger;
     sfx.playHeartbeat(0.45 + 0.55 * danger);
   }
@@ -2591,12 +2610,12 @@ export class Game {
     const map = this.hud.get().map;
     const g = this.game;
     const count = Object.values(this.players).filter((p) => !p.spec).length;
-    const details = `${MODES[this.mode].name}${map ? ` on ${map.name}` : ''}`;
+    const details = `${this.rules.name}${map ? ` on ${map.name}` : ''}`;
     let state: string;
     if (this.spectating) state = 'Spectating';
     else if (this.roundOver) state = 'Round over';
     else if (this.team) state = `Red ${g.score.red ?? 0} – ${g.score.blue ?? 0} Blue`;
-    else if (this.mode === 'gungame') state = `Level ${Math.min(this.kills + 1, GUN_GAME_LADDER.length)} of ${GUN_GAME_LADDER.length}`;
+    else if (this.rules.loadout === 'gungame') state = `Level ${Math.min(this.kills + 1, GUN_GAME_LADDER.length)} of ${GUN_GAME_LADDER.length}`;
     else state = `${this.kills} kill${this.kills === 1 ? '' : 's'}`;
     const key = `${details}|${state}|${count}`;
     if (key === this.presenceKey) return;

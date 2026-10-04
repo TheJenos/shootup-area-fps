@@ -31,16 +31,51 @@ To play with friends on your LAN while developing, run `npm run dev -- --host`.
 
 ## Game modes
 
-The room's creator picks the mode; the lobby shows it next to each room.
+Every mode is one of three **base types**, which decide teams, flags and how points are scored, plus a set of
+**rules** on top. The room's creator picks a mode in the lobby; the room list shows its badge and name.
 
-| Mode | Goal | Time limit | Or ends early at |
+| Base | Goal | Default time limit | Or ends early at |
 | --- | --- | --- | --- |
 | **FFA** — Free-for-all | Most kills | 8 min | 25 kills by one player |
 | **TDM** — Team Deathmatch | Red vs Blue; every kill scores for the killer's team | 10 min | 50 team kills |
 | **CTF** — Capture the Flag | Grab the enemy flag and bring it to your own base | 12 min | 3 captures |
-| **SNP** — Sniper Only | Free-for-all where everyone always holds the sniper (endless ammo). No gun pickups or ammo boxes; abilities still spawn | 8 min | 20 kills by one player |
-| **SNT** — Sniper TDM | Red vs Blue with snipers only (endless ammo); every kill scores for the killer's team. No gun pickups or ammo boxes; abilities still spawn | 10 min | 40 team kills |
-| **GG** — Gun Game | Every kill hands you the next gun on a 12-step ladder (rifle → deagle → shotgun → sniper → …); first through the ladder wins. No pickups, endless ammo | 10 min | 12 kills by one player |
+
+**Rules** (`src/game/rules.ts`), all optional on top of the base:
+
+| Rule | Options |
+| --- | --- |
+| Loadout | Standard (rifle + pickups), Rifles / Shotguns / Snipers / Deagles only (endless ammo, no other guns or ammo boxes), or the Gun Game ladder (FFA only) |
+| Pickups | Gun pickups, ammo boxes, abilities: each on or off |
+| Headshots only | Body hits do nothing; grenades don't spawn |
+| Score limit | FFA 5–60 kills, TDM 10–150 team kills, CTF 1–10 captures |
+| Time limit | 3–20 minutes |
+| Health | 25–200 HP (medkits heal up to it, the health bar and name tags scale to it) |
+| Respawn | 1–10 seconds |
+| Speed / gravity | 70–150 % movement speed, 30–150 % gravity (low gravity = higher, floatier jumps) |
+
+**Prebuilt modes:**
+
+| Badge | Mode | Base | What's different |
+| --- | --- | --- | --- |
+| FFA / TDM / CTF | Free-for-all, Team Deathmatch, Capture the Flag | – | The plain base modes |
+| GG | Gun Game | FFA | Every kill hands you the next gun on a 12-step ladder; first through it wins. No pickups |
+| SNP | Sniper Only | FFA | Snipers only, 20 kills |
+| SNT | Sniper TDM | TDM | Snipers only, 40 team kills |
+| SNF | Sniper Flags | CTF | Snipers only |
+| SHG | Shotgun Brawl | FFA | Shotguns only, 110 % speed |
+| DGL | Hand Cannons | FFA | Deagles only |
+| HS | Headhunter | FFA | Headshots only, 15 kills |
+| HC | Hardcore TDM | TDM | 50 HP, no abilities, 6 s respawn, 40 team kills |
+| TNK | Tank CTF | CTF | 200 HP, 90 % speed |
+| MOON | Moon Gravity | FFA | 35 % gravity, 110 % speed |
+| SPD | Speed Rush | FFA | 145 % speed, 1 s respawn, 30 kills |
+
+**Custom modes:** **＋ Create custom mode** in the lobby opens an editor: pick the base, name it (and a badge of
+up to 4 letters), set every rule, and see a live description. **Use once** plays it in the room you create;
+**Save & use** also keeps it under your modes (in this browser, up to 12; ✎ edits, ✕ deletes). The Discord
+lobby has the same picker. A room's rules are stored with it (`lobby/{code}/rules`, checked by the database
+rules), so everyone who joins plays the same; rooms made before custom modes keep working (their old mode
+names map to the matching prebuilt mode).
 
 - **Teams:** you join the smaller team. Every player's uniform takes their team colour (65%, with a faint glow
   and a glowing visor, so teams stay readable in shadow). Teammates' names show whenever they're in sight, and a
