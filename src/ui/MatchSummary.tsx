@@ -54,11 +54,11 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, score, map,
     : [{ team: null, rows }];
 
   const row = (r: ScoreRow, i: number) => (
-    <tr key={r.id} className={r.me ? 'me' : undefined}>
+    <tr key={r.id} className={[r.me && 'me', r.spectating && 'spectating'].filter(Boolean).join(' ') || undefined}>
       <td className="rank">{i + 1}</td>
       <td className="player">
         <span className="dot" style={{ background: safeColor(r.color) }} />
-        {r.name}
+        {r.name}{r.spectating && <span className="muted"> (spectating)</span>}
         {r === leader && (r.kills > 0 || r.captures > 0) && <span className="crown" title="Top player">👑</span>}
       </td>
       {ctf && <td>{r.captures}</td>}
@@ -79,7 +79,7 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, score, map,
         <div>
           <h3>{match?.roomName ?? 'Match'}</h3>
           <span className="muted">
-            {MODES[mode].name} · first to {MODES[mode].limit} ·{' '}
+            {MODES[mode].name} · {mode === 'gungame' ? `${MODES[mode].limit} guns` : `first to ${MODES[mode].limit}`} ·{' '}
             {map && <>{map.name} (seed {map.seed}) · </>}Room {roomCode} · {rows.length}{' '}
             {rows.length === 1 ? 'player' : 'players'}
           </span>

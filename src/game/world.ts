@@ -1,5 +1,7 @@
 import * as THREE from 'three';
-import { ARENA_HALF, type MapLayout } from './mapgen';
+import { ARENA_HALF, type MapBox, type MapLayout } from './mapgen';
+import type { Quality } from './settings';
+import { wedgeGeometry, type Ramp } from './ramps';
 import {
   FLOOR_TILE, SURFACE_TILE, boxTexture, floorTexture, scaleBoxUVs, skyTexture, spawnMarkerTexture,
   type BoxSurface,
@@ -10,19 +12,31 @@ const SKY_RADIUS = 250;
 
 export { ARENA_HALF };
 
-export interface World {
+/** The lists a world fills in place, so everything holding them sees each new map. */
+export interface WorldLists {
   /** Axis-aligned boxes the player collides with */
   colliders: THREE.Box3[];
   /** Meshes bullets can hit */
   solids: THREE.Mesh[];
+  /** Sloped surfaces the player walks up */
+  ramps: Ramp[];
+  /** Everything that takes up floor space (boxes and ramps), for placing pickups */
+  obstacles: THREE.Box3[];
+}
+
+export interface World extends WorldLists {
   spawnPoints: THREE.Vector3[];
   /** Keep this centered on the camera so the horizon never gets closer */
   sky: THREE.Object3D;
   /** Everything the map added to the scene */
   root: THREE.Group;
+  /** Shadow map resolution for the graphics quality setting */
+  setShadowQuality(quality: Quality): void;
   /** Remove the map from the scene and free its geometry and materials (textures are shared) */
   dispose(): void;
 }
+
+const SHADOW_SIZE: Record<Quality, number> = { low: 512, medium: 1024, high: 2048 };
 
 /**
  * Builds the arena from a generated layout (see mapgen.ts). Every client generates
@@ -31,11 +45,12 @@ export interface World {
  * Fills `colliders` (Box3, for movement) and `solids` (meshes, for bullet raycasts) in place,
  * so code holding on to those arrays sees the new map when it's rebuilt for the next round.
  */
-export function buildWorld(
-  scene: THREE.Scene, layout: MapLayout, colliders: THREE.Box3[], solids: THREE.Mesh[],
-): World {
+export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLists): World {
+  const { colliders, solids, ramps, obstacles } = lists;
   colliders.length = 0;
   solids.length = 0;
+  ramps.length = 0;
+  obstacles.length = 0;
   const { theme } = layout;
   const root = new THREE.Group();
   root.name = `map:${layout.seed}`;
@@ -104,7 +119,30 @@ export function buildWorld(
     mesh.castShadow = mesh.receiveShadow = true;
     root.add(mesh);
     mesh.updateMatrixWorld();
-    colliders.push(new THREE.Box3().setFromObject(mesh));
+    const box = new THREE.Box3().setFromObject(mesh);
+    colliders.push(box);
+    obstacles.push(box);
+    solids.push(mesh);
+  };
+
+  const addRamp = (b: MapBox) => {
+    const geo = wedgeGeometry(b.w, b.h, b.d, b.ramp!);
+    const tile = SURFACE_TILE[b.surface];
+    if (tile) {
+      const uv = geo.getAttribute('uv') as THREE.BufferAttribute;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, (uv.getX(i) * 2) / tile, (uv.getY(i) * 2) / tile);
+    }
+    const mesh = new THREE.Mesh(geo, material(b.surface, b.color));
+    mesh.position.set(b.x, b.y, b.z);
+    mesh.castShadow = mesh.receiveShadow = true;
+    root.add(mesh);
+    mesh.updateMatrixWorld();
+    const box = new THREE.Box3(
+      new THREE.Vector3(b.x - b.w / 2, b.y, b.z - b.d / 2),
+      new THREE.Vector3(b.x + b.w / 2, b.y + b.h, b.z + b.d / 2),
+    );
+    ramps.push({ box, dir: b.ramp! });
+    obstacles.push(box);
     solids.push(mesh);
   };
 
@@ -115,7 +153,10 @@ export function buildWorld(
   addBox(-W, 0, 1, 6, W * 2 + 1, theme.wall, 'perimeter');
   addBox(W, 0, 1, 6, W * 2 + 1, theme.wall, 'perimeter');
 
-  for (const b of layout.boxes) addBox(b.x, b.z, b.w, b.h, b.d, b.color, b.surface, b.y);
+  for (const b of layout.boxes) {
+    if (b.ramp) addRamp(b);
+    else addBox(b.x, b.z, b.w, b.h, b.d, b.color, b.surface, b.y);
+  }
 
   const spawnPoints = layout.spawnPoints.map(([x, z]) => new THREE.Vector3(x, 0, z));
 
@@ -140,6 +181,15 @@ export function buildWorld(
     root.add(marker);
   }
 
+  const setShadowQuality = (quality: Quality) => {
+    const size = SHADOW_SIZE[quality];
+    if (sun.shadow.mapSize.x === size) return;
+    sun.shadow.mapSize.set(size, size);
+    // The map is allocated at the old size; drop it so it's rebuilt.
+    sun.shadow.map?.dispose();
+    sun.shadow.map = null;
+  };
+
   const dispose = () => {
     scene.remove(root);
     const geometries = new Set<THREE.BufferGeometry>();
@@ -154,5 +204,5 @@ export function buildWorld(
     sun.shadow.map?.dispose();
   };
 
-  return { colliders, solids, spawnPoints, sky, root, dispose };
+  return { colliders, solids, ramps, obstacles, spawnPoints, sky, root, setShadowQuality, dispose };
 }

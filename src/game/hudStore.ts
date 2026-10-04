@@ -4,6 +4,7 @@ import type { GameMode, GunKind, PlayerState, Team, WeaponKind } from '../types'
 const FEED_LIFETIME = 5_000;
 const FEED_MAX = 5;
 const TOAST_LIFETIME = 1_800;
+const ANNOUNCE_LIFETIME = 2_200;
 
 type Named = Pick<PlayerState, 'name' | 'color'>;
 
@@ -27,6 +28,8 @@ export interface ScoreRow {
   ping: number | null;
   team: Team | null;
   me: boolean;
+  /** Watching, not playing */
+  spectating: boolean;
 }
 
 /** The score shown at the top of the screen. */
@@ -140,6 +143,10 @@ export interface HudState {
   clock: { left: number; urgent: boolean } | null;
   /** Set while the round-over screen is up */
   matchEnd: MatchEnd | null;
+  /** Announcer banner (multi-kills, streaks); `n` restarts the animation */
+  announce: { n: number; text: string; sub: string } | null;
+  /** Watching the match: who we're following (null = free camera) and how many players there are to follow */
+  spectate: { target: string | null; count: number } | null;
 }
 
 const initialState: HudState = {
@@ -175,6 +182,8 @@ const initialState: HudState = {
   flags: null,
   clock: null,
   matchEnd: null,
+  announce: null,
+  spectate: null,
 };
 
 /**
@@ -221,6 +230,17 @@ export class HudStore {
       this.timers.delete(timer);
       if (this.state.toast?.n === n) this.update({ toast: null });
     }, TOAST_LIFETIME);
+    this.timers.add(timer);
+  }
+
+  /** Big centre-screen banner for a moment or two. */
+  announce(text: string, sub = ''): void {
+    const n = (this.state.announce?.n ?? 0) + 1;
+    this.update({ announce: { n, text, sub } });
+    const timer = setTimeout(() => {
+      this.timers.delete(timer);
+      if (this.state.announce?.n === n) this.update({ announce: null });
+    }, ANNOUNCE_LIFETIME);
     this.timers.add(timer);
   }
 

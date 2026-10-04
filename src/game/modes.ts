@@ -1,5 +1,17 @@
 import * as THREE from 'three';
-import type { GameMode, Team } from '../types';
+import type { GameMode, GunKind, Team } from '../types';
+
+/**
+ * Gun Game: everyone starts on the first gun and each kill moves them to the next; the first
+ * through the whole ladder wins. No pickups, endless ammo.
+ */
+export const GUN_GAME_LADDER: GunKind[] = [
+  'rifle', 'deagle', 'shotgun', 'sniper', 'rifle', 'shotgun', 'deagle', 'sniper', 'rifle', 'deagle', 'shotgun', 'sniper',
+];
+
+/** The gun for a player with `kills` kills (the last gun stays until the round ends). */
+export const gunGameGun = (kills: number): GunKind =>
+  GUN_GAME_LADDER[Math.min(Math.max(0, kills), GUN_GAME_LADDER.length - 1)] ?? 'rifle';
 
 export interface ModeDef {
   name: string;
@@ -10,17 +22,23 @@ export interface ModeDef {
   limit: number;
   /** Round length in seconds; the best score when it runs out wins */
   timeLimit: number;
+  /** Whether guns, abilities and ammo spawn on the map */
+  pickups: boolean;
 }
 
 export const MODES: Record<GameMode, ModeDef> = {
   ffa: {
-    name: 'Free-for-all', short: 'FFA', description: 'Everyone for themselves', teams: false, limit: 25, timeLimit: 8 * 60,
+    name: 'Free-for-all', short: 'FFA', description: 'Everyone for themselves', teams: false, limit: 25, timeLimit: 8 * 60, pickups: true,
   },
   tdm: {
-    name: 'Team Deathmatch', short: 'TDM', description: 'Red vs Blue, team kills count', teams: true, limit: 50, timeLimit: 10 * 60,
+    name: 'Team Deathmatch', short: 'TDM', description: 'Red vs Blue, team kills count', teams: true, limit: 50, timeLimit: 10 * 60, pickups: true,
   },
   ctf: {
-    name: 'Capture the Flag', short: 'CTF', description: 'Bring the enemy flag to yours', teams: true, limit: 3, timeLimit: 12 * 60,
+    name: 'Capture the Flag', short: 'CTF', description: 'Bring the enemy flag to yours', teams: true, limit: 3, timeLimit: 12 * 60, pickups: true,
+  },
+  gungame: {
+    name: 'Gun Game', short: 'GG', description: 'Every kill gives the next gun; finish the ladder to win', teams: false,
+    limit: GUN_GAME_LADDER.length, timeLimit: 10 * 60, pickups: false,
   },
 };
 

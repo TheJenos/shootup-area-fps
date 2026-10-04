@@ -88,6 +88,14 @@ export class GrenadeFx {
     this.flights.set(id, { mesh, trajectory, startedAt: performance.now() });
   }
 
+  /** The projectile landed without a blast (smoke canisters). */
+  land(id: string): void {
+    const flight = this.flights.get(id);
+    if (!flight) return;
+    this.scene.remove(flight.mesh);
+    this.flights.delete(id);
+  }
+
   explode(id: string, at: THREE.Vector3, radius: number): void {
     const flight = this.flights.get(id);
     if (flight) {

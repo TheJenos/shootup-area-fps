@@ -43,9 +43,9 @@ export interface GunDef {
 
 export const GUNS: Record<GunKind, GunDef> = {
   rifle: {
-    name: 'Rifle', icon: '▸', color: 0xcfd6e2, auto: true, fireInterval: 0.1, mag: 30, reserve: Infinity, reloadTime: 1.4,
+    name: 'Rifle', icon: '▸', color: 0xcfd6e2, auto: true, fireInterval: 0.1, mag: 30, reserve: 90, reloadTime: 1.4,
     pellets: 1, bodyDamage: 20, headDamage: 50, spread: 0.002, movingSpread: 0.012, airSpread: 0.04, adsSpread: 0.3,
-    recoil: 0.012, adsFov: 50, scope: false, range: 200, description: 'Automatic, never runs out of ammo',
+    recoil: 0.012, adsFov: 50, scope: false, range: 200, description: 'Automatic; ammo boxes refill it',
   },
   shotgun: {
     name: 'Shotgun', icon: '💥', color: 0xff7a45, auto: false, fireInterval: 0.85, mag: 6, reserve: 12, reloadTime: 2,
@@ -66,6 +66,9 @@ export const GUNS: Record<GunKind, GunDef> = {
 };
 
 export const PICKUP_GUNS: PickupGun[] = ['shotgun', 'sniper', 'deagle'];
+
+/** Most spare rounds a gun can hold: its starting reserve plus one extra magazine */
+export const maxReserve = (kind: GunKind) => GUNS[kind].reserve + GUNS[kind].mag;
 
 export const isPickupGun = (type: string): type is PickupGun => (PICKUP_GUNS as string[]).includes(type);
 

@@ -19,6 +19,12 @@ export interface PlayerState {
   gun?: GunKind;
   /** Aiming down sights (others see the gun raised to the eye) */
   aim?: boolean;
+  /** Reloading (others see the hand go to the magazine) */
+  rl?: boolean;
+  /** Counts up on every throw, so others play the throw animation */
+  th?: number;
+  /** Watching rather than playing: no body, no hitboxes, not in the standings */
+  spec?: boolean;
   /** Team in TDM / CTF; absent in free-for-all */
   team?: Team;
   /** Match stats, reported by each player about themselves */
@@ -77,7 +83,7 @@ export type PlayerStats = Required<Pick<PlayerState, 'damage' | 'shots' | 'hits'
 
 export type Stance = 'stand' | 'crouch' | 'slide';
 
-export type Pose = Pick<PlayerState, 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'stance' | 'aim'>;
+export type Pose = Pick<PlayerState, 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'stance' | 'aim' | 'rl' | 'th'>;
 
 export type Vec3Tuple = [number, number, number];
 
@@ -120,6 +126,27 @@ export interface GrenadeEvent {
   v: Vec3Tuple;
 }
 
+/** A smoke canister was thrown; it bursts where the same arc lands. */
+export interface SmokeEvent {
+  type: 'smoke';
+  id: string;
+  o: Vec3Tuple;
+  v: Vec3Tuple;
+}
+
+/** A barrier was deployed at (x, y, z), spanning `axis`, until server ms `until`. */
+export interface WallEvent {
+  type: 'wall';
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  axis: 'x' | 'z';
+  until: number;
+  /** Owner's colour */
+  c: string;
+}
+
 /** The thrower's grenade exploded at `p`, dealing `hits[playerId]` damage. */
 export interface BlastEvent {
   type: 'blast';
@@ -128,7 +155,7 @@ export interface BlastEvent {
   hits?: Record<string, number>;
 }
 
-export type OutgoingEvent = ShotEvent | KillEvent | GrenadeEvent | BlastEvent;
+export type OutgoingEvent = ShotEvent | KillEvent | GrenadeEvent | BlastEvent | SmokeEvent | WallEvent;
 
 /** An event as stored in the database, stamped by the sender. */
 export type GameEvent = OutgoingEvent & { from: string; t: number };
@@ -155,7 +182,7 @@ export interface LobbyRecord {
   members?: Record<string, string>;
 }
 
-export type GameMode = 'ffa' | 'tdm' | 'ctf';
+export type GameMode = 'ffa' | 'tdm' | 'ctf' | 'gungame';
 
 export type Team = 'red' | 'blue';
 
@@ -188,11 +215,14 @@ export interface GameRecord {
 /** A GameRecord with the parts Firebase may leave out filled in. */
 export type GameState = GameRecord & Required<Pick<GameRecord, 'score' | 'flags'>>;
 
-export type AbilityType = 'medkit' | 'shield' | 'speed' | 'dash' | 'grenade';
+export type AbilityType = 'medkit' | 'shield' | 'speed' | 'dash' | 'grenade' | 'smoke' | 'wall';
 
-/** An ability or a gun lying on the map at rooms/{code}/pickups/{id}. */
+/** Things lying on the map: abilities, guns and ammo boxes */
+export type PickupType = AbilityType | Exclude<GunKind, 'rifle'> | 'ammo';
+
+/** An ability, a gun or an ammo box lying on the map at rooms/{code}/pickups/{id}. */
 export interface PickupRecord {
-  type: AbilityType | Exclude<GunKind, 'rifle'>;
+  type: PickupType;
   x: number;
   z: number;
   /**

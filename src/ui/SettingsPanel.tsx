@@ -1,7 +1,9 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import {
-  ACTIONS, RESERVED_KEYS, SENSITIVITY_MAX, SENSITIVITY_MIN, keyLabel, settings, type Action, type Settings,
+  ACTIONS, CROSSHAIR_COLORS, CROSSHAIR_SIZE_MAX, CROSSHAIR_SIZE_MIN, FOV_MAX, FOV_MIN, QUALITIES, RESERVED_KEYS,
+  SENSITIVITY_MAX, SENSITIVITY_MIN, keyLabel, settings, type Action, type Settings,
 } from '../game/settings';
+import { Crosshair } from './Crosshair';
 
 export function useSettings(): Settings {
   return useSyncExternalStore(settings.subscribe, settings.get);
@@ -97,6 +99,118 @@ export function SettingsPanel({ onClose }: Props) {
               onChange={(e) => settings.update({ fullscreen: e.target.checked })}
             />
             <span>Fullscreen while playing (in Chrome / Edge this stops Ctrl+W from closing the tab)</span>
+          </label>
+        </section>
+
+        <section>
+          <h4>Video</h4>
+          <label className="setting">
+            <span>Field of view</span>
+            <input
+              type="range"
+              min={FOV_MIN}
+              max={FOV_MAX}
+              step={1}
+              value={current.fov}
+              onChange={(e) => settings.update({ fov: Number(e.target.value) })}
+            />
+            <span className="number-readout">{current.fov}°</span>
+          </label>
+          <div className="setting">
+            <span>Quality</span>
+            <div className="choices" role="radiogroup" aria-label="Graphics quality">
+              {QUALITIES.map((q) => (
+                <button
+                  key={q.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={current.quality === q.value}
+                  className={current.quality === q.value ? 'choice selected' : 'choice'}
+                  title={q.hint}
+                  onClick={() => settings.update({ quality: q.value })}
+                >
+                  {q.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="muted hint">{QUALITIES.find((q) => q.value === current.quality)?.hint}</p>
+        </section>
+
+        <section>
+          <h4>Crosshair</h4>
+          <div className="crosshair-row">
+            <div className="crosshair-preview"><Crosshair /></div>
+            <div className="crosshair-options">
+              <div className="swatches" role="radiogroup" aria-label="Crosshair colour">
+                {CROSSHAIR_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    role="radio"
+                    aria-checked={current.crosshairColor === c}
+                    className={current.crosshairColor === c ? 'swatch selected' : 'swatch'}
+                    style={{ background: c }}
+                    aria-label={c}
+                    onClick={() => settings.update({ crosshairColor: c })}
+                  />
+                ))}
+                <input
+                  type="color"
+                  value={current.crosshairColor}
+                  aria-label="Custom crosshair colour"
+                  onChange={(e) => settings.update({ crosshairColor: e.target.value })}
+                />
+              </div>
+              <label className="setting">
+                <span>Size</span>
+                <input
+                  type="range"
+                  min={CROSSHAIR_SIZE_MIN}
+                  max={CROSSHAIR_SIZE_MAX}
+                  step={0.05}
+                  value={current.crosshairSize}
+                  onChange={(e) => settings.update({ crosshairSize: Number(e.target.value) })}
+                />
+                <span className="number-readout">{current.crosshairSize.toFixed(2)}×</span>
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h4>Audio &amp; feel</h4>
+          <label className="setting">
+            <span>Sound effects</span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={current.sfxVolume}
+              onChange={(e) => settings.update({ sfxVolume: Number(e.target.value) })}
+            />
+            <span className="number-readout">{Math.round(current.sfxVolume * 100)}%</span>
+          </label>
+          <label className="setting">
+            <span>Music</span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={current.musicVolume}
+              onChange={(e) => settings.update({ musicVolume: Number(e.target.value) })}
+            />
+            <span className="number-readout">{Math.round(current.musicVolume * 100)}%</span>
+          </label>
+          <label className="setting check">
+            <input
+              type="checkbox"
+              checked={current.screenShake}
+              onChange={(e) => settings.update({ screenShake: e.target.checked })}
+            />
+            <span>Screen shake when hit</span>
           </label>
         </section>
 

@@ -18,6 +18,8 @@ export const ABILITIES: Record<AbilityType, AbilityDef> = {
   speed: { name: 'Speed Boost', icon: '⚡', uses: 3, cooldown: 12, color: 0xffd23f, description: '1.6× speed for 5s' },
   dash: { name: 'Dash', icon: '💨', uses: 4, cooldown: 3, color: 0x3ff0ff, description: 'Burst forward' },
   grenade: { name: 'Grenade', icon: '💣', uses: 3, cooldown: 6, color: 0xff6a3d, description: 'Area damage, walls block it' },
+  smoke: { name: 'Smoke', icon: '🌫️', uses: 2, cooldown: 10, color: 0xc9d1dc, description: 'Thick cloud for 12s, blocks sight' },
+  wall: { name: 'Barrier', icon: '🧱', uses: 2, cooldown: 14, color: 0x6fa8ff, description: 'Deployable cover for 20s' },
 };
 
 export const ABILITY_TYPES = Object.keys(ABILITIES) as AbilityType[];

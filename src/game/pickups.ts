@@ -3,11 +3,16 @@ import { ABILITIES } from './abilities';
 import { ARENA_HALF } from './world';
 import { boxTexture } from './textures';
 import { GUNS, buildGunModel, isPickupGun } from './guns';
-import type { AbilityType, PickupRecord } from '../types';
+import type { AbilityType, PickupRecord, PickupType } from '../types';
 
-/** Abilities and guns are stocked separately, so guns don't crowd out abilities */
+/** Abilities, guns and ammo boxes are stocked separately, so none crowds out the others */
 export const MAX_PICKUPS = 6;
 export const MAX_GUN_PICKUPS = 3;
+export const MAX_AMMO_PICKUPS = 3;
+export const AMMO_COLOR = 0xffd166;
+
+export type PickupKind = 'gun' | 'ability' | 'ammo';
+export const kindOf = (type: PickupType): PickupKind => (type === 'ammo' ? 'ammo' : isPickupGun(type) ? 'gun' : 'ability');
 const PICKUP_RADIUS = 1.1;
 /** Keep pickups this far from walls/crates and from each other */
 const CLEARANCE = 1;
@@ -43,7 +48,42 @@ function iconMesh(type: AbilityType, mat: THREE.Material): THREE.Object3D {
       g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.12, 8).translate(0, 0.25, 0), mat));
       return g;
     }
+    case 'smoke': {
+      // A canister with a ring of little puffs
+      const g = new THREE.Group();
+      g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.36, 12), mat));
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2;
+        g.add(new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6).translate(Math.cos(a) * 0.22, 0.24, Math.sin(a) * 0.22), mat));
+      }
+      return g;
+    }
+    case 'wall': {
+      // A folded barrier: two slabs in a shallow V
+      const g = new THREE.Group();
+      const a = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.42, 0.06), mat);
+      a.position.x = -0.14;
+      a.rotation.y = 0.35;
+      const b = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.42, 0.06), mat);
+      b.position.x = 0.14;
+      b.rotation.y = -0.35;
+      g.add(a, b);
+      return g;
+    }
   }
+}
+
+/** An ammo box: a crate with a few bullet tips standing in it. */
+function ammoMesh(mat: THREE.Material): THREE.Object3D {
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.26, 0.3), mat));
+  const brass = new THREE.MeshStandardMaterial({ color: 0xe0b060, metalness: 0.7, roughness: 0.3 });
+  for (let i = 0; i < 4; i++) {
+    const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 0.22, 8), brass);
+    tip.position.set(-0.15 + i * 0.1, 0.22, 0);
+    g.add(tip);
+  }
+  return g;
 }
 
 interface PickupView {
@@ -57,14 +97,15 @@ interface PickupView {
 /** Ability pickups lying on the map. Mirrors rooms/{code}/pickups. */
 export class PickupField {
   private readonly scene: THREE.Scene;
+  /** Everything taking up floor space (cover, ramps), so pickups don't land inside it */
   private readonly colliders: THREE.Box3[];
   private readonly pickups = new Map<string, PickupView>();
 
   private pedestal: THREE.MeshStandardMaterial | null = null;
 
-  constructor(scene: THREE.Scene, colliders: THREE.Box3[]) {
+  constructor(scene: THREE.Scene, obstacles: THREE.Box3[]) {
     this.scene = scene;
-    this.colliders = colliders;
+    this.colliders = obstacles;
   }
 
   /** Metal plate under every pickup; one material shared by all of them. */
@@ -85,18 +126,19 @@ export class PickupField {
     return this.pickups.get(id)?.record.type;
   }
 
-  /** How many guns / abilities are lying around */
-  countOf(kind: 'gun' | 'ability'): number {
+  /** How many guns / abilities / ammo boxes are lying around */
+  countOf(kind: PickupKind): number {
     let n = 0;
-    for (const p of this.pickups.values()) if (isPickupGun(p.record.type) === (kind === 'gun')) n++;
+    for (const p of this.pickups.values()) if (kindOf(p.record.type) === kind) n++;
     return n;
   }
 
   add(id: string, record: PickupRecord): void {
     const type = record.type;
-    const gun = isPickupGun(type);
-    if (this.pickups.has(id) || (!gun && !ABILITIES[type])) return;
-    const color = gun ? GUNS[type].color : ABILITIES[type].color;
+    const kind = kindOf(type);
+    if (this.pickups.has(id) || (kind === 'ability' && !ABILITIES[type as AbilityType])) return;
+    const color = kind === 'gun' ? GUNS[type as Exclude<PickupType, AbilityType | 'ammo'>].color
+      : kind === 'ammo' ? AMMO_COLOR : ABILITIES[type as AbilityType].color;
     const iconMat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.5, roughness: 0.4 });
     const glowMat = new THREE.MeshBasicMaterial({
       color, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
@@ -104,14 +146,16 @@ export class PickupField {
     const group = new THREE.Group();
     group.position.set(record.x, 0, record.z);
     let icon: THREE.Object3D;
-    if (gun) {
+    if (kind === 'gun') {
       // A full-size copy of the gun itself, spinning on its side.
-      const model = buildGunModel(type).group;
+      const model = buildGunModel(type as Exclude<PickupType, AbilityType | 'ammo'>).group;
       model.scale.setScalar(1.6);
       model.rotation.z = Math.PI / 2;
       icon = new THREE.Group().add(model);
+    } else if (kind === 'ammo') {
+      icon = ammoMesh(iconMat);
     } else {
-      icon = iconMesh(type, iconMat);
+      icon = iconMesh(type as AbilityType, iconMat);
     }
     icon.position.y = 0.9;
     const ring = new THREE.Mesh(ringGeo, glowMat);

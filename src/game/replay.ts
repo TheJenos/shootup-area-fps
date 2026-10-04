@@ -3,6 +3,7 @@ import { RemotePlayer } from './remotePlayer';
 import { simulateGrenade, type GrenadeFx } from './grenades';
 import type { Effects } from './weapon';
 import type { FlagField, FlagPlacement } from './flags';
+import type { SmokeField } from './deployables';
 import type { CharacterAsset } from './character';
 import { GRENADE_RADIUS } from './abilities';
 import { TEAMS } from './modes';
@@ -40,6 +41,7 @@ export type ReplayEvent =
   | { t: number; kind: 'kill'; killer: string; victim: string; head: boolean }
   | { t: number; kind: 'grenade'; id: string; o: Vec3Tuple; v: Vec3Tuple }
   | { t: number; kind: 'blast'; id: string; p: Vec3Tuple }
+  | { t: number; kind: 'smoke'; id: string; o: Vec3Tuple; v: Vec3Tuple }
   | { t: number; kind: 'flag'; team: Team; placement: FlagPlacement };
 
 /**
@@ -134,6 +136,7 @@ export interface ReplayOptions {
   colliders: THREE.Box3[];
   solids: THREE.Object3D[];
   flagField: FlagField | null;
+  smoke?: SmokeField;
   /** Called for each kill as the replay reaches it (for the kill feed) */
   onKill(killer: string, victim: string, head: boolean): void;
 }
@@ -218,7 +221,7 @@ export class ReplayDirector {
 
   private playEvents(from: number, to: number): void {
     const { events } = this.opts.recorder;
-    const { effects, grenades, colliders, flagField, camera, onKill } = this.opts;
+    const { effects, grenades, colliders, flagField, camera, onKill, smoke } = this.opts;
     while (this.eventIndex < events.length) {
       const e = events[this.eventIndex];
       if (!e || e.t > to) break;
@@ -240,6 +243,10 @@ export class ReplayDirector {
         const p = fromArr(e.p);
         grenades.explode(`replay:${e.id}`, p, GRENADE_RADIUS);
         sfx.playExplosion(0.8 / (1 + p.distanceTo(camera.position) / 12));
+      } else if (e.kind === 'smoke') {
+        const arc = simulateGrenade(fromArr(e.o), fromArr(e.v), colliders);
+        grenades.launch(`replay:${e.id}`, arc);
+        smoke?.spawn(`replay:${e.id}`, arc.end);
       } else if (e.kind === 'flag') {
         flagField?.set(e.team, e.placement);
       }

@@ -38,6 +38,7 @@ The room's creator picks the mode; the lobby shows it next to each room.
 | **FFA** — Free-for-all | Most kills | 8 min | 25 kills by one player |
 | **TDM** — Team Deathmatch | Red vs Blue; every kill scores for the killer's team | 10 min | 50 team kills |
 | **CTF** — Capture the Flag | Grab the enemy flag and bring it to your own base | 12 min | 3 captures |
+| **GG** — Gun Game | Every kill hands you the next gun on a 12-step ladder (rifle → deagle → shotgun → sniper → …); first through the ladder wins. No pickups, endless ammo | 10 min | 12 kills by one player |
 
 - **Teams:** you join the smaller team. Every player's uniform takes their team colour (65%, with a faint glow
   and a glowing visor, so teams stay readable in shadow). Teammates' names show whenever they're in sight, and a
@@ -92,7 +93,12 @@ the original hand-built arena (rooms made before seeds existed also use it). The
 summary show the room's map and seed.
 
 - The seed picks a theme (Training Yard, Dust Bowl, Frostbite, Dusk Yard, Toxic Works: sky, floor and colors),
-  a centerpiece and 10–16 pieces of cover (crates, low walls, pillars, climbable stacks, L-shaped corners).
+  a centerpiece and 10–16 pieces of cover: crates, walls, **low cover** (1.1–1.25 m: hides you crouched, shoot
+  over it standing), pillars, climbable stacks, L-shaped corners and **decks** (a 1.3–1.7 m platform with a
+  ramp up one side and a crate on top). The platform centerpiece has ramps on two sides and steps on the others.
+- **Ramps** (`src/game/ramps.ts`) are real slopes: you walk up and down them, their sides block you like a wall
+  until the slope is low enough to step onto, and running downhill sticks to the surface. Ledges up to 0.7 m
+  (steps, the top of a ramp) are walked straight onto without jumping. Bullets hit ramps like any cover.
 - Maps are mirrored on both axes, so every spawn and both CTF bases face the same layout.
 - Cover never blocks a spawn point or a flag base, and every gap between obstacles is at least 1.6 m wide,
   so no part of the floor can be sealed off.
@@ -120,12 +126,24 @@ without seams, and they tile at real-world scale instead of stretching across lo
 - A map's surfaces come from its theme and piece types, never from the seed's random numbers, so adding
   textures didn't change any existing seed's layout.
 
-## Damage direction
+## Damage direction and hit feedback
 
 When you're hit, a red arc around the crosshair points toward where it came from: the shooter's position for
 bullets, the explosion for grenades. Each attacker gets their own arc, which keeps pointing at that spot as you
 turn, stays up for 0.6 s and fades over the next second. Bigger hits draw a thicker arc. It still shows when your
 shield absorbs the damage.
+
+Hits also shake the camera for about half a second, harder for bigger hits (off in Settings → Screen shake).
+At 30 health or less the edges of the screen darken red and pulse, and a heartbeat plays, both faster and
+heavier the closer to death you are.
+
+## Announcer and music
+
+Multi-kills (two kills within 4 s of each other) put a **DOUBLE / TRIPLE / QUAD KILL / RAMPAGE** banner on
+screen with a stinger that gets bigger up the ladder; every fifth kill of a streak calls out the streak. Rounds
+start and end with short stingers (a win resolves upward, a loss falls, a draw hangs). In the last 30 seconds
+of a round a low synthesized bed comes in, with a kick pulse that quickens as the clock runs out. Effects and
+music have separate volume sliders in Settings.
 
 ## Sound
 
@@ -205,7 +223,28 @@ Discord, with no website to visit.
 | 1 / 2 / 3 | Use the ability in that slot |
 | I | Inventory (details + drop items) |
 | Tab (hold) | Match summary |
-| Esc | Pause / switch team / leave room |
+| Esc | Pause / switch team / spectate / leave room |
+
+### Settings
+
+The ⚙ panel (lobby or pause menu) has mouse sensitivity, aim sensitivity and aim toggle, invert Y, fullscreen,
+**field of view** (60–110°), **graphics quality** (Low: no shadows and a 1× resolution cap; Medium: soft
+shadows at native resolution; High: sharp shadows, up to 2×; phones default to Low), **crosshair colour and
+size** (with a live preview), sound effects and music volume, screen shake, and every key binding. Settings are
+saved in the browser.
+
+### Spectating
+
+**Spectate** in the pause menu takes you out of the match: your body disappears, you can't be hit, you're
+listed as spectating in the summary and left out of the standings and the MVP pick. The camera follows a
+player from behind; left click goes to the next player, right click to the previous, and **space** switches
+to a free camera (move keys to fly, E up, crouch down, sprint for speed). **Back to the fight** respawns you.
+
+### Invite links
+
+The pause menu's **Copy invite link** copies `…/?room=CODE` (on phones it opens the share sheet). Opening it
+joins the room straight away if a name is saved in that browser; otherwise the lobby asks for a name with the
+room pre-filled. `#CODE` links keep working too.
 
 These are the defaults. **Settings** (in the lobby, or the pause menu) lets you change mouse sensitivity
 (0.1×–4×), invert vertical look and rebind every key except shooting (left click) and Esc. Binding a key
@@ -239,7 +278,7 @@ stocked separately from abilities) and go into a second slot when you walk over 
 
 | | Gun | Fire | Damage body / head | Magazine + spare | Notes |
 | --- | --- | --- | --- | --- | --- |
-| ▸ | Rifle | Automatic, 10/s | 20 / 50 | 30 + ∞ | Never runs out |
+| ▸ | Rifle | Automatic, 10/s | 20 / 50 | 30 + 90 | Ammo boxes refill it |
 | 💥 | Shotgun | Pump, 9 pellets | 12 / 18 per pellet | 6 + 12 | Falls off from 7 m to 25% at 28 m; ~100+ up close |
 | 🎯 | Sniper | Bolt action | 75 / 150 | 5 + 10 | Scope zooms to an 18° view; wild from the hip |
 | 🔫 | Deagle | Semi-auto | 40 / 90 | 7 + 21 | Heavy recoil |
@@ -253,6 +292,11 @@ stocked separately from abilities) and go into a second slot when you walk over 
   report. Other players see the gun you're holding, and the kill feed shows which gun got the kill.
 - Shotgun shots are sent as one event carrying every pellet's end point and the damage per player hit;
   each client still caps incoming damage at what that gun can deal in one shot.
+- **Ammo:** the rifle has 90 spare rounds. **Ammo boxes** (up to 3 on the map, stocked like guns and
+  abilities) refill the rifle's spares and add a magazine to your picked-up gun; walking over one with full
+  ammo leaves it there. When your rifle runs dry and your other gun has rounds, you switch to it
+  automatically; with nothing left to shoot, a toast points you at the ammo boxes. In Gun Game every gun has
+  endless ammo.
 - All gun numbers live in `src/game/guns.ts`.
 
 ## Aim down sights
@@ -317,6 +361,8 @@ button. Dropped abilities land in front of you with their remaining uses, and an
 | ⚡ | Speed Boost | 1.6× movement for 5 s | 3 | 12 s |
 | 💨 | Dash | Burst forward where you look | 4 | 3 s |
 | 💣 | Grenade | Thrown arc, up to 90 damage in a 5 m radius, blocked by walls | 3 | 6 s |
+| 🌫️ | Smoke | Thrown like a grenade; a thick 3.6 m cloud for 12 s that blocks sight (not bullets) | 2 | 10 s |
+| 🧱 | Barrier | A 2.6 × 1.3 m wall 1.8 m in front of you, square to the way you face, for 20 s; blocks movement and bullets. Refused if it would cut into cover or a player | 2 | 14 s |
 
 All numbers live in `src/game/abilities.ts`.
 
@@ -324,6 +370,9 @@ All numbers live in `src/game/abilities.ts`.
 - **Picking up:** claimed with a database transaction, so only one player gets a pickup even if two touch it at once.
 - **Grenades:** every client simulates the same arc from the thrower's start position and velocity. The thrower
   decides who the blast hit (with a line-of-sight check) and the victims apply the damage, like rifle hits.
+- **Smoke and barriers** (`src/game/deployables.ts`) are sent as events too: smoke uses the grenade arc and
+  bursts where it lands; a barrier carries its position, axis and server-time expiry, so every client drops it
+  at the same moment. Someone who joins after a barrier was placed won't see it (events live for 3 s).
 
 ## Match summary
 
@@ -395,6 +444,8 @@ src/
     player.ts        first-person controller + collisions
     remotePlayer.ts  other players' avatars + interpolation
     xray.ts          flat team-colour silhouette of teammates behind cover
+    ramps.ts         sloped surfaces: height lookup, wedge geometry
+    deployables.ts   smoke clouds and deployable barriers
     nameTag.ts       name + health tag revealed to the shooter
     modes.ts         game modes, score + time limits, teams, flag bases
     moments.ts       tracks our highlights (multi-kills, flag runs, ...) for MVP
@@ -430,5 +481,7 @@ Other players use it; the gun, hitboxes, aim pose, player-color tint and death f
 (`src/game/ik.ts`): both hands hold the gun pointed exactly where the player is looking, at the ready
 normally and raised to the eye while they aim down sights (sent as `aim` with their pose), with the
 upper body and head taking the look pitch. Sprinting, sliding and dying drop the pose back to the
-animation. To swap in another Mixamo-rigged model, keep the clip names and the `mixamorigSpine2` /
+animation. On top of that, reloading (sent as `rl`) drops the support hand to the magazine and tilts the
+gun, a throw (`th` counts up) swings the free arm over the head, a gun switch dips the gun, and dying buckles
+the knees and slumps the body before it tips over and rolls a little to one side. To swap in another Mixamo-rigged model, keep the clip names and the `mixamorigSpine2` /
 `mixamorigHead` / arm (`…Arm`, `…ForeArm`, `…Hand`, both sides) bones.

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { playEmpty, playReload } from './audio';
-import { GUNS, buildGunModel, type GunModel } from './guns';
+import { GUNS, buildGunModel, maxReserve, type GunModel } from './guns';
 import type { GunKind } from '../types';
 
 /** How quickly the gun moves between hip and sights (1/s) */
@@ -11,7 +11,7 @@ const SWITCH_TIME = 0.35;
 interface Held {
   kind: GunKind;
   mag: number;
-  /** Spare rounds; Infinity for the rifle */
+  /** Spare rounds (Infinity in Gun Game) */
   reserve: number;
 }
 
@@ -31,7 +31,9 @@ export class Weapon {
   /** 0 at the hip, 1 fully aimed down the sights */
   aim = 0;
 
-  private readonly slots: [Held, Held | null] = [{ kind: 'rifle', mag: GUNS.rifle.mag, reserve: Infinity }, null];
+  private readonly slots: [Held, Held | null] = [{ kind: 'rifle', mag: GUNS.rifle.mag, reserve: GUNS.rifle.reserve }, null];
+  /** Gun Game: one fixed gun with endless ammo, no pickups */
+  private forced: GunKind | null = null;
   private slot: 0 | 1 = 0;
   private readonly views = new Map<GunKind, View>();
   private cooldown = 0;
@@ -75,9 +77,54 @@ export class Weapon {
     return GUNS[this.gun].mag;
   }
 
-  /** Spare rounds, or null for the rifle's endless supply */
+  /** Spare rounds, or null when endless (Gun Game) */
   get reserve(): number | null {
     return Number.isFinite(this.held.reserve) ? this.held.reserve : null;
+  }
+
+  /** Whether an ammo box would give us anything */
+  get needsAmmo(): boolean {
+    const rifle = this.slots[0];
+    const special = this.slots[1];
+    return (Number.isFinite(rifle.reserve) && rifle.reserve < GUNS.rifle.reserve)
+      || (!!special && special.reserve < maxReserve(special.kind));
+  }
+
+  /** Nothing to shoot with at all: empty magazine and no spares */
+  get dry(): boolean {
+    return this.held.mag <= 0 && this.held.reserve <= 0;
+  }
+
+  /**
+   * An ammo box: the rifle's spare rounds back to full and a magazine for the picked-up gun.
+   * Returns false when neither needed any.
+   */
+  takeAmmo(): boolean {
+    const rifle = this.slots[0];
+    const special = this.slots[1];
+    const rifleRoom = Number.isFinite(rifle.reserve) && rifle.reserve < GUNS.rifle.reserve;
+    const specialRoom = !!special && special.reserve < maxReserve(special.kind);
+    if (!rifleRoom && !specialRoom) return false;
+    if (rifleRoom) rifle.reserve = GUNS.rifle.reserve;
+    if (special && specialRoom) special.reserve = Math.min(special.reserve + GUNS[special.kind].mag, maxReserve(special.kind));
+    return true;
+  }
+
+  /** Gun Game: hold only `kind`, with endless spare rounds. Null goes back to the normal loadout. */
+  setForcedGun(kind: GunKind | null): void {
+    this.forced = kind;
+    if (kind) {
+      this.slots[0] = { kind, mag: GUNS[kind].mag, reserve: Infinity };
+      this.slots[1] = null;
+      this.slot = 0;
+      this.reloadTimer = 0;
+      this.switchTimer = SWITCH_TIME;
+      this.triggerLatched = false;
+      this.aim = 0;
+      this.showModel();
+    } else {
+      this.reset();
+    }
   }
 
   get reloading(): boolean {
@@ -108,7 +155,7 @@ export class Weapon {
     const def = GUNS[kind];
     const old = this.slots[1];
     if (old?.kind === kind) {
-      old.reserve = Math.min(old.reserve + rounds, def.mag * 4);
+      old.reserve = Math.min(old.reserve + rounds, maxReserve(kind));
       return true;
     }
     if (old) return false;
@@ -185,9 +232,10 @@ export class Weapon {
     this.triggerLatched = false;
   }
 
-  /** Respawn: full rifle, no picked-up gun. */
+  /** Respawn: full rifle (or the Gun Game gun), no picked-up gun. */
   reset(): void {
-    this.slots[0] = { kind: 'rifle', mag: GUNS.rifle.mag, reserve: Infinity };
+    const kind = this.forced ?? 'rifle';
+    this.slots[0] = { kind, mag: GUNS[kind].mag, reserve: this.forced ? Infinity : GUNS.rifle.reserve };
     this.slots[1] = null;
     this.slot = 0;
     this.reloadTimer = 0;

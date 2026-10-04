@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore, type MouseEvent } from 'react';
-import type { Game } from '../game/game';
+import { LOW_HEALTH, type Game } from '../game/game';
 import type { FeedEntry, FlagStatus, HudState, MatchEnd } from '../game/hudStore';
 import { ABILITIES, type SlotView } from '../game/abilities';
 import { MODES, MVP_TIME, TEAM_INFO, otherTeam } from '../game/modes';
@@ -12,6 +12,7 @@ import { TouchControls } from './TouchControls';
 import { GUNS } from '../game/guns';
 import type { GunKind } from '../types';
 import { safeColor } from './colors';
+import { Crosshair } from './Crosshair';
 
 function controls(b: Bindings): [key: string, action: string][] {
   const k = (...codes: string[]) => codes.map(keyLabel).join(' ');
@@ -44,26 +45,49 @@ export function Hud({ game, roomCode, onLeave }: Props) {
     >
       {/* First, so every HUD panel draws on top of the scope's black surround. */}
       {hud.scoped && !hud.death && <ScopeOverlay />}
-      {!hud.death && <div id="crosshair" className={hud.aiming ? 'ads' : undefined} />}
+      {!hud.death && !hud.spectate && <Crosshair ads={hud.aiming} />}
       {hud.hitmarker.n > 0 && (
         // A new key remounts the element, which restarts the CSS animation.
         <div key={`hit-${hud.hitmarker.n}`} id="hitmarker" className={hud.hitmarker.head ? 'show head' : 'show'} />
       )}
       {hud.damageFlash > 0 && <div key={`dmg-${hud.damageFlash}`} id="damage-overlay" />}
+      {!hud.death && hud.hp <= LOW_HEALTH && !hud.connecting && (
+        <div id="low-health" style={{ '--lh': 1 - Math.max(0, hud.hp) / LOW_HEALTH } as React.CSSProperties} />
+      )}
+      {hud.announce && (
+        <div key={`ann-${hud.announce.n}`} id="announce">
+          <strong>{hud.announce.text}</strong>
+          {hud.announce.sub && <span>{hud.announce.sub}</span>}
+        </div>
+      )}
       {hud.damageIndicators.length > 0 && !hud.death && <DamageDirections indicators={hud.damageIndicators} />}
 
       <div id="room-tag">Room <strong>{roomCode}</strong></div>
       <ScoreBar hud={hud} />
       <KillFeed entries={hud.feed} />
-      <HealthPanel hp={hud.hp} />
-      <AmmoPanel hud={hud} />
-      <AbilityBar
-        slots={hud.slots}
-        buffs={hud.buffs}
-        toast={hud.toast}
-        onUse={game.touch ? (i) => game.touchAbility(i) : undefined}
-      />
-      {game.touch && !hud.paused && !hud.connecting && !hud.death && !hud.inventoryOpen
+      {!hud.spectate && (
+        <>
+          <HealthPanel hp={hud.hp} />
+          <AmmoPanel hud={hud} />
+          <AbilityBar
+            slots={hud.slots}
+            buffs={hud.buffs}
+            toast={hud.toast}
+            onUse={game.touch ? (i) => game.touchAbility(i) : undefined}
+          />
+        </>
+      )}
+      {hud.spectate && !hud.paused && hud.matchEnd?.phase !== 'mvp' && (
+        <div id="spectate">
+          <span className="label">Spectating</span>
+          <strong>{hud.spectate.target ?? 'Free camera'}</strong>
+          <span className="muted">
+            {hud.spectate.count > 0 ? 'click: next · right-click: previous · ' : 'nobody to follow · '}
+            space: {hud.spectate.target ? 'free camera' : 'follow'} · Esc: menu
+          </span>
+        </div>
+      )}
+      {game.touch && !hud.paused && !hud.connecting && !hud.death && !hud.inventoryOpen && !hud.spectate
         && hud.matchEnd?.phase !== 'mvp' && <TouchControls game={game} aiming={hud.aiming} hasSpecial={!!hud.special} />}
       {game.touch && (
         <div id="rotate-hint" className="overlay">
@@ -91,7 +115,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       {hud.matchEnd?.phase === 'results' && !hud.paused && !hud.scoreboardOpen && <RoundResults end={hud.matchEnd} />}
       {hud.matchEnd?.phase === 'mvp' && !hud.paused && <MvpShowcase end={hud.matchEnd} />}
 
-      {hud.death && !hud.paused && !hud.matchEnd && (
+      {hud.death && !hud.paused && !hud.matchEnd && !hud.spectate && (
         <div id="death-overlay" className="overlay">
           <h2>You were eliminated</h2>
           <p>by <strong>{hud.death.killerName}</strong></p>
@@ -125,6 +149,18 @@ export function Hud({ game, roomCode, onLeave }: Props) {
 function ScoreBar({ hud }: { hud: HudState }) {
   const { mode, team, score, flags } = hud;
   const limit = MODES[mode].limit;
+  if (mode === 'gungame') {
+    return (
+      <div id="scorebar" className="ffa">
+        <span className="mode">{MODES[mode].short}</span>
+        <RoundClock clock={hud.clock} />
+        <span>Level <strong>{Math.min(score.mine + 1, limit)}</strong><span className="muted">/{limit}</span> · {GUNS[hud.gun].name}</span>
+        {score.leader && (
+          <span className="muted">Best other: {score.leader.name} <strong>lvl {Math.min(score.leader.kills + 1, limit)}</strong></span>
+        )}
+      </div>
+    );
+  }
   if (!team) {
     return (
       <div id="scorebar" className="ffa">
@@ -392,7 +428,12 @@ function PauseMenu(
   };
 
   const copyLink = () => {
-    const url = `${location.origin}${location.pathname}#${roomCode}`;
+    const url = `${location.origin}${location.pathname}?room=${roomCode}`;
+    // Phones: the share sheet; otherwise the clipboard.
+    if (game.touch && typeof navigator.share === 'function') {
+      navigator.share({ title: 'Arena FPS', text: `Join my match, room ${roomCode}`, url }).catch(() => {});
+      return;
+    }
     void navigator.clipboard?.writeText(url).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
@@ -422,6 +463,9 @@ function PauseMenu(
       )}
       <p className="muted">Room code <strong>{roomCode}</strong> — share it with friends</p>
       {map && <p className="muted">Map <strong>{map.name}</strong> · seed <strong>{map.seed}</strong></p>}
+      <button onClick={() => (game.isSpectating ? game.stopSpectating() : game.startSpectating())}>
+        {game.isSpectating ? 'Back to the fight' : 'Spectate'}
+      </button>
       <button onClick={onSettings}>Settings (sensitivity, keys)</button>
       <button onClick={copyLink}>{copied ? 'Copied!' : 'Copy invite link'}</button>
       <button className="danger" onClick={onLeave}>Leave room</button>

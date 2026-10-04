@@ -37,7 +37,8 @@ export class MomentTracker {
     return this.best;
   }
 
-  onKill(t: number, opts: { head: boolean; stoppedCarrier: boolean }): void {
+  /** Returns the size of the kill chain this kill made (1 = on its own) and the streak so far. */
+  onKill(t: number, opts: { head: boolean; stoppedCarrier: boolean }): { chain: number; streak: number } {
     const last = this.chain[this.chain.length - 1];
     this.chain = last !== undefined && t - last <= CHAIN_GAP ? [...this.chain, t] : [t];
     this.streak.push(t);
@@ -55,6 +56,7 @@ export class MomentTracker {
       const recent = this.streak.filter((k) => t - k <= STREAK_WINDOW);
       this.offer({ score: 8 * s, title: `${s}-kill streak`, start: recent[0] ?? t, end: t });
     }
+    return { chain: n, streak: s };
   }
 
   onDeath(): void {

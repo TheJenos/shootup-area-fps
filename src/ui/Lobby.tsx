@@ -66,6 +66,14 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
   const rooms = useRooms();
   // Start downloading the player model while the user is still in the lobby.
   useEffect(() => { loadCharacter().catch(() => {}); }, []);
+  // Opened from an invite link with a name already saved: straight into the room.
+  const [autoJoined, setAutoJoined] = useState(false);
+  useEffect(() => {
+    if (autoJoined || !initialCode || !isConfigured || initialError) return;
+    setAutoJoined(true);
+    if (name.trim()) void join(initialCode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const disabled = busy || !isConfigured;
 
   /** Validates the name and runs `action` with the lobby locked. */
@@ -114,7 +122,14 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
     <section id="lobby" className="screen">
       <div className="card">
         <Brand />
-        <p className="subtitle">Pick a name, open a room, frag your friends.</p>
+        {initialCode && !initialError ? (
+          <p className="subtitle invite">
+            You've been invited to room <strong>{initialCode}</strong>
+            {!name.trim() && <> — pick a name and hit Join</>}
+          </p>
+        ) : (
+          <p className="subtitle">Pick a name, open a room, frag your friends.</p>
+        )}
 
         {!isConfigured && (
           <div className="warning">

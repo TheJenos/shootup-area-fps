@@ -31,9 +31,25 @@ export function MapPreview({ map, mode }: { map: MapLayout; mode: GameMode }) {
 
     // Low boxes first so taller ones on top of them stay visible.
     for (const b of [...map.boxes].sort((a, c) => a.y + a.h - (c.y + c.h))) {
-      g.globalAlpha = Math.min(1, 0.55 + (b.y + b.h) / 8);
-      g.fillStyle = hex(b.color);
-      g.fillRect(px(b.x - b.w / 2), px(b.z - b.d / 2), b.w * scale, b.d * scale);
+      const x0 = px(b.x - b.w / 2);
+      const z0 = px(b.z - b.d / 2);
+      if (b.ramp) {
+        // Ramps shade from dim at the floor to bright at the top.
+        const horizontal = b.ramp[0] === 'x';
+        const up = b.ramp[1] === '+';
+        const grad = horizontal
+          ? g.createLinearGradient(x0, 0, x0 + b.w * scale, 0)
+          : g.createLinearGradient(0, z0, 0, z0 + b.d * scale);
+        const c = hex(b.color);
+        grad.addColorStop(up ? 0 : 1, `${c}33`);
+        grad.addColorStop(up ? 1 : 0, `${c}ee`);
+        g.globalAlpha = 1;
+        g.fillStyle = grad;
+      } else {
+        g.globalAlpha = Math.min(1, 0.55 + (b.y + b.h) / 8);
+        g.fillStyle = hex(b.color);
+      }
+      g.fillRect(x0, z0, b.w * scale, b.d * scale);
     }
     g.globalAlpha = 1;
 

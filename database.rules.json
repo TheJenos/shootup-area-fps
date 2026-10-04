@@ -12,7 +12,7 @@
           ".validate": "newData.isString() && newData.val().length <= 16"
         },
         "mode": {
-          ".validate": "newData.val() === 'ffa' || newData.val() === 'tdm' || newData.val() === 'ctf'"
+          ".validate": "newData.val() === 'ffa' || newData.val() === 'tdm' || newData.val() === 'ctf' || newData.val() === 'gungame'"
         },
         "members": {
           "$pid": {

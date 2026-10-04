@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { NameTag } from './nameTag';
 import { makeXrayMaterial, makeXrayMeshes } from './xray';
-import { REMOTE_GUN_SIZE } from './guns';
+import { GUNS, REMOTE_GUN_SIZE } from './guns';
 import { wornMetalTexture } from './textures';
 import { reach, setWorldQuaternion } from './ik';
 import { cloneCharacter, GAITS, type CharacterAsset, type Gait } from './character';
@@ -52,6 +52,11 @@ const _offset = new THREE.Vector3();
 const _support = new THREE.Vector3();
 const _pole = new THREE.Vector3();
 const _gunQuat = new THREE.Quaternion();
+const _q = new THREE.Quaternion();
+const _tmp = new THREE.Vector3();
+/** Lengths of the switch dip and the throw swing (s) */
+const SWITCH_LEN = 0.4;
+const THROW_LEN = 0.55;
 const _handQuat = new THREE.Quaternion();
 const _basis = new THREE.Matrix4();
 const _scale = new THREE.Vector3();
@@ -155,6 +160,17 @@ export class RemotePlayer {
   private readonly leftArm: [THREE.Object3D, THREE.Object3D, THREE.Object3D];
   /** Aiming down sights, as last reported */
   private aiming = false;
+  /** Reloading, as last reported, and how far through the hand's trip to the magazine we are (s) */
+  private reloading = false;
+  private reloadTime = 0;
+  private reloadStarted = false;
+  /** Throw animation: seconds since it started, or -1 */
+  private throwTime = -1;
+  private throwsSeen: number | undefined;
+  /** Gun switch: the gun dips for a moment */
+  private switchTime = -1;
+  /** Death: a sideways tilt chosen per fall so bodies don't all drop the same way */
+  private fallRoll = 0;
   /** 0..1 blend from the animation's arms to the aim pose, and from the ready pose to the sights */
   private readyAmount = 1;
   private adsAmount = 0;
@@ -286,8 +302,23 @@ export class RemotePlayer {
     if (data.color || data.team) this.setColor(data.color ?? this.colorNow, data.team ?? this.teamNow);
     if (data.name) this.tag.setName(data.name);
     this.shield.visible = !!data.shield && this.alive;
-    if (data.gun && data.gun !== this.gunNow) this.setGun(data.gun);
+    if (data.gun && data.gun !== this.gunNow) {
+      this.setGun(data.gun);
+      if (this.alive) this.switchTime = 0;
+    }
     if (data.aim !== undefined) this.aiming = data.aim;
+    if (data.rl !== undefined) {
+      if (data.rl && !this.reloading) {
+        this.reloadTime = 0;
+        this.reloadStarted = true;
+      }
+      this.reloading = data.rl;
+    }
+    if (data.th !== undefined && data.th !== this.throwsSeen) {
+      if (this.throwsSeen !== undefined && this.alive) this.throwTime = 0;
+      this.throwsSeen = data.th;
+    }
+    if (wasAlive && !this.alive) this.fallRoll = (Math.random() - 0.5) * 1.2;
     if (data.stance) {
       if (data.stance === 'slide' && this.stanceNow !== 'slide') this.slideStarted = true;
       this.stanceNow = data.stance;
@@ -390,6 +421,13 @@ export class RemotePlayer {
     for (const mesh of this.xray) mesh.visible = show;
   }
 
+  /** True once per reload they start (for the sound). */
+  consumeReloadStart(): boolean {
+    const started = this.reloadStarted;
+    this.reloadStarted = false;
+    return started;
+  }
+
   /** Points to test for line of sight: chest and head, in world space. */
   sightPoints(): THREE.Vector3[] {
     const p = this.group.position;
@@ -418,8 +456,25 @@ export class RemotePlayer {
     this.applyStance(dt);
     this.applyAim(dt);
 
-    this.fall = THREE.MathUtils.clamp(this.fall + (this.alive ? -dt * 4 : dt * 2.5), 0, 1);
-    this.group.rotation.x = (-Math.PI / 2) * this.fall * this.fall;
+    this.fall = THREE.MathUtils.clamp(this.fall + (this.alive ? -dt * 4 : dt * 2.2), 0, 1);
+    if (this.fall > 0) {
+      // Knees give first, then the body tips over and rolls a little to one side.
+      const f = this.fall;
+      const buckle = Math.min(1, f * 2.5);
+      for (const thigh of this.thighs) thigh.rotateX(-buckle * 0.9);
+      for (const shin of this.shins) shin.rotateX(buckle * 1.4);
+      this.spine.rotateX(buckle * 0.5);
+      this.head.rotateX(buckle * 0.6);
+      const tip = Math.max(0, (f - 0.15) / 0.85);
+      const eased = 1 - (1 - tip) ** 3;
+      this.group.rotation.x = (-Math.PI / 2) * eased;
+      this.group.rotation.z = this.fallRoll * eased;
+      // Sink a touch so the slumped body meets the floor.
+      this.model.position.y = -0.25 * buckle * (1 - eased) - 0.05 * eased;
+    } else {
+      this.group.rotation.z = 0;
+      this.model.position.y = 0;
+    }
     this.tag.update(this.alive && !this.occluded);
   }
 
@@ -465,6 +520,18 @@ export class RemotePlayer {
     bones.forEach((b, i) => this.armAnim[i]!.copy(b.quaternion));
     this.group.updateMatrixWorld(true);
 
+    // Reload: the gun dips and tilts while the support hand drops to the magazine and back.
+    if (this.reloading) this.reloadTime += dt;
+    const reloadLen = GUNS[this.gunNow].reloadTime;
+    const reloadPhase = this.reloading ? Math.min(1, this.reloadTime / reloadLen) : 0;
+    const reloadDip = Math.sin(reloadPhase * Math.PI);
+    // Switch: a quick dip as the new gun comes up.
+    if (this.switchTime >= 0) this.switchTime = this.switchTime + dt > SWITCH_LEN ? -1 : this.switchTime + dt;
+    const switchDip = this.switchTime >= 0 ? Math.sin((this.switchTime / SWITCH_LEN) * Math.PI) : 0;
+    // Throw: the free hand swings up behind the head and snaps forward.
+    if (this.throwTime >= 0) this.throwTime = this.throwTime + dt > THROW_LEN ? -1 : this.throwTime + dt;
+    const throwPhase = this.throwTime >= 0 ? this.throwTime / THROW_LEN : -1;
+
     // Aim frame: where they're looking (the model faces -Z at yaw 0).
     const yaw = this.group.rotation.y;
     const cp = Math.cos(this.pitch);
@@ -488,9 +555,17 @@ export class RemotePlayer {
     this.rightArm[0].getWorldPosition(_gunAt);
     _anchor.lerp(_gunAt, 1 - a);
     _gunAt.copy(_anchor)
-      .addScaledVector(_dir, lerp(low.forward, high.forward, a) + (pistol ? 0 : length / 2))
-      .addScaledVector(_up, lerp(low.up, high.up, a))
+      .addScaledVector(_dir, lerp(low.forward, high.forward, a) + (pistol ? 0 : length / 2) - 0.08 * reloadDip - 0.1 * switchDip)
+      .addScaledVector(_up, lerp(low.up, high.up, a) - 0.12 * reloadDip - 0.25 * switchDip)
       .addScaledVector(_right, lerp(low.right, high.right, a));
+    if (reloadDip > 0 || switchDip > 0) {
+      // Tilt the gun down and roll it toward the body a little.
+      _q.setFromAxisAngle(_right, 0.45 * reloadDip + 0.6 * switchDip).multiply(_gunQuat);
+      _gunQuat.copy(_q);
+      _q.setFromAxisAngle(_dir, -0.5 * reloadDip);
+      _gunQuat.premultiply(_q);
+      _handQuat.copy(_gunQuat).multiply(GUN_IN_HAND_INV);
+    }
 
     // The hand sits where the gun's centre minus its offset in the palm puts it.
     const hand = this.rightArm[2];
@@ -505,6 +580,23 @@ export class RemotePlayer {
     // Support hand under the fore-end (or wrapped round the pistol grip).
     if (pistol) _support.copy(_handAt).addScaledVector(_right, -0.05).addScaledVector(_up, -0.02);
     else _support.copy(_gunAt).addScaledVector(_dir, length * 0.22).addScaledVector(_up, -0.05);
+    if (reloadDip > 0) {
+      // Down to the magazine well (just under and behind the grip), then back up.
+      _support.lerp(
+        _tmp.copy(_handAt).addScaledVector(_up, -0.22).addScaledVector(_dir, pistol ? -0.02 : 0.08).addScaledVector(_right, -0.04),
+        reloadDip,
+      );
+    }
+    if (throwPhase >= 0) {
+      // Wind up behind the head, then whip forward and down.
+      const wind = Math.min(1, throwPhase / 0.4);
+      const release = Math.max(0, (throwPhase - 0.4) / 0.6);
+      this.head.getWorldPosition(_tmp);
+      const back = _tmp.clone().addScaledVector(_dir, -0.25).addScaledVector(WORLD_UP, 0.35).addScaledVector(_right, -0.2);
+      const fwd = _tmp.clone().addScaledVector(_dir, 0.7).addScaledVector(WORLD_UP, -0.1).addScaledVector(_right, -0.15);
+      const target = release > 0 ? back.lerp(fwd, 1 - (1 - release) ** 2) : _support.clone().lerp(back, wind);
+      _support.copy(target);
+    }
     _pole.copy(_right).multiplyScalar(-0.6).addScaledVector(WORLD_UP, -1);
     reach(this.leftArm[0], this.leftArm[1], this.leftArm[2], _support, _pole);
 

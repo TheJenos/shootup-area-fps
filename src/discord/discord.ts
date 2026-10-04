@@ -10,6 +10,37 @@ export interface DiscordSession {
 }
 
 let session: Promise<DiscordSession> | null = null;
+let sdkInstance: DiscordSDK | null = null;
+let presenceBroken = false;
+
+export interface Presence {
+  /** First line, e.g. "Capture the Flag on Frostbite" */
+  details: string;
+  /** Second line, e.g. "Red 2 – 1 Blue" */
+  state: string;
+  partySize?: number;
+  partyMax?: number;
+}
+
+/**
+ * Show what's happening in the match on the player's Discord profile ("Playing Arena FPS —
+ * CTF on Frostbite, Red 2 – 1 Blue"). Needs the rpc.activities.write scope; does nothing
+ * outside Discord or when Discord refuses.
+ */
+export function setDiscordActivity(p: Presence): void {
+  if (!sdkInstance || presenceBroken) return;
+  sdkInstance.commands.setActivity({
+    activity: {
+      type: 0,
+      details: p.details.slice(0, 128),
+      state: p.state.slice(0, 128),
+      ...(p.partySize !== undefined ? { party: { size: [p.partySize, p.partyMax ?? 16] as [number, number] } } : {}),
+    },
+  }).catch((err: unknown) => {
+    console.warn('Discord presence refused', err);
+    presenceBroken = true;
+  });
+}
 
 /**
  * Connect to the Discord client and sign the player in (once per page load).
@@ -26,13 +57,14 @@ async function connect(): Promise<DiscordSession> {
   if (!clientId) throw new Error('VITE_DISCORD_CLIENT_ID is not set for this build.');
   const sdk = new DiscordSDK(clientId);
   await sdk.ready();
+  sdkInstance = sdk;
 
   const { code } = await sdk.commands.authorize({
     client_id: clientId,
     response_type: 'code',
     state: '',
     prompt: 'none',
-    scope: ['identify'],
+    scope: ['identify', 'rpc.activities.write'],
   });
   const res = await fetch(`${FUNCTIONS_URL}/discord-token`, {
     method: 'POST',

@@ -1,8 +1,14 @@
 // Tiny Web Audio synth so the game needs no sound assets.
+import { settings } from './settings';
+
 let ctx: AudioContext | null = null;
 let noise: AudioBuffer | null = null;
-/** Everything plays through this, so stacked sounds (gunfire + deep footsteps) don't clip. */
-let out: AudioNode | null = null;
+/**
+ * Effects and music each have their own volume (from the settings), and everything then goes
+ * through one limiter so stacked sounds (gunfire + deep footsteps) don't clip.
+ */
+let out: GainNode | null = null;
+let music: GainNode | null = null;
 
 export function initAudio(): void {
   if (ctx) {
@@ -17,10 +23,22 @@ export function initAudio(): void {
   limiter.attack.value = 0.003;
   limiter.release.value = 0.15;
   limiter.connect(ctx.destination);
-  out = limiter;
+  out = ctx.createGain();
+  out.connect(limiter);
+  music = ctx.createGain();
+  music.connect(limiter);
+  applyVolumes();
+  settings.subscribe(applyVolumes);
   noise = ctx.createBuffer(1, ctx.sampleRate * 0.4, ctx.sampleRate);
   const data = noise.getChannelData(0);
   for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+}
+
+function applyVolumes(): void {
+  if (!ctx || !out || !music) return;
+  const { sfxVolume, musicVolume } = settings.get();
+  out.gain.setTargetAtTime(sfxVolume, ctx.currentTime, 0.05);
+  music.gain.setTargetAtTime(musicVolume, ctx.currentTime, 0.05);
 }
 
 /** @param pan -1 (left) .. 1 (right) */
@@ -107,7 +125,7 @@ function blip(freq: number, peak: number, duration: number, type: OscillatorType
 export const playHit = (head: boolean) => blip(head ? 1800 : 1200, 0.15, 0.06, 'square');
 export const playHurt = () => blip(90, 0.4, 0.2, 'sawtooth');
 export const playKill = () => { blip(880, 0.15, 0.1); blip(1320, 0.15, 0.15, 'sine', 0.08); };
-export const playReload = () => { blip(400, 0.08, 0.04, 'square'); blip(600, 0.08, 0.04, 'square', 0.9); };
+export const playReload = (volume = 1) => { blip(400, 0.08 * volume, 0.04, 'square'); blip(600, 0.08 * volume, 0.04, 'square', 0.9); };
 export const playEmpty = () => blip(250, 0.08, 0.03, 'square');
 export const playPickup = () => { blip(660, 0.12, 0.08, 'triangle'); blip(990, 0.12, 0.12, 'triangle', 0.07); };
 export const playAbility = () => blip(520, 0.12, 0.15, 'triangle');
@@ -245,4 +263,164 @@ function playDeep(ac: AudioContext, buffer: AudioBuffer, sound: StepSound, volum
   src.connect(low).connect(body.gain);
   src.start(body.t, Math.random() * 0.3);
   src.stop(body.t + decay);
+}
+
+// ---------------------------------------------------------------- announcer stingers
+
+/** A short chord arpeggio: `steps` notes (semitones above `root` Hz), bigger stingers add a low hit. */
+function stinger(root: number, steps: number[], gap: number, length: number, peak: number, lowHit = false): void {
+  if (!ctx || !noise) return;
+  steps.forEach((semi, i) => {
+    const f = root * 2 ** (semi / 12);
+    blip(f, peak, length, 'triangle', i * gap);
+    blip(f * 2, peak * 0.35, length * 0.8, 'sine', i * gap);
+  });
+  if (lowHit) {
+    const { gain, t } = envelope(ctx, peak * 2.2, 0.5);
+    const osc = ctx.createOscillator();
+    osc.frequency.setValueAtTime(110, t);
+    osc.frequency.exponentialRampToValueAtTime(45, t + 0.45);
+    osc.connect(gain);
+    osc.start(t);
+    osc.stop(t + 0.5);
+    const hiss = envelope(ctx, peak * 0.8, 0.3);
+    const src = ctx.createBufferSource();
+    src.buffer = noise;
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 3000;
+    src.connect(hp).connect(hiss.gain);
+    src.start(hiss.t);
+    src.stop(hiss.t + 0.3);
+  }
+}
+
+/** Multi-kill stingers: each one up the ladder is longer and brighter. */
+export function playMultiKill(count: number): void {
+  if (count <= 2) stinger(440, [0, 4, 7], 0.07, 0.28, 0.16);
+  else if (count === 3) stinger(440, [0, 4, 7, 12], 0.07, 0.32, 0.18, true);
+  else if (count === 4) stinger(466, [0, 3, 7, 10, 15], 0.065, 0.36, 0.2, true);
+  else stinger(494, [0, 4, 7, 11, 14, 19], 0.06, 0.42, 0.22, true);
+}
+
+/** Kill streak milestone (5, 10, 15...): a rising fifth with a low hit. */
+export const playStreak = () => stinger(330, [0, 7, 12, 19], 0.09, 0.4, 0.2, true);
+
+/** Round start: two quick notes up. */
+export const playRoundStart = () => stinger(392, [0, 7], 0.12, 0.3, 0.16);
+
+/** Round over: a win resolves upward, a loss falls, a draw hangs. */
+export function playRoundEnd(outcome: 'won' | 'lost' | 'draw'): void {
+  if (outcome === 'won') stinger(392, [0, 4, 7, 12, 16], 0.11, 0.6, 0.18, true);
+  else if (outcome === 'lost') stinger(330, [7, 3, 0, -5], 0.14, 0.6, 0.16);
+  else stinger(349, [0, 5, 0, 5], 0.16, 0.5, 0.14);
+}
+
+/** One heartbeat (two thumps), for the low-health pulse. */
+export function playHeartbeat(volume = 1): void {
+  if (!ctx) return;
+  for (const [delay, level] of [[0, 1], [0.14, 0.7]] as const) {
+    const { gain, t } = envelope(ctx, 0.5 * volume * level, 0.18, delay);
+    const osc = ctx.createOscillator();
+    osc.frequency.setValueAtTime(70, t);
+    osc.frequency.exponentialRampToValueAtTime(38, t + 0.16);
+    osc.connect(gain);
+    osc.start(t);
+    osc.stop(t + 0.2);
+  }
+}
+
+// ---------------------------------------------------------------- round music
+
+interface Bed {
+  nodes: AudioNode[];
+  gain: GainNode;
+  /** Scheduler for the pulse */
+  timer: ReturnType<typeof setInterval>;
+}
+let bed: Bed | null = null;
+
+/**
+ * The last-30-seconds bed: two detuned low saws under a slowly opening filter, with a kick pulse
+ * that quickens as the clock runs down. `urgency` 0..1 drives the tempo and brightness.
+ */
+export function startRoundBed(): void {
+  if (!ctx || !music || bed) return;
+  const ac = ctx;
+  const gain = ac.createGain();
+  gain.gain.setValueAtTime(0.0001, ac.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.5, ac.currentTime + 1.5);
+  const filter = ac.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 320;
+  filter.Q.value = 2;
+  filter.connect(gain).connect(music);
+  const nodes: AudioNode[] = [filter, gain];
+  for (const detune of [-7, 7]) {
+    const osc = ac.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.value = 55;
+    osc.detune.value = detune;
+    const level = ac.createGain();
+    level.gain.value = 0.35;
+    osc.connect(level).connect(filter);
+    osc.start();
+    nodes.push(osc, level);
+  }
+  // Slow wobble on the filter so the drone breathes.
+  const lfo = ac.createOscillator();
+  lfo.frequency.value = 0.25;
+  const depth = ac.createGain();
+  depth.gain.value = 120;
+  lfo.connect(depth).connect(filter.frequency);
+  lfo.start();
+  nodes.push(lfo, depth);
+
+  let next = ac.currentTime + 0.1;
+  const timer = setInterval(() => {
+    if (!bed) return;
+    // Schedule kicks a little ahead so timer jitter doesn't show.
+    while (next < ac.currentTime + 0.4) {
+      kick(ac, next, music!);
+      next += 60 / (96 + 48 * bedUrgency);
+    }
+  }, 100);
+  bed = { nodes, gain, timer };
+}
+
+let bedUrgency = 0;
+/** 0 at thirty seconds left, 1 at zero: faster pulse, brighter drone. */
+export function setRoundBedUrgency(urgency: number): void {
+  bedUrgency = Math.max(0, Math.min(1, urgency));
+  if (!ctx || !bed) return;
+  const filter = bed.nodes[0] as BiquadFilterNode;
+  filter.frequency.setTargetAtTime(320 + 900 * bedUrgency, ctx.currentTime, 0.5);
+}
+
+export function stopRoundBed(): void {
+  if (!ctx || !bed) return;
+  const b = bed;
+  bed = null;
+  clearInterval(b.timer);
+  b.gain.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.3);
+  setTimeout(() => {
+    for (const n of b.nodes) {
+      if (n instanceof OscillatorNode) n.stop();
+      n.disconnect();
+    }
+  }, 1500);
+}
+
+function kick(ac: AudioContext, at: number, dest: AudioNode): void {
+  const gain = ac.createGain();
+  gain.gain.setValueAtTime(0.0001, at);
+  gain.gain.exponentialRampToValueAtTime(0.6, at + 0.005);
+  gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.28);
+  gain.connect(dest);
+  const osc = ac.createOscillator();
+  osc.frequency.setValueAtTime(150, at);
+  osc.frequency.exponentialRampToValueAtTime(42, at + 0.2);
+  osc.connect(gain);
+  osc.start(at);
+  osc.stop(at + 0.3);
 }

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { keyFor, settings } from './settings';
+import { overRamp, rampHeightAt, type Ramp } from './ramps';
 import type { Stance } from '../types';
 
 const GRAVITY = 22;
@@ -26,6 +27,10 @@ const SLIDE_TILT = 0.07;
 /** Radians per pixel at sensitivity 1 */
 const MOUSE_SENSITIVITY = 0.0022;
 const MAX_PITCH = Math.PI / 2 - 0.01;
+/** Highest ledge (or ramp side) you can walk straight onto without jumping */
+const STEP_UP = 0.7;
+/** Walking downhill sticks to the ramp instead of bouncing off it, up to this gap */
+const STICK_DOWN = 0.35;
 
 type Axis = 'x' | 'y' | 'z';
 
@@ -55,15 +60,18 @@ export class LocalPlayer {
 
   private readonly camera: THREE.PerspectiveCamera;
   private readonly colliders: THREE.Box3[];
+  private readonly ramps: Ramp[];
+  private wasOnGround = false;
   private eyeHeight = EYE_HEIGHT;
   private tilt = 0;
   private slideLeft = 0;
   private slideCooldown = 0;
   private crouchWasHeld = false;
 
-  constructor(camera: THREE.PerspectiveCamera, colliders: THREE.Box3[], signal: AbortSignal) {
+  constructor(camera: THREE.PerspectiveCamera, colliders: THREE.Box3[], ramps: Ramp[], signal: AbortSignal) {
     this.camera = camera;
     this.colliders = colliders;
+    this.ramps = ramps;
     camera.rotation.order = 'YXZ';
 
     window.addEventListener('keydown', (e) => this.keys.add(e.code), { signal });
@@ -121,6 +129,15 @@ export class LocalPlayer {
 
   private get height(): number {
     return this.stance === 'stand' ? HEIGHT : CROUCH_HEIGHT;
+  }
+
+  /** Whether our body would fit with its feet at height `y` (nothing overhead there). */
+  private headroomAt(y: number): boolean {
+    const p = this.position;
+    return !this.colliders.some((c) =>
+      p.x + RADIUS > c.min.x && p.x - RADIUS < c.max.x &&
+      p.z + RADIUS > c.min.z && p.z - RADIUS < c.max.z &&
+      y + this.height > c.min.y && y < c.max.y - 1e-3 && c.max.y > y + 1e-3);
   }
 
   /** Whether there's room above us to stand up (e.g. not under the top of a stack). */
@@ -215,10 +232,12 @@ export class LocalPlayer {
     }
     this.velocity.y -= GRAVITY * dt;
 
+    this.wasOnGround = this.onGround;
     this.onGround = false;
     this.moveAxis('x', this.velocity.x * dt);
     this.moveAxis('z', this.velocity.z * dt);
     this.moveAxis('y', this.velocity.y * dt);
+    this.landOnRamps();
 
     if (this.position.y < 0) {
       this.position.y = 0;
@@ -239,10 +258,42 @@ export class LocalPlayer {
     this.camera.rotation.set(this.pitch, this.yaw, this.tilt);
   }
 
+  /**
+   * Ramps: stand on the slope under us. Coming down a slope sticks to it (so running downhill
+   * doesn't skip), and we never sink into it.
+   */
+  private landOnRamps(): void {
+    const p = this.position;
+    for (const r of this.ramps) {
+      if (!overRamp(r, p.x, p.z)) continue;
+      const surface = rampHeightAt(r, p.x, p.z);
+      const below = surface - p.y;
+      const onIt = (below >= 0 && below < STEP_UP + 0.3) || (below < 0 && -below < STICK_DOWN && this.wasOnGround && this.velocity.y <= 0);
+      if (!onIt) continue;
+      p.y = surface;
+      if (this.velocity.y < 0) this.velocity.y = 0;
+      this.onGround = true;
+    }
+  }
+
   private moveAxis(axis: Axis, amount: number): void {
     if (amount === 0) return;
     const p = this.position;
+    const before = p[axis];
     p[axis] += amount;
+    if (axis !== 'y') {
+      // A ramp's side (or its high end) is a wall unless we're already most of the way up it.
+      for (const r of this.ramps) {
+        if (!overRamp(r, p.x, p.z, RADIUS)) continue;
+        const surface = rampHeightAt(
+          r, THREE.MathUtils.clamp(p.x, r.box.min.x, r.box.max.x), THREE.MathUtils.clamp(p.z, r.box.min.z, r.box.max.z),
+        );
+        if (surface > p.y + STEP_UP && p.y + this.height > r.box.min.y) {
+          p[axis] = before;
+          this.velocity[axis] = 0;
+        }
+      }
+    }
     for (const c of this.colliders) {
       if (
         p.x + RADIUS > c.min.x && p.x - RADIUS < c.max.x &&
@@ -257,6 +308,10 @@ export class LocalPlayer {
             p.y = c.min.y - this.height;
           }
           this.velocity.y = 0;
+        } else if (this.wasOnGround && c.max.y - p.y <= STEP_UP && this.headroomAt(c.max.y)) {
+          // A low ledge (a step, the top of a ramp): walk up onto it.
+          p.y = c.max.y;
+          this.onGround = true;
         } else {
           p[axis] = amount > 0 ? c.min[axis] - RADIUS - 1e-4 : c.max[axis] + RADIUS + 1e-4;
           this.velocity[axis] = 0;

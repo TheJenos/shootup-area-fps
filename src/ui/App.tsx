@@ -31,5 +31,12 @@ export function App() {
 
   if (session) return <GameView key={session.playerId} session={session} onExit={exit} />;
   if (IN_DISCORD) return <DiscordLobby initialError={error} onEnter={enter} />;
-  return <Lobby initialCode={location.hash.slice(1).toUpperCase()} initialError={error} onEnter={enter} />;
+  return <Lobby initialCode={inviteCode()} initialError={error} onEnter={enter} />;
+}
+
+/** The room code an invite link points at: `#CODE` or `?room=CODE`. */
+function inviteCode(): string {
+  const hash = location.hash.slice(1);
+  const query = new URLSearchParams(location.search).get('room') ?? '';
+  return (hash || query).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
 }

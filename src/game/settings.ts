@@ -23,6 +23,8 @@ export const ACTIONS: { action: Action; label: string }[] = [
 
 export type Bindings = Record<Action, string>;
 
+export type Quality = 'low' | 'medium' | 'high';
+
 export interface Settings {
   /** Multiplier on the base mouse speed */
   sensitivity: number;
@@ -36,12 +38,35 @@ export interface Settings {
   aimToggle: boolean;
   /** Extra multiplier on mouse speed while aiming (on top of the zoom) */
   aimSensitivity: number;
+  /** Field of view at the hip, degrees */
+  fov: number;
+  /** Crosshair colour (CSS) and size multiplier */
+  crosshairColor: string;
+  crosshairSize: number;
+  /** Rendering: resolution cap and shadows */
+  quality: Quality;
+  /** Camera shake when hit */
+  screenShake: boolean;
+  /** 0..1 */
+  sfxVolume: number;
+  musicVolume: number;
   /** KeyboardEvent.code for each action */
   bindings: Bindings;
 }
 
 export const SENSITIVITY_MIN = 0.1;
 export const SENSITIVITY_MAX = 4;
+export const FOV_MIN = 60;
+export const FOV_MAX = 110;
+export const FOV_DEFAULT = 75;
+export const CROSSHAIR_SIZE_MIN = 0.6;
+export const CROSSHAIR_SIZE_MAX = 1.8;
+export const CROSSHAIR_COLORS = ['#ffffff', '#5ce08a', '#3ff0ff', '#ffe14d', '#ff4dd2', '#ff5a5a'];
+export const QUALITIES: { value: Quality; label: string; hint: string }[] = [
+  { value: 'low', label: 'Low', hint: 'No shadows, lower resolution' },
+  { value: 'medium', label: 'Medium', hint: 'Soft shadows, native resolution' },
+  { value: 'high', label: 'High', hint: 'Sharp shadows, full resolution' },
+];
 
 export const DEFAULT_BINDINGS: Bindings = {
   forward: 'KeyW',
@@ -62,8 +87,14 @@ export const DEFAULT_BINDINGS: Bindings = {
   scoreboard: 'Tab',
 };
 
+const COARSE = typeof matchMedia === 'function' && matchMedia('(hover: none) and (pointer: coarse)').matches;
+
 const DEFAULTS: Settings = {
-  sensitivity: 1, invertY: false, fullscreen: true, aimToggle: false, aimSensitivity: 1, bindings: DEFAULT_BINDINGS,
+  sensitivity: 1, invertY: false, fullscreen: true, aimToggle: false, aimSensitivity: 1,
+  fov: FOV_DEFAULT, crosshairColor: '#ffffff', crosshairSize: 1,
+  // Phones start low; they can turn it up.
+  quality: COARSE ? 'low' : 'high', screenShake: true, sfxVolume: 1, musicVolume: 0.7,
+  bindings: DEFAULT_BINDINGS,
 };
 
 /** Esc always releases the mouse, so it can't be bound. */
@@ -85,6 +116,8 @@ function load(): Settings {
     // C was only ever saved because it used to be the default; let those players get Ctrl.
     if ((saved.version ?? 1) < 2 && saved.bindings?.crouch === 'KeyC') delete saved.bindings.crouch;
     const sensitivity = Number(saved.sensitivity);
+    const num = (v: unknown, min: number, max: number, fallback: number) =>
+      Number.isFinite(Number(v)) ? Math.min(max, Math.max(min, Number(v))) : fallback;
     return {
       sensitivity: Number.isFinite(sensitivity)
         ? Math.min(SENSITIVITY_MAX, Math.max(SENSITIVITY_MIN, sensitivity))
@@ -95,6 +128,14 @@ function load(): Settings {
       aimSensitivity: Number.isFinite(Number(saved.aimSensitivity))
         ? Math.min(SENSITIVITY_MAX, Math.max(SENSITIVITY_MIN, Number(saved.aimSensitivity)))
         : DEFAULTS.aimSensitivity,
+      fov: num(saved.fov, FOV_MIN, FOV_MAX, DEFAULTS.fov),
+      crosshairColor: typeof saved.crosshairColor === 'string' && /^#[0-9a-f]{6}$/i.test(saved.crosshairColor)
+        ? saved.crosshairColor : DEFAULTS.crosshairColor,
+      crosshairSize: num(saved.crosshairSize, CROSSHAIR_SIZE_MIN, CROSSHAIR_SIZE_MAX, DEFAULTS.crosshairSize),
+      quality: QUALITIES.some((q) => q.value === saved.quality) ? (saved.quality as Quality) : DEFAULTS.quality,
+      screenShake: saved.screenShake !== false,
+      sfxVolume: num(saved.sfxVolume, 0, 1, DEFAULTS.sfxVolume),
+      musicVolume: num(saved.musicVolume, 0, 1, DEFAULTS.musicVolume),
       // Start from the defaults so actions added later still get a key.
       bindings: { ...DEFAULT_BINDINGS, ...pickStrings(saved.bindings) },
     };

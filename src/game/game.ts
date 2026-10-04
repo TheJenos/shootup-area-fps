@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { buildWorld, type World } from './world';
+import { ARENA_HALF, buildWorld, type World } from './world';
+import { overRamp, rampHeightAt, type Ramp } from './ramps';
 import { generateMap, normalizeSeed, randomSeed, CLASSIC_SEED } from './mapgen';
 import { LocalPlayer } from './player';
 import { RemotePlayer, type HitboxData } from './remotePlayer';
@@ -12,20 +13,22 @@ import {
   ABILITIES, ABILITY_TYPES, Inventory, DASH_SPEED, GRENADE_DAMAGE, GRENADE_RADIUS, MEDKIT_HEAL,
   SHIELD_AMOUNT, SHIELD_DURATION, SPEED_DURATION, SPEED_MULTIPLIER,
 } from './abilities';
-import { MAX_GUN_PICKUPS, MAX_PICKUPS, PickupField } from './pickups';
+import { MAX_AMMO_PICKUPS, MAX_GUN_PICKUPS, MAX_PICKUPS, PickupField, kindOf, type PickupKind } from './pickups';
+import { SmokeField, WALL_DISTANCE, WALL_DURATION, WallField, type WallAxis } from './deployables';
 import { GUNS, PICKUP_GUNS, isPickupGun, maxShotDamage, shotDamage } from './guns';
 import { GrenadeFx, simulateGrenade, THROW_LIFT, THROW_SPEED } from './grenades';
 import { FlagField, placementOf, type FlagPlacement } from './flags';
 import {
-  CLOCK_WARNING, FLAG_BASES, FLAG_RADIUS, FLAG_RETURN_TIME, MODES, MVP_TIME, RESULTS_TIME, TEAMS, TEAM_INFO, otherTeam,
-  teamSpawns,
+  CLOCK_WARNING, FLAG_BASES, FLAG_RADIUS, FLAG_RETURN_TIME, GUN_GAME_LADDER, MODES, MVP_TIME, RESULTS_TIME, TEAMS, TEAM_INFO,
+  gunGameGun, otherTeam, teamSpawns,
 } from './modes';
 import { MomentTracker } from './moments';
 import { ReplayDirector, ReplayRecorder } from './replay';
 import { RoomConnection, randomId } from '../net/network';
 import * as sfx from './audio';
-import { actionFor, keyLabel, settings, type Action } from './settings';
+import { actionFor, keyLabel, settings, type Action, type Quality } from './settings';
 import { IN_DISCORD } from '../discord/patch';
+import { setDiscordActivity } from '../discord/discord';
 import { TOUCH } from './device';
 import { StepTracker, type StepEvent } from './footsteps';
 import type {
@@ -54,8 +57,10 @@ const INDICATOR_HOLD = 0.6;
 const INDICATOR_FADE = 1;
 /** How often we record our own pose for the MVP replay (s) */
 const RECORD_INTERVAL = 0.1;
-/** Field of view at the hip (degrees); each gun has its own aimed field of view */
-const HIP_FOV = 75;
+/** Health at or below which the screen darkens at the edges and the heart pounds */
+export const LOW_HEALTH = 30;
+/** Resolution cap per graphics quality setting (device pixel ratio) */
+const PIXEL_RATIO: Record<Quality, number> = { low: 1, medium: 1.5, high: 2 };
 /** How often to check whether teammates are hidden behind cover (s) */
 const ALLY_SIGHT_INTERVAL = 0.1;
 /** Radians of turn per pixel of finger drag, at sensitivity 1 */
@@ -123,6 +128,8 @@ export class Game {
   private mapSeed = '';
   private readonly colliders: THREE.Box3[] = [];
   private readonly solids: THREE.Mesh[] = [];
+  private readonly ramps: Ramp[] = [];
+  private readonly obstacles: THREE.Box3[] = [];
   private readonly player: LocalPlayer;
   private readonly weapon: Weapon;
   private readonly effects: Effects;
@@ -155,6 +162,13 @@ export class Game {
   private readonly inventory = new Inventory();
   private readonly pickups: PickupField;
   private readonly grenades: GrenadeFx;
+  private readonly smoke: SmokeField;
+  private readonly walls: WallField;
+  /** Smoke canisters in the air (ours), waiting to land */
+  private pendingSmokes: { id: string; at: number; p: THREE.Vector3 }[] = [];
+  private dryToastAt = 0;
+  /** How many things we've thrown this session (others animate the throw when it changes) */
+  private throws = 0;
   private readonly losRay = new THREE.Raycaster();
   private claimingPickup: string | null = null;
   private fullToastFor: string | null = null;
@@ -212,6 +226,23 @@ export class Game {
   private readonly hitSources = new Map<string, { at: THREE.Vector3; time: number; damage: number }>();
   private lastIndicatorKey = '';
 
+  // Spectating: following one player with a chase camera, or flying free
+  private spectating = false;
+  private specTarget: string | null = null;
+  private specFree = false;
+  private readonly specPos = new THREE.Vector3();
+  private readonly specRay = new THREE.Raycaster();
+  private specKey = '';
+
+  /** Discord rich presence: what we last showed and when */
+  private presenceKey = '';
+  private presenceTimer = 0;
+
+  /** Camera shake left from recent hits (0..1) and the low-health heartbeat timer */
+  private shake = 0;
+  private heartbeatTimer = 0;
+  private roundBedOn = false;
+
   /** Our smoothed round trip to the server in ms */
   private ping: number | null = null;
   private pingTimer = 0;
@@ -225,24 +256,25 @@ export class Game {
     const signal = this.abort.signal;
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
-    // Phones have very dense screens and slower GPUs: cap the resolution a bit lower there.
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, TOUCH ? 1.5 : 2));
     this.renderer.setSize(host.clientWidth, host.clientHeight);
-    this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.autoClear = false;
     host.appendChild(this.renderer.domElement);
 
     const aspect = host.clientWidth / host.clientHeight;
-    this.camera = new THREE.PerspectiveCamera(75, aspect, 0.05, 300);
+    this.camera = new THREE.PerspectiveCamera(settings.get().fov, aspect, 0.05, 300);
     this.scene.add(this.camera);
 
     this.loadMap(seed);
-    this.player = new LocalPlayer(this.camera, this.colliders, signal);
+    this.applyQuality();
+    signal.addEventListener('abort', settings.subscribe(() => this.applyQuality()), { once: true });
+    this.player = new LocalPlayer(this.camera, this.colliders, this.ramps, signal);
     this.weapon = new Weapon(aspect);
     this.effects = new Effects(this.scene);
-    this.pickups = new PickupField(this.scene, this.colliders);
+    this.pickups = new PickupField(this.scene, this.obstacles);
     this.grenades = new GrenadeFx(this.scene);
+    this.smoke = new SmokeField(this.scene);
+    this.walls = new WallField(this.scene, this.colliders, this.solids);
     this.hud.update({ ammo: this.weapon.ammo, magSize: this.weapon.magSize });
 
     this.net = new RoomConnection(roomCode, playerId, {
@@ -262,10 +294,26 @@ export class Game {
   private loadMap(seed: string): void {
     const map = generateMap(seed);
     this.world?.dispose();
-    this.world = buildWorld(this.scene, map, this.colliders, this.solids);
+    this.walls?.clear();
+    this.world = buildWorld(this.scene, map, {
+      colliders: this.colliders, solids: this.solids, ramps: this.ramps, obstacles: this.obstacles,
+    });
+    if (this.appliedQuality) this.world.setShadowQuality(this.appliedQuality);
     this.mapSeed = map.seed;
     this.floorSurface = map.theme.surface;
     this.hud.update({ map: { name: map.theme.name, seed: map.seed } });
+  }
+
+  /** Resolution and shadows from the quality setting; applied live when it changes. */
+  private appliedQuality: Quality | null = null;
+  private applyQuality(): void {
+    const quality = settings.get().quality;
+    if (quality === this.appliedQuality) return;
+    this.appliedQuality = quality;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, PIXEL_RATIO[quality]));
+    this.renderer.shadowMap.enabled = quality !== 'low';
+    this.renderer.shadowMap.needsUpdate = true;
+    this.world.setShadowQuality(quality);
   }
 
   /** Capture the mouse (and go fullscreen) to start playing. Must be called from a user gesture. */
@@ -432,6 +480,10 @@ export class Game {
     // On a Mac, Ctrl+click is a right-click; crouching (Ctrl) and shooting must still shoot.
     const isFire = (e: MouseEvent) => e.button === 0 || (e.button === 2 && e.ctrlKey);
     window.addEventListener('mousedown', (e) => {
+      if (this.spectating) {
+        if (this.locked && (e.button === 0 || e.button === 2)) this.cycleSpectate(e.button === 0 ? 1 : -1);
+        return;
+      }
       if (isFire(e) && this.locked) this.triggerHeld = true;
       else if (e.button === 2 && this.locked) this.aimHeld = settings.get().aimToggle ? !this.aimHeld : true;
     }, { signal });
@@ -468,6 +520,7 @@ export class Game {
         e.preventDefault();
         this.hud.update({ scoreboardOpen: true, scoreboard: this.scoreRows() });
       }
+      if (action === 'jump' && this.spectating && this.locked && !e.repeat) this.toggleFreeCamera();
       if (action === 'reload' && this.alive && this.locked) this.weapon.reload();
       if (action === 'swap' && !e.repeat && this.locked) this.switchGun();
       const slot = action ? ABILITY_ACTIONS.indexOf(action) : -1;
@@ -508,6 +561,7 @@ export class Game {
     this.character = character;
     if (this.disposed) return;
     this.mode = info?.mode ?? 'ffa';
+    if (this.mode === 'gungame') this.weapon.setForcedGun(gunGameGun(0));
     if (MODES[this.mode].teams) this.setTeam(await this.pickTeam());
     if (this.mode === 'ctf') this.flagField = new FlagField(this.scene);
     if (info) this.hud.update({ match: { roomName: info.name, startedAt: info.createdAt } });
@@ -538,6 +592,120 @@ export class Game {
     this.team = team;
     this.color = TEAM_INFO[team].color;
     this.hud.update({ team });
+  }
+
+  // ---------------------------------------------------------------- spectating
+
+  get isSpectating(): boolean {
+    return this.spectating;
+  }
+
+  /** Step out of the match and watch: no body, no hitboxes, not in the standings. */
+  startSpectating(): void {
+    if (this.spectating || !this.joined) return;
+    this.spectating = true;
+    this.specFree = false;
+    this.specTarget = null;
+    void this.dropFlag();
+    this.clearAbilities();
+    this.weapon.releaseTrigger();
+    this.triggerHeld = false;
+    this.aimHeld = false;
+    this.alive = false;
+    this.hp = 0;
+    this.respawnTimer = 0;
+    this.hitSources.clear();
+    this.specPos.copy(this.camera.position);
+    this.hud.update({ death: null, hp: 0 });
+    void this.net.sendState({ alive: false, hp: 0, spec: true, shield: false });
+    this.cycleSpectate(1);
+    this.hud.toast('Spectating · click: next player · space: free camera');
+  }
+
+  /** Back into the fight: respawn as usual. */
+  stopSpectating(): void {
+    if (!this.spectating) return;
+    this.spectating = false;
+    this.specTarget = null;
+    this.specKey = '';
+    this.hud.update({ spectate: null });
+    void this.net.sendState({ spec: false });
+    this.respawn();
+  }
+
+  /** The players we can follow: everyone alive who isn't spectating themselves. */
+  private spectatable(): string[] {
+    return [...this.remotes.entries()]
+      .filter(([id, r]) => r.alive && !this.players[id]?.spec)
+      .map(([id]) => id)
+      .sort();
+  }
+
+  /** Follow the next (or previous) player. */
+  private cycleSpectate(step: 1 | -1): void {
+    const ids = this.spectatable();
+    if (!ids.length) {
+      this.specTarget = null;
+      this.specFree = true;
+      return;
+    }
+    this.specFree = false;
+    const i = this.specTarget ? ids.indexOf(this.specTarget) : -1;
+    this.specTarget = ids[((i < 0 ? (step > 0 ? -1 : 0) : i) + step + ids.length) % ids.length] ?? null;
+  }
+
+  private toggleFreeCamera(): void {
+    this.specFree = !this.specFree;
+    if (this.specFree) this.specTarget = null;
+    else this.cycleSpectate(1);
+  }
+
+  /** Chase camera behind whoever we're following, or free flight on the movement keys. */
+  private updateSpectator(dt: number): void {
+    const target = this.specTarget ? this.remotes.get(this.specTarget) : null;
+    if (this.specTarget && (!target || !target.alive || this.players[this.specTarget]?.spec)) {
+      this.cycleSpectate(1);
+      return;
+    }
+    const cam = this.camera;
+    if (target && !this.specFree) {
+      const head = target.position.clone().setY(target.position.y + 1.6);
+      const yaw = target.yaw;
+      const back = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+      const wanted = head.clone().addScaledVector(back, 3.2).setY(head.y + 0.9);
+      const toCam = wanted.clone().sub(head);
+      const dist = toCam.length();
+      this.specRay.set(head, toCam.normalize());
+      this.specRay.far = dist;
+      const hit = this.specRay.intersectObjects(this.solids, false)[0];
+      if (hit) wanted.copy(head).addScaledVector(toCam, Math.max(0.4, hit.distance - 0.3));
+      this.specPos.lerp(wanted, 1 - Math.exp(-7 * dt));
+      cam.position.copy(this.specPos);
+      cam.lookAt(head.clone().addScaledVector(back, -4).setY(head.y - 0.2));
+    } else {
+      // Free camera: look with the mouse, fly with the movement keys (sprint for speed).
+      const k = this.player.keys;
+      const held = (a: Action) => (k.has(settings.get().bindings[a]) ? 1 : 0);
+      const forward = held('forward') - held('back');
+      const strafe = held('right') - held('left');
+      // E climbs, crouch descends (space is taken: it toggles following).
+      const rise = (k.has('KeyE') ? 1 : 0) - held('crouch');
+      const speed = (held('sprint') ? 24 : 11) * dt;
+      const dir = cam.getWorldDirection(new THREE.Vector3());
+      const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
+      this.specPos.addScaledVector(dir, forward * speed).addScaledVector(right, strafe * speed);
+      this.specPos.y = THREE.MathUtils.clamp(this.specPos.y + rise * speed, 0.5, 60);
+      this.specPos.x = THREE.MathUtils.clamp(this.specPos.x, -ARENA_HALF, ARENA_HALF);
+      this.specPos.z = THREE.MathUtils.clamp(this.specPos.z, -ARENA_HALF, ARENA_HALF);
+      cam.position.copy(this.specPos);
+      cam.rotation.set(this.player.pitch, this.player.yaw, 0);
+    }
+    const view = { target: target && !this.specFree ? target.name : null, count: this.spectatable().length };
+    const key = JSON.stringify(view);
+    if (key !== this.specKey) {
+      this.specKey = key;
+      this.hud.update({ spectate: view });
+    }
   }
 
   /** Move to the other team (pause menu). Respawns at the new team's side. */
@@ -584,7 +752,7 @@ export class Game {
     const p = this.player.position;
     return {
       x: r2(p.x), y: r2(p.y), z: r2(p.z), yaw: r3(this.player.yaw), pitch: r3(this.player.pitch), stance: this.player.stance,
-      aim: this.player.aiming,
+      aim: this.player.aiming, rl: this.weapon.reloading, th: this.throws,
     };
   }
 
@@ -595,7 +763,9 @@ export class Game {
     if (id === this.playerId) return;
     if (!this.character) return;
     this.remotes.get(id)?.dispose();
-    this.remotes.set(id, new RemotePlayer(id, data, this.scene, this.character));
+    const remote = new RemotePlayer(id, data, this.scene, this.character);
+    remote.setVisible(!data.spec && !this.replay);
+    this.remotes.set(id, remote);
     if (this.joined && performance.now() - this.joinedAt > 1000) this.hud.pushInfo(`${data.name} joined`);
   }
 
@@ -607,12 +777,15 @@ export class Game {
       if (kills > this.kills) {
         this.stats.streak += kills - this.kills;
         this.stats.best = Math.max(this.stats.best, this.stats.streak);
+        if (this.mode === 'gungame') this.gunGameLevelUp(kills);
       }
       this.kills = kills;
       return;
     }
-    this.remotes.get(id)?.setData(data);
-    this.recorder.pose(id, data, this.net.serverNow());
+    const remote = this.remotes.get(id);
+    remote?.setData(data);
+    if (remote && !this.replay) remote.setVisible(!data.spec);
+    if (!data.spec) this.recorder.pose(id, data, this.net.serverNow());
   }
 
   private onPlayerRemoved(id: string): void {
@@ -639,6 +812,8 @@ export class Game {
       this.recorder.event({ t, kind: 'grenade', id: evt.id, o: evt.o, v: evt.v });
     } else if (evt.type === 'blast' && evt.from !== this.playerId) {
       this.recorder.event({ t, kind: 'blast', id: evt.id, p: evt.p });
+    } else if (evt.type === 'smoke' && evt.from !== this.playerId) {
+      this.recorder.event({ t, kind: 'smoke', id: evt.id, o: evt.o, v: evt.v });
     } else if (evt.type === 'kill') {
       this.recorder.event({ t, kind: 'kill', killer: evt.killer, victim: evt.victim, head: evt.head });
     }
@@ -661,6 +836,16 @@ export class Game {
     } else if (evt.type === 'grenade') {
       if (evt.from === this.playerId) return;
       this.grenades.launch(evt.id, simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders));
+    } else if (evt.type === 'smoke') {
+      if (evt.from === this.playerId) return;
+      const arc = simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders);
+      this.grenades.launch(evt.id, arc);
+      this.pendingSmokes.push({ id: evt.id, at: performance.now() + arc.duration * 1000, p: arc.end });
+    } else if (evt.type === 'wall') {
+      if (evt.from === this.playerId) return;
+      const color = new THREE.Color(this.players[evt.from]?.color ?? evt.c ?? '#6fa8ff').getHex();
+      this.walls.place(evt.id, evt.x, evt.y, evt.z, evt.axis, evt.until, color);
+      sfx.playAbility();
     } else if (evt.type === 'blast') {
       if (evt.from === this.playerId) return;
       const at = fromArr(evt.p);
@@ -680,6 +865,18 @@ export class Game {
     }
   }
 
+  /** Gun Game: a kill hands us the next gun on the ladder. */
+  private gunGameLevelUp(kills: number): void {
+    const gun = gunGameGun(kills);
+    if (gun === this.weapon.gun && kills < GUN_GAME_LADDER.length) return;
+    if (kills >= GUN_GAME_LADDER.length) return;
+    this.weapon.setForcedGun(gun);
+    this.aimHeld = false;
+    const left = GUN_GAME_LADDER.length - kills;
+    this.hud.toast(`Level ${kills + 1}: ${GUNS[gun].name} · ${left} to go`);
+    sfx.playSwitch();
+  }
+
   /** Feed our kills into the highlight tracker. */
   private onOwnKill(victim: string, head: boolean, t: number): void {
     if (this.roundOver) return;
@@ -690,7 +887,20 @@ export class Game {
         || (drop?.id === victim && performance.now() - drop.at < 2_000);
     }
     if (this.carry) this.carry.kills++;
-    this.moments.onKill(t, { head, stoppedCarrier });
+    const { chain, streak } = this.moments.onKill(t, { head, stoppedCarrier });
+    this.announceKill(chain, streak);
+  }
+
+  /** Multi-kill and streak call-outs: a banner and a stinger. */
+  private announceKill(chain: number, streak: number): void {
+    const names: Record<number, string> = { 2: 'DOUBLE KILL', 3: 'TRIPLE KILL', 4: 'QUAD KILL' };
+    if (chain >= 2) {
+      this.hud.announce(names[chain] ?? 'RAMPAGE', chain >= 5 ? `${chain} kills` : '');
+      sfx.playMultiKill(chain);
+    } else if (streak >= 5 && streak % 5 === 0) {
+      this.hud.announce(`${streak} KILL STREAK`, streak >= 10 ? 'Unstoppable' : 'On fire');
+      sfx.playStreak();
+    }
   }
 
   // ---------------------------------------------------------------- rounds
@@ -738,12 +948,14 @@ export class Game {
   private announceWinner(): void {
     const ended = this.game.ended;
     if (!ended) return;
+    this.stopRoundBed();
     if (ended.winner === 'draw') {
       this.hud.pushInfo('The round is a draw');
+      sfx.playRoundEnd('draw');
       return;
     }
     const won = this.team ? ended.winner === this.team : ended.winner === this.playerId;
-    if (won) sfx.playKill();
+    sfx.playRoundEnd(won ? 'won' : 'lost');
     this.hud.pushInfo(this.team ? `${ended.name} team wins the round` : `${ended.name} wins the round`);
   }
 
@@ -770,6 +982,7 @@ export class Game {
   private startRound(): void {
     this.stopReplay();
     this.kills = 0;
+    if (this.mode === 'gungame') this.weapon.setForcedGun(gunGameGun(0));
     this.deaths = 0;
     this.stats = { ...EMPTY_STATS };
     this.myMatch = { ...EMPTY_MY_MATCH };
@@ -784,6 +997,26 @@ export class Game {
     void this.net.sendState({ kills: 0, deaths: 0, shield: false, moment: null, ...this.stats });
     const map = this.hud.get().map;
     this.hud.toast(`Round ${this.game.round + 1}${map ? ` · ${map.name}` : ''} — fight!`);
+    sfx.playRoundStart();
+  }
+
+  /** The last-30-seconds music: on while the clock is in the red, faster as it runs out. */
+  private updateRoundBed(): void {
+    const clock = this.hud.get().clock;
+    const on = !!clock && clock.urgent && !this.roundOver && this.joined;
+    if (on) {
+      if (!this.roundBedOn) sfx.startRoundBed();
+      this.roundBedOn = true;
+      sfx.setRoundBedUrgency(1 - clock.left / CLOCK_WARNING);
+    } else if (this.roundBedOn) {
+      this.stopRoundBed();
+    }
+  }
+
+  private stopRoundBed(): void {
+    if (!this.roundBedOn) return;
+    this.roundBedOn = false;
+    sfx.stopRoundBed();
   }
 
   /** How long the round-over screens last: results, then the MVP replay if there is an MVP. */
@@ -860,6 +1093,7 @@ export class Game {
       return red > blue ? ['red', TEAM_INFO.red.name] : ['blue', TEAM_INFO.blue.name];
     }
     const kills = Object.entries(this.players)
+      .filter(([, p]) => !p.spec)
       .map(([id, p]) => ({ id, name: p.name, kills: id === this.playerId ? this.kills : p.kills || 0 }))
       .sort((a, b) => b.kills - a.kills);
     const [top, second] = kills;
@@ -902,7 +1136,7 @@ export class Game {
    * Players who didn't kill or capture anything can't be MVP.
    */
   private pickMvp(): MvpInfo | null {
-    const candidates = Object.entries(this.players).map(([id, p]) => {
+    const candidates = Object.entries(this.players).filter(([, p]) => !p.spec).map(([id, p]) => {
       const me = id === this.playerId;
       const kills = me ? this.kills : p.kills || 0;
       const captures = me ? this.stats.captures : p.captures || 0;
@@ -956,6 +1190,7 @@ export class Game {
         colliders: this.colliders,
         solids: this.solids,
         flagField: this.flagField,
+        smoke: this.smoke,
         onKill: (killer, victim, head) => {
           const k = this.players[killer] ?? this.recorder.tracks.get(killer) ?? UNKNOWN_PLAYER;
           const v = this.players[victim] ?? this.recorder.tracks.get(victim) ?? UNKNOWN_PLAYER;
@@ -973,7 +1208,7 @@ export class Game {
     if (!this.replay) return;
     this.replay.dispose();
     this.replay = null;
-    for (const r of this.remotes.values()) r.setVisible(true);
+    for (const [id, r] of this.remotes) r.setVisible(!this.players[id]?.spec);
     // Put the flags back where they really are.
     for (const team of TEAMS) this.flagField?.set(team, placementOf(this.game.flags[team]));
   }
@@ -1166,6 +1401,11 @@ export class Game {
         y = Math.max(y, c.max.y);
       }
     }
+    for (const r of this.world.ramps) {
+      if (!overRamp(r, p.x, p.z)) continue;
+      const h = rampHeightAt(r, p.x, p.z);
+      if (h <= p.y + 0.3) y = Math.max(y, h);
+    }
     return y;
   }
 
@@ -1215,6 +1455,7 @@ export class Game {
     this.hp -= amount;
     this.hud.update({ hp: Math.max(0, this.hp) });
     this.hud.flashDamage();
+    this.shake = Math.min(1, this.shake + 0.25 + amount / 80);
     sfx.playHurt();
     if (this.hp <= 0) this.die(fromId, head, weapon);
     else if (amount > 0) void this.net.sendState({ hp: this.hp });
@@ -1245,6 +1486,7 @@ export class Game {
 
   /** Scatter the picked-up gun and abilities (with their ammo / uses left) on the floor around where we died. */
   private dropLoot(): void {
+    if (!MODES[this.mode].pickups) return;
     const gun = this.weapon.takeSpecial();
     const items: PickupRecord[] = [
       ...(gun && gun.rounds > 0 && isPickupGun(gun.kind) ? [{ type: gun.kind, uses: gun.rounds, x: 0, z: 0 }] : []),
@@ -1263,7 +1505,7 @@ export class Game {
     if (this.mode === 'tdm' && killer?.team && killer.team !== this.team) this.addTeamScore(killer.team);
     this.net.creditKill(killerId)
       .then((kills) => {
-        if (this.mode === 'ffa' && kills !== null && kills >= MODES.ffa.limit) {
+        if (!MODES[this.mode].teams && kills !== null && kills >= MODES[this.mode].limit) {
           this.endRound(round, killerId, killer?.name || 'Someone');
         }
       })
@@ -1426,6 +1668,16 @@ export class Game {
       case 'grenade':
         this.throwGrenade();
         break;
+      case 'smoke':
+        this.throwSmoke();
+        break;
+      case 'wall':
+        if (!this.placeWall()) {
+          this.hud.toast('No room for a barrier here');
+          sfx.playDenied();
+          return;
+        }
+        break;
     }
 
     sfx.playAbility();
@@ -1509,6 +1761,7 @@ export class Game {
   }
 
   private throwGrenade(): void {
+    this.throws++;
     const dir = this.camera.getWorldDirection(new THREE.Vector3());
     const start = this.camera.getWorldPosition(new THREE.Vector3()).addScaledVector(dir, 0.6);
     const velocity = dir.multiplyScalar(THROW_SPEED).add(new THREE.Vector3(0, THROW_LIFT, 0));
@@ -1521,6 +1774,53 @@ export class Game {
     this.net.sendEvent({ type: 'grenade', id, o, v });
     this.recorder.event({ t: this.net.serverNow(), kind: 'grenade', id, o, v });
     this.pendingBlasts.push({ id, at: performance.now() + trajectory.duration * 1000, p: trajectory.end });
+  }
+
+  /** A smoke canister flies like a grenade and bursts where it lands. */
+  private throwSmoke(): void {
+    this.throws++;
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const start = this.camera.getWorldPosition(new THREE.Vector3()).addScaledVector(dir, 0.6);
+    const velocity = dir.multiplyScalar(THROW_SPEED).add(new THREE.Vector3(0, THROW_LIFT, 0));
+    const o = toArr(start);
+    const v = toArr(velocity);
+    const arc = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders);
+    const id = randomId(8);
+    this.grenades.launch(id, arc);
+    this.net.sendEvent({ type: 'smoke', id, o, v });
+    this.recorder.event({ t: this.net.serverNow(), kind: 'smoke', id, o, v });
+    this.pendingSmokes.push({ id, at: performance.now() + arc.duration * 1000, p: arc.end });
+  }
+
+  /**
+   * Put a barrier down in front of us, square to whichever axis we're facing most. Refused
+   * (returns false) when it would cut into cover, another player or the arena edge.
+   */
+  private placeWall(): boolean {
+    const p = this.player.position;
+    const yaw = this.player.yaw;
+    const fx = -Math.sin(yaw);
+    const fz = -Math.cos(yaw);
+    // Facing along z means the wall runs across x.
+    const axis: WallAxis = Math.abs(fz) >= Math.abs(fx) ? 'x' : 'z';
+    const x = r2(p.x + fx * WALL_DISTANCE);
+    const z = r2(p.z + fz * WALL_DISTANCE);
+    const foot = new THREE.Vector3(x, p.y + 0.1, z);
+    const y = r2(this.groundBelow(foot));
+    const box = WallField.boxFor(x, y, z, axis);
+    const limit = ARENA_HALF - 0.8;
+    if (Math.abs(box.min.x) > limit || Math.abs(box.max.x) > limit || Math.abs(box.min.z) > limit || Math.abs(box.max.z) > limit) return false;
+    if (this.world.colliders.some((c) => c.intersectsBox(box))) return false;
+    const padded = box.clone().expandByScalar(0.4);
+    for (const r of this.remotes.values()) {
+      if (r.alive && padded.containsPoint(r.position.clone().setY(r.position.y + 0.5))) return false;
+    }
+    if (padded.containsPoint(p.clone().setY(p.y + 0.5))) return false;
+    const id = randomId(8);
+    const until = this.net.serverNow() + WALL_DURATION * 1000;
+    this.walls.place(id, x, y, z, axis, until, new THREE.Color(this.color).getHex());
+    this.net.sendEvent({ type: 'wall', id, x, y, z, axis, until, c: this.color });
+    return true;
   }
 
   /** Our grenade went off: work out who it hurt (walls block it) and tell everyone. */
@@ -1568,9 +1868,21 @@ export class Game {
       this.pendingBlasts = this.pendingBlasts.filter((b) => now < b.at);
       due.forEach((b) => this.detonate(b));
     }
+    const landed = this.pendingSmokes.filter((b) => now >= b.at);
+    if (landed.length) {
+      this.pendingSmokes = this.pendingSmokes.filter((b) => now < b.at);
+      for (const smoke of landed) {
+        this.grenades.land(smoke.id);
+        this.smoke.spawn(smoke.id, smoke.p);
+        const heard = this.heardFrom(smoke.p);
+        if (heard) sfx.playSlide('sand', heard.volume * 1.2, heard.pan);
+      }
+    }
 
     this.pickups.update(now / 1000);
     this.grenades.update();
+    this.smoke.update();
+    this.walls.update(this.net.serverNow());
     if (this.joined && this.alive) this.tryPickup();
     if (this.joined) this.runSpawner(dt);
 
@@ -1597,7 +1909,13 @@ export class Game {
     }
     if (this.claimingPickup) return; // one claim at a time, so two can't race for the last slot
     const touchingType = this.pickups.typeOf(id);
-    if (touchingType && !isPickupGun(touchingType) && !this.inventory.hasRoom) {
+    const kind = touchingType ? kindOf(touchingType) : null;
+    if (kind === 'ammo' && !this.weapon.needsAmmo) {
+      if (this.fullToastFor !== id) this.hud.toast('Ammo full');
+      this.fullToastFor = id;
+      return;
+    }
+    if (kind === 'ability' && !this.inventory.hasRoom) {
       if (this.fullToastFor !== id) this.hud.toast('Slots full — use an ability to make room');
       this.fullToastFor = id;
       return;
@@ -1616,7 +1934,12 @@ export class Game {
     this.net.claimPickup(id)
       .then((pickup) => {
         if (!pickup || !this.alive) return;
-        if (isPickupGun(pickup.type)) {
+        if (pickup.type === 'ammo') {
+          this.weapon.takeAmmo();
+          this.hud.toast('Ammo restocked');
+          this.bumpMyMatch('pickups');
+          sfx.playPickup();
+        } else if (isPickupGun(pickup.type)) {
           this.takeGun(pickup.type, pickup.uses);
         } else if (this.inventory.add(pickup.type, pickup.uses) >= 0) {
           this.hud.toast(`Picked up ${ABILITIES[pickup.type].name}`);
@@ -1633,17 +1956,22 @@ export class Game {
     if (!this.isLeader()) return;
     this.spawnTimer -= dt;
     if (this.spawnTimer > 0) return;
-    const abilities = this.pickups.countOf('ability');
-    const guns = this.pickups.countOf('gun');
+    if (!MODES[this.mode].pickups) return;
+    const stock: { kind: PickupKind; have: number; max: number }[] = [
+      { kind: 'ability', have: this.pickups.countOf('ability'), max: MAX_PICKUPS },
+      { kind: 'gun', have: this.pickups.countOf('gun'), max: MAX_GUN_PICKUPS },
+      { kind: 'ammo', have: this.pickups.countOf('ammo'), max: MAX_AMMO_PICKUPS },
+    ];
     // Fill up quickly when the map is bare, then trickle in.
-    this.spawnTimer = abilities < MAX_PICKUPS / 2 || guns < MAX_GUN_PICKUPS / 2 ? 1.5 : 7;
-    // Top up whichever is shorter of its target (guns and abilities are stocked separately).
-    const needGun = guns < MAX_GUN_PICKUPS && guns / MAX_GUN_PICKUPS <= abilities / MAX_PICKUPS;
-    if (!needGun && abilities >= MAX_PICKUPS) return;
+    this.spawnTimer = stock.some((s) => s.have < s.max / 2) ? 1.5 : 7;
+    // Top up whichever kind is furthest below its target (each is stocked separately).
+    const short = stock.filter((s) => s.have < s.max).sort((a, b) => a.have / a.max - b.have / b.max)[0];
+    if (!short) return;
     const spot = this.pickups.randomSpot();
     if (!spot) return;
     const pick = <T,>(list: T[]) => list[Math.floor(Math.random() * list.length)];
-    const type = needGun ? pick(PICKUP_GUNS) ?? 'shotgun' : pick(ABILITY_TYPES) ?? 'medkit';
+    const type = short.kind === 'gun' ? pick(PICKUP_GUNS) ?? 'shotgun'
+      : short.kind === 'ammo' ? 'ammo' : pick(ABILITY_TYPES) ?? 'medkit';
     const pickup: PickupRecord = { type, ...spot };
     void this.net.spawnPickup(pickup);
   }
@@ -1692,7 +2020,7 @@ export class Game {
   }
 
   private update(dt: number): void {
-    if (!this.alive && this.joined) {
+    if (!this.alive && this.joined && !this.spectating) {
       this.respawnTimer -= dt;
       const respawnIn = Math.max(0, Math.ceil(this.respawnTimer));
       const death = this.hud.get().death;
@@ -1704,6 +2032,9 @@ export class Game {
     this.player.aiming = aiming;
     // Nobody moves between rounds.
     this.player.update(dt, this.alive && !this.roundOver);
+    if (this.spectating && !this.replay) this.updateSpectator(dt);
+    this.applyShake(dt);
+    this.updateHeartbeat(dt);
     const speed = this.player.horizontalSpeed;
     const sprinting = this.player.sprintHeld && speed > 7;
 
@@ -1711,6 +2042,12 @@ export class Game {
     if (this.weapon.specialEmpty) {
       this.weapon.removeSpecial();
       this.hud.toast('Out of ammo — back to the rifle');
+    }
+    if (this.alive && this.weapon.dry && this.triggerHeld && performance.now() - this.dryToastAt > 2500) {
+      this.dryToastAt = performance.now();
+      // Rifle dry but a picked-up gun has rounds: switch to it rather than clicking.
+      if (this.weapon.gun === 'rifle' && this.weapon.special && !this.weapon.specialEmpty) this.switchGun();
+      else this.hud.toast(this.weapon.special ? 'Out of ammo — find an ammo box' : 'Out of ammo — find an ammo box or a gun');
     }
     this.publishGun();
     this.weapon.update(dt, speed, sprinting && !this.triggerHeld && !aiming, aiming);
@@ -1737,6 +2074,10 @@ export class Game {
       r.setAlly(this.isAlly(id));
       r.update(dt);
       this.updateRemoteSteps(id, r, dt);
+      if (r.consumeReloadStart()) {
+        const heard = this.heardFrom(r.position);
+        if (heard) sfx.playReload(heard.volume * 1.5);
+      }
     }
     this.updateAllySight(dt);
     this.effects.update(dt);
@@ -1774,6 +2115,34 @@ export class Game {
       this.scoreTimer = 0;
       this.hud.update({ scoreboard: this.scoreRows() });
     }
+  }
+
+  /** Kick the camera around a little after being hit; dies down over about half a second. */
+  private applyShake(dt: number): void {
+    if (this.shake <= 0.001) {
+      this.shake = 0;
+      return;
+    }
+    this.shake *= Math.exp(-6 * dt);
+    if (!settings.get().screenShake || this.replay) return;
+    const a = this.shake * 0.035;
+    const t = performance.now() / 1000;
+    this.camera.rotation.x += Math.sin(t * 61) * a;
+    this.camera.rotation.z += Math.sin(t * 47 + 1.3) * a * 0.8;
+    this.camera.rotation.y += Math.sin(t * 53 + 2.1) * a * 0.5;
+  }
+
+  /** Below 30 health the heart pounds, faster and louder the closer to death. */
+  private updateHeartbeat(dt: number): void {
+    if (!this.alive || !this.joined || this.hp > LOW_HEALTH) {
+      this.heartbeatTimer = 0;
+      return;
+    }
+    this.heartbeatTimer -= dt;
+    if (this.heartbeatTimer > 0) return;
+    const danger = 1 - Math.max(0, this.hp) / LOW_HEALTH;
+    this.heartbeatTimer = 1.1 - 0.5 * danger;
+    sfx.playHeartbeat(0.45 + 0.55 * danger);
   }
 
   /**
@@ -1842,12 +2211,13 @@ export class Game {
    */
   private updateZoom(): void {
     const aim = this.weapon.aim;
-    const fov = THREE.MathUtils.lerp(HIP_FOV, GUNS[this.weapon.gun].adsFov, aim);
+    const hipFov = settings.get().fov;
+    const fov = THREE.MathUtils.lerp(hipFov, GUNS[this.weapon.gun].adsFov, aim);
     if (Math.abs(this.camera.fov - fov) > 0.01) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
     }
-    const zoom = Math.tan(THREE.MathUtils.degToRad(fov / 2)) / Math.tan(THREE.MathUtils.degToRad(HIP_FOV / 2));
+    const zoom = Math.tan(THREE.MathUtils.degToRad(fov / 2)) / Math.tan(THREE.MathUtils.degToRad(hipFov / 2));
     this.player.lookScale = zoom * THREE.MathUtils.lerp(1, settings.get().aimSensitivity, aim);
     // The sniper's scope takes over the screen once it's up to the eye.
     const scoped = GUNS[this.weapon.gun].scope && aim > 0.85;
@@ -1962,6 +2332,30 @@ export class Game {
     if (this.roundOver && this.net.serverNow() >= this.endedAt + this.intermissionMs()) this.requestNextRound();
     // Keeps the round-over countdown ticking; does nothing when the score hasn't changed.
     this.refreshScore();
+    this.updateRoundBed();
+    this.updatePresence();
+  }
+
+  /** Keep the Discord profile line current (mode, map, score, player count); at most every few seconds. */
+  private updatePresence(): void {
+    if (!IN_DISCORD) return;
+    this.presenceTimer -= 1 / 60;
+    if (this.presenceTimer > 0) return;
+    this.presenceTimer = 5;
+    const map = this.hud.get().map;
+    const g = this.game;
+    const count = Object.values(this.players).filter((p) => !p.spec).length;
+    const details = `${MODES[this.mode].name}${map ? ` on ${map.name}` : ''}`;
+    let state: string;
+    if (this.spectating) state = 'Spectating';
+    else if (this.roundOver) state = 'Round over';
+    else if (this.team) state = `Red ${g.score.red ?? 0} – ${g.score.blue ?? 0} Blue`;
+    else if (this.mode === 'gungame') state = `Level ${Math.min(this.kills + 1, GUN_GAME_LADDER.length)} of ${GUN_GAME_LADDER.length}`;
+    else state = `${this.kills} kill${this.kills === 1 ? '' : 's'}`;
+    const key = `${details}|${state}|${count}`;
+    if (key === this.presenceKey) return;
+    this.presenceKey = key;
+    setDiscordActivity({ details, state, partySize: count, partyMax: 16 });
   }
 
   private scoreRows(): ScoreRow[] {
@@ -1984,9 +2378,11 @@ export class Game {
           captures: s.captures || 0,
           team: (id === this.playerId ? this.team : p.team) ?? null,
           me: id === this.playerId,
+          spectating: id === this.playerId ? this.spectating : !!p.spec,
         };
       })
-      .sort((a, b) => b.captures - a.captures || b.kills - a.kills || b.damage - a.damage || a.deaths - b.deaths);
+      .sort((a, b) => Number(a.spectating) - Number(b.spectating) || b.captures - a.captures || b.kills - a.kills
+        || b.damage - a.damage || a.deaths - b.deaths);
   }
 
   /** Stop the game, free GPU resources and leave the room. Safe to call more than once. */
@@ -1995,6 +2391,7 @@ export class Game {
     this.disposed = true;
     this.renderer.setAnimationLoop(null);
     this.abort.abort();
+    this.stopRoundBed();
     if (document.pointerLockElement) document.exitPointerLock();
     keyboardLock()?.unlock();
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -2002,6 +2399,8 @@ export class Game {
     this.remotes.clear();
     this.pickups.dispose();
     this.grenades.dispose();
+    this.smoke.dispose();
+    this.walls.dispose();
     this.stopReplay();
     this.flagField?.dispose();
     this.world.dispose();

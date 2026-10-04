@@ -8,6 +8,7 @@
  */
 
 import type { BoxSurface, FloorTexture } from './textures';
+import { mirrorRampDir, type RampDir } from './ramps';
 
 export const ARENA_HALF = 40;
 /** Seed of the original hand-made map (also used for rooms made before seeds existed) */
@@ -26,6 +27,8 @@ export interface MapBox {
   color: number;
   /** Texture; picked from the piece type and theme, never from the seed's random numbers */
   surface: BoxSurface;
+  /** A ramp instead of a box: the top slopes from the floor up to `h` at this side */
+  ramp?: RampDir;
 }
 
 export interface MapTheme {
@@ -154,7 +157,9 @@ function mirrored(group: MapBox[]): MapBox[][] {
   const seen = new Set<string>();
   for (const sx of [1, -1]) {
     for (const sz of [1, -1]) {
-      const copy = group.map((b) => ({ ...b, x: round(b.x * sx), z: round(b.z * sz) }));
+      const copy = group.map((b) => ({
+        ...b, x: round(b.x * sx), z: round(b.z * sz), ...(b.ramp ? { ramp: mirrorRampDir(b.ramp, sx, sz) } : {}),
+      }));
       const key = JSON.stringify(copy.map((b) => [b.x, b.z]).sort());
       if (seen.has(key)) continue;
       seen.add(key);
@@ -205,12 +210,12 @@ export function generateMap(rawSeed: string): MapLayout {
     const h = round(range(1, 1.3));
     const c = color();
     const group: MapBox[] = [{ x: 0, z: 0, w: s, h, d: s, y: 0, color: c, surface: 'concrete' }];
-    // A half-height step on each side, and a crate on top to fight over.
-    for (const [sx, sz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-      group.push({
-        x: round(sx * (s / 2 + 0.6)), z: round(sz * (s / 2 + 0.6)), w: sx ? 1.2 : 2, h: round(h / 2), d: sz ? 1.2 : 2, y: 0, color: c,
-        surface: 'concrete',
-      });
+    // Ramps up on two sides, a half-height step on the other two, and a crate on top to fight over.
+    for (const sx of [1, -1] as const) {
+      group.push({ x: round(sx * (s / 2 + 1.5)), z: 0, w: 3, h, d: 2.4, y: 0, color: c, surface: 'concrete', ramp: sx > 0 ? 'x-' : 'x+' });
+    }
+    for (const sz of [1, -1] as const) {
+      group.push({ x: 0, z: round(sz * (s / 2 + 0.6)), w: 2, h: round(h / 2), d: 1.2, y: 0, color: c, surface: 'concrete' });
     }
     placeAsIs(group);
     boxes.push({ x: round(s / 4), z: round(s / 4), w: 1.4, h: 1, d: 1.4, y: h, color: color(), surface: 'crate' });
@@ -267,31 +272,40 @@ function makePiece(
   rand: () => number, range: Range, color: () => number, x: number, z: number, theme: MapTheme,
 ): MapBox[] {
   const kind = rand();
-  const at = (b: Omit<MapBox, 'x' | 'z' | 'surface'> & { dx?: number; dz?: number }, surface: BoxSurface): MapBox => {
+  const at = (
+    b: Omit<MapBox, 'x' | 'z' | 'surface' | 'ramp'> & { dx?: number; dz?: number }, surface: BoxSurface, ramp?: RampDir,
+  ): MapBox => {
     const { dx = 0, dz = 0, ...rest } = b;
     return {
       ...rest, x: round(x + dx), z: round(z + dz), w: round(rest.w), h: round(rest.h), d: round(rest.d), y: round(rest.y), surface,
+      ...(ramp ? { ramp } : {}),
     };
   };
 
-  if (kind < 0.3) {
+  if (kind < 0.22) {
     // Crate
     const s = range(1.2, 2.4);
     return [at({ w: s, h: Math.min(3, s * range(1, 1.5)), d: s, y: 0, color: color() }, 'crate')];
   }
-  if (kind < 0.6) {
-    // Low wall
+  if (kind < 0.42) {
+    // Wall
     const long = range(4, 9);
     const thick = range(0.8, 1);
     const flip = rand() < 0.5;
     return [at({ w: flip ? long : thick, h: range(1.8, 3.2), d: flip ? thick : long, y: 0, color: color() }, theme.wallSurface)];
   }
-  if (kind < 0.75) {
+  if (kind < 0.57) {
+    // Low cover: hides you crouched, shoot over it standing
+    const long = range(2.5, 5);
+    const flip = rand() < 0.5;
+    return [at({ w: flip ? long : 0.7, h: range(1.1, 1.25), d: flip ? 0.7 : long, y: 0, color: color() }, 'concrete')];
+  }
+  if (kind < 0.68) {
     // Pillar
     const s = range(2.4, 3.4);
     return [at({ w: s, h: range(4, 6), d: s, y: 0, color: color() }, theme.pillarSurface)];
   }
-  if (kind < 0.9) {
+  if (kind < 0.8) {
     // Climbable stack: a step up to a tall crate with a small crate on top
     const c = color();
     const dir = rand() < 0.5 ? 1 : -1;
@@ -299,6 +313,20 @@ function makePiece(
       at({ w: 2, h: 2, d: 2, y: 0, color: c }, 'crate'),
       at({ dx: dir * 2.1, w: 2, h: 1, d: 2, y: 0, color: c }, 'crate'),
       at({ w: 1.2, h: 1, d: 1.2, y: 2, color: color() }, 'crate'),
+    ];
+  }
+  if (kind < 0.9) {
+    // Deck: a raised platform with a ramp up one side and a bit of cover on top
+    const c = color();
+    const w = range(4, 6);
+    const d = range(3.5, 5);
+    const h = range(1.3, 1.7);
+    const dir = rand() < 0.5 ? 1 : -1;
+    const rampLen = h * 2.2;
+    return [
+      at({ w, h, d, y: 0, color: c }, 'concrete'),
+      at({ dx: dir * (w / 2 + rampLen / 2), w: rampLen, h, d: Math.min(d, 2.6), y: 0, color: c }, 'concrete', dir > 0 ? 'x-' : 'x+'),
+      at({ dx: -dir * (w / 2 - 0.5), w: 0.7, h: 1.1, d: Math.min(d, 2.4), y: h, color: color() }, 'crate'),
     ];
   }
   // L-shaped corner
