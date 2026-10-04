@@ -4,6 +4,7 @@ import { makeXrayMaterial, makeXrayMeshes } from './xray';
 import { GUNS, REMOTE_GUN_SIZE } from './guns';
 import { wornMetalTexture } from './textures';
 import { reach, setWorldQuaternion } from './ik';
+import { Ragdoll, type RagdollBones } from './ragdoll';
 import { cloneCharacter, GAITS, type CharacterAsset, type Gait } from './character';
 import { TEAMS, TEAM_INFO } from './modes';
 import type { GunKind, PlayerState, Stance, Team } from '../types';
@@ -181,6 +182,13 @@ export class RemotePlayer {
   private shotFlash = false;
   /** We're watching through their eyes: their own body is hidden so it doesn't block the view */
   private firstPerson = false;
+  /** Their body after death; made on the first frame they're dead so it starts from the last pose */
+  private ragdoll: Ragdoll | null = null;
+  private ragdollBones: RagdollBones;
+  /** The killing hit, if it arrives before the body exists */
+  private pendingHit: { dir: THREE.Vector3; strength: number; head: boolean } | null = null;
+  /** Ground velocity, smoothed (m/s), so a body keeps the momentum it died with */
+  private readonly velocity = new THREE.Vector3();
   /** 0..1 blend from the animation's arms to the aim pose, and from the ready pose to the sights */
   private readyAmount = 1;
   private adsAmount = 0;
@@ -257,6 +265,13 @@ export class RemotePlayer {
     this.head = bone(this.model, 'mixamorigHead');
     this.rightArm = [bone(this.model, 'mixamorigRightArm'), bone(this.model, 'mixamorigRightForeArm'), bone(this.model, 'mixamorigRightHand')];
     this.leftArm = [bone(this.model, 'mixamorigLeftArm'), bone(this.model, 'mixamorigLeftForeArm'), bone(this.model, 'mixamorigLeftHand')];
+    this.ragdollBones = {
+      hips: this.hips, chest: this.spine, head: this.head,
+      lArm: this.leftArm[0], lFore: this.leftArm[1], lHand: this.leftArm[2],
+      rArm: this.rightArm[0], rFore: this.rightArm[1], rHand: this.rightArm[2],
+      lUp: this.thighs[0]!, lLeg: this.shins[0]!, lFoot: this.feet[0]!,
+      rUp: this.thighs[1]!, rLeg: this.shins[1]!, rFoot: this.feet[1]!,
+    };
     this.aiming = !!data.aim;
     this.stanceNow = data.stance ?? 'stand';
 
@@ -329,6 +344,10 @@ export class RemotePlayer {
       this.throwsSeen = data.th;
     }
     if (wasAlive && !this.alive) this.fallRoll = (Math.random() - 0.5) * 1.2;
+    if (this.alive) {
+      this.ragdoll = null;
+      this.pendingHit = null;
+    }
     if (data.stance) {
       if (data.stance === 'slide' && this.stanceNow !== 'slide') this.slideStarted = true;
       this.stanceNow = data.stance;
@@ -490,6 +509,20 @@ export class RemotePlayer {
     this.gunMesh.visible = !carrying;
   }
 
+  /**
+   * The hit that killed them: `from` is where it came from. Shoves the body away (headshots snap
+   * the head back); blasts lift the whole body.
+   */
+  knockback(from: THREE.Vector3, strength: number, head: boolean, blast = false): void {
+    const dir = this.group.position.clone().sub(from);
+    if (blast && this.ragdoll) {
+      this.ragdoll.blast(from, strength);
+      return;
+    }
+    if (this.ragdoll) this.ragdoll.impulse(dir, strength, head);
+    else this.pendingHit = { dir, strength: blast ? strength * 0.8 : strength, head };
+  }
+
   /** True once per reload they start (for the sound). */
   consumeReloadStart(): boolean {
     const started = this.reloadStarted;
@@ -520,6 +553,7 @@ export class RemotePlayer {
     // both clips would end up at full weight.
     if (this.alive) this.updateGait(dt);
     else this.lastPos.copy(this.group.position);
+    if (!this.alive) this.velocity.multiplyScalar(this.ragdoll ? 0 : 1);
     // Freeze the pose while falling over, so the body drops stiffly.
     this.mixer.timeScale = this.alive ? 1 : 0;
     this.mixer.update(dt);
@@ -528,6 +562,21 @@ export class RemotePlayer {
     this.applyStance(dt);
     this.applyAim(dt);
 
+    // Died while we were watching: the body goes limp as a ragdoll, starting from this pose.
+    if (!this.alive && !this.ragdoll && this.fall < 1) {
+      this.group.rotation.x = 0;
+      this.group.rotation.z = 0;
+      this.model.position.y = 0;
+      this.group.updateMatrixWorld(true);
+      this.ragdoll = new Ragdoll(this.ragdollBones, this.velocity);
+      if (this.pendingHit) this.ragdoll.impulse(this.pendingHit.dir, this.pendingHit.strength, this.pendingHit.head);
+      this.pendingHit = null;
+    }
+    if (this.ragdoll) {
+      this.fall = 1;
+      this.group.updateMatrixWorld(true);
+      this.ragdoll.update(dt);
+    } else {
     this.fall = THREE.MathUtils.clamp(this.fall + (this.alive ? -dt * 4 : dt * 2.2), 0, 1);
     if (this.fall > 0) {
       // Knees give first, then the body tips over and rolls a little to one side.
@@ -548,6 +597,7 @@ export class RemotePlayer {
       this.group.rotation.x = 0;
       this.group.rotation.z = 0;
       this.model.position.y = 0;
+    }
     }
     this.tag.update(this.alive && !this.occluded && !this.firstPerson);
     if (this.firstPerson) this.shield.visible = false;
@@ -701,6 +751,7 @@ export class RemotePlayer {
     this.lastPos.copy(this.group.position);
     moved.y = 0;
     const instant = dt > 0 ? moved.length() / dt : 0;
+    if (dt > 0) this.velocity.lerp(moved.clone().divideScalar(dt), 1 - Math.exp(-10 * dt));
     this.speed += (instant - this.speed) * (1 - Math.exp(-10 * dt));
 
     const next: Gait = this.speed < WALK_FROM ? 'Idle' : this.speed < RUN_FROM ? 'Walk' : 'Run';

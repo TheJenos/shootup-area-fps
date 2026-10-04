@@ -540,6 +540,14 @@ Other players use it; the gun, hitboxes, aim pose, player-color tint and death f
 normally and raised to the eye while they aim down sights (sent as `aim` with their pose), with the
 upper body and head taking the look pitch. Sprinting, sliding and dying drop the pose back to the
 animation. On top of that, reloading (sent as `rl`) drops the support hand to the magazine and tilts the
-gun, a throw (`th` counts up) swings the free arm over the head, a gun switch dips the gun, and dying buckles
-the knees and slumps the body before it tips over and rolls a little to one side. To swap in another Mixamo-rigged model, keep the clip names and the `mixamorigSpine2` /
+gun, a throw (`th` counts up) swings the free arm over the head, and a gun switch dips the gun.
+
+**Dead bodies are ragdolls** (`src/game/ragdoll.ts`, no physics engine). At the moment of death the main
+joints (hips, chest, head, shoulders, elbows, hands, hips, knees, feet) become Verlet particles that keep the
+body's momentum. Distance constraints hold the bones at their length and the torso rigid (with minimums so knees
+and elbows can't fold flat); joints collide with the floor, cover and ramps, with friction so bodies don't
+skate; each bone of the skinned model is then turned to follow its joints. The killing hit shoves the body away
+from the killer (harder for the shotgun, sniper and grenades; headshots snap the head back), grenades throw
+bodies lying nearby, and MVP replays ragdoll their victims too. A body settles within a couple of seconds and
+stops simulating. To swap in another Mixamo-rigged model, keep the clip names and the `mixamorigSpine2` /
 `mixamorigHead` / arm (`…Arm`, `…ForeArm`, `…Hand`, both sides) bones.

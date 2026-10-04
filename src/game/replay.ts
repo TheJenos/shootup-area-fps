@@ -241,6 +241,9 @@ export class ReplayDirector {
         sfx.playShot(0.6 / (1 + o.distanceTo(camera.position) / 10), e.w ?? 'rifle');
       } else if (e.kind === 'kill') {
         onKill(e.killer, e.victim, e.head);
+        // The victim's stand-in goes down as a ragdoll, shoved away from the killer.
+        const killer = this.ghosts.get(e.killer);
+        if (killer && e.killer !== e.victim) this.ghosts.get(e.victim)?.knockback(killer.position, 4, e.head);
       } else if (e.kind === 'grenade') {
         grenades.launch(`replay:${e.id}`, simulateGrenade(fromArr(e.o), fromArr(e.v), colliders));
       } else if (e.kind === 'blast') {

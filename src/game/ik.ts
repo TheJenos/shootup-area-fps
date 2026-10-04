@@ -18,7 +18,7 @@ const _wq = new THREE.Quaternion();
 const _pq = new THREE.Quaternion();
 
 /** Turn `bone` (in world space) so that direction `from` becomes `to`, then refresh its children. */
-function swing(bone: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3): void {
+export function swing(bone: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3): void {
   if (from.lengthSq() < 1e-10 || to.lengthSq() < 1e-10) return;
   _q.setFromUnitVectors(from.normalize(), to.normalize());
   bone.getWorldQuaternion(_wq).premultiply(_q);

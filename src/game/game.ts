@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ARENA_HALF, buildWorld, type World } from './world';
 import { overRamp, rampHeightAt, type Ramp } from './ramps';
+import { setRagdollWorld } from './ragdoll';
 import { generateMap, normalizeSeed, randomSeed, CLASSIC_SEED } from './mapgen';
 import { LocalPlayer } from './player';
 import { RemotePlayer, type HitboxData } from './remotePlayer';
@@ -60,6 +61,9 @@ const INDICATOR_HOLD = 0.6;
 const INDICATOR_FADE = 1;
 /** How often we record our own pose for the MVP replay (s) */
 const RECORD_INTERVAL = 0.1;
+/** How hard a killing hit shoves the body, per weapon (m/s at the chest) */
+const KNOCKBACK: Partial<Record<WeaponKind, number>> = { rifle: 3, deagle: 4, shotgun: 6, sniper: 6, grenade: 7, flag: 4.5 };
+
 /** Health at or below which the screen darkens at the edges and the heart pounds */
 export const LOW_HEALTH = 30;
 /** Resolution cap per graphics quality setting (device pixel ratio) */
@@ -292,6 +296,8 @@ export class Game {
     this.povWeapon = new Weapon(aspect);
     this.effects = new Effects(this.scene);
     this.pickups = new PickupField(this.scene, this.obstacles);
+    // Dead bodies land on the current map (these arrays are refilled in place for each new map).
+    setRagdollWorld(this.colliders, this.ramps);
     this.grenades = new GrenadeFx(this.scene);
     this.smoke = new SmokeField(this.scene);
     this.walls = new WallField(this.scene, this.colliders, this.solids);
@@ -873,10 +879,12 @@ export class Game {
       if (evt.from === this.playerId) return;
       const at = fromArr(evt.p);
       this.grenades.explode(evt.id, at, GRENADE_RADIUS);
+      this.liftBodies(at);
       sfx.playExplosion(1 / (1 + at.distanceTo(this.camera.position) / 12));
       const dmg = evt.hits?.[this.playerId];
       if (dmg) this.takeDamage(dmg, evt.from, false, 'grenade', at);
     } else if (evt.type === 'kill') {
+      this.shoveBody(evt.victim, evt.killer, evt.head, evt.weapon ?? 'rifle');
       const victim = this.players[evt.victim] ?? UNKNOWN_PLAYER;
       // No killer means they took themselves out (their own grenade): name them on both sides.
       const killer = evt.killer ? this.players[evt.killer] ?? UNKNOWN_PLAYER : victim;
@@ -910,6 +918,22 @@ export class Game {
     const left = GUN_GAME_LADDER.length - kills;
     this.hud.toast(`Level ${kills + 1}: ${GUNS[gun].name} · ${left} to go`);
     sfx.playSwitch();
+  }
+
+  /** A grenade went off: bodies lying close by get thrown (the living ones are handled by damage). */
+  private liftBodies(at: THREE.Vector3): void {
+    for (const r of this.remotes.values()) {
+      if (!r.alive && r.position.distanceTo(at) < GRENADE_RADIUS * 1.2) r.knockback(at, 9, false, true);
+    }
+  }
+
+  /** A kill: push the victim's body away from the killer, harder for heavy guns (ragdoll). */
+  private shoveBody(victimId: string, killerId: string, head: boolean, weapon: WeaponKind): void {
+    const body = this.remotes.get(victimId);
+    if (!body) return;
+    const from = killerId === this.playerId ? this.player.position : this.remotes.get(killerId)?.position;
+    if (!from || killerId === victimId) return;
+    body.knockback(from, KNOCKBACK[weapon] ?? 3, head, weapon === 'grenade');
   }
 
   /** Connection dropped or came back: tell the player, and hold pose updates while offline. */
@@ -1990,6 +2014,7 @@ export class Game {
     }
 
     this.grenades.explode(blast.id, blast.p, GRENADE_RADIUS);
+    this.liftBodies(blast.p);
     sfx.playExplosion(1 / (1 + blast.p.distanceTo(this.camera.position) / 12));
     const hitAnyone = Object.keys(hits).length > 0;
     if (hitAnyone) {
