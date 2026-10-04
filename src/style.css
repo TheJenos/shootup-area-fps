@@ -573,12 +573,15 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 .pause-card .map .map-preview { width: 112px !important; height: 112px !important; border-radius: 8px; }
 .pause-card .room { margin: 0; display: flex; align-items: center; gap: 10px; font-size: 14px; }
 .pause-card .room button { padding: 5px 10px; font-size: 13px; }
-.pause-card .actions { display: flex; flex-direction: column; gap: 8px; }
-.pause-card .actions button { width: 100%; margin: 0; }
+.pause-card .help { min-width: 0; }
+/* The buttons: one row across the bottom of the card */
+.pause-card .actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+.pause-card .actions button { margin: 0; padding: 10px 14px; white-space: nowrap; }
+.pause-card .actions .primary { min-width: 120px; }
+.pause-card .actions .spacer { flex: 1; }
 .pause-card .confirm { display: flex; gap: 6px; align-items: center; font-size: 13px; }
-.pause-card .confirm span { flex: 1; }
-.pause-card .confirm button { width: auto; padding: 6px 10px; font-size: 13px; }
-.pause-card .keys { list-style: none; margin: 8px 0 0; padding: 10px 0 0; border-top: 1px solid var(--line); display: grid; gap: 5px; font-size: 12px; color: var(--muted); }
+.pause-card .confirm button { padding: 8px 12px; font-size: 13px; }
+.pause-card .keys { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; font-size: 12px; color: var(--muted); }
 .pause-card .keys li { display: flex; gap: 8px; align-items: baseline; }
 .pause-card .keys kbd { min-width: 54px; text-align: center; white-space: nowrap; }
 .pause-card .touch-help { margin: 8px 0 0; font-size: 13px; line-height: 1.5; }
@@ -1048,6 +1051,7 @@ kbd {
 #match-summary .close { margin-left: auto; align-self: flex-start; }
 #hud.touch .pause-card { grid-template-columns: 1fr; }
 #hud.touch .pause-card .actions button { min-height: 44px; font-size: 15px; }
+#hud.touch .pause-card .help button { margin-top: 8px; }
 #hud.intro #touch-controls, #hud.intro #touch-controls * { pointer-events: none; }
 #hud.touch #toasts { bottom: 140px; max-width: 240px; font-size: 13px; text-align: center; }
 /* Phones: the room code lives in the menu (the top buttons sit where the tag was), and banners shrink to fit */

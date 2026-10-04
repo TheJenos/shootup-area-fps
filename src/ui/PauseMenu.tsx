@@ -125,33 +125,15 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onIntro }:
           </p>
         </section>
 
-        <section className="actions">
-          <button type="button" className="primary" onClick={() => game.requestPointerLock()} autoFocus>
-            {game.touch ? 'Tap to play' : 'Resume'}
-          </button>
-          <button type="button" onClick={() => (game.isSpectating ? game.stopSpectating() : game.startSpectating())}>
-            {game.isSpectating ? 'Back to the fight' : 'Spectate'}
-          </button>
-          {team && (
-            <button type="button" onClick={() => game.switchTeam()}>Switch to {TEAM_INFO[otherTeam(team)].name}</button>
-          )}
-          <button type="button" onClick={onSettings}>{game.touch ? 'Settings' : 'Settings (sensitivity, keys)'}</button>
-          {game.touch && onIntro && <button type="button" onClick={onIntro}>Controls guide</button>}
-          {confirmLeave ? (
-            <div className="confirm">
-              <span>Leave the match?</span>
-              <button type="button" className="danger" onClick={onLeave}>Leave</button>
-              <button type="button" onClick={() => setConfirmLeave(false)}>Stay</button>
-            </div>
-          ) : (
-            <button type="button" className="danger" onClick={() => setConfirmLeave(true)}>Leave room</button>
-          )}
-
+        <section className="help">
           {game.touch ? (
-            <p className="muted touch-help">
-              Left thumb moves (push fully to sprint), right side looks. ● fire · ◎ aim · ⤒ jump · ⤓ crouch, or slide
-              while sprinting · tap an ability to use it.
-            </p>
+            <>
+              <p className="muted touch-help">
+                Left thumb moves (push fully to sprint), right side looks. ● fire · ◎ aim · ⤒ jump · ⤓ crouch, or slide
+                while sprinting · tap an ability to use it.
+              </p>
+              {onIntro && <button type="button" onClick={onIntro}>Controls guide</button>}
+            </>
           ) : (
             <ul className="keys">
               {controls(bindings).map(([key, action]) => (
@@ -160,6 +142,30 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onIntro }:
             </ul>
           )}
         </section>
+
+        {/* One row along the bottom: leaving on the left, everything else, then Resume on the right. */}
+        <footer className="actions">
+          {confirmLeave ? (
+            <div className="confirm">
+              <span>Leave?</span>
+              <button type="button" className="danger" onClick={onLeave}>Leave</button>
+              <button type="button" onClick={() => setConfirmLeave(false)}>Stay</button>
+            </div>
+          ) : (
+            <button type="button" className="danger" onClick={() => setConfirmLeave(true)}>Leave room</button>
+          )}
+          <span className="spacer" />
+          <button type="button" onClick={onSettings}>Settings</button>
+          <button type="button" onClick={() => (game.isSpectating ? game.stopSpectating() : game.startSpectating())}>
+            {game.isSpectating ? 'Back to the fight' : 'Spectate'}
+          </button>
+          {team && (
+            <button type="button" onClick={() => game.switchTeam()}>Switch to {TEAM_INFO[otherTeam(team)].name}</button>
+          )}
+          <button type="button" className="primary" onClick={() => game.requestPointerLock()} autoFocus>
+            {game.touch ? 'Tap to play' : 'Resume'}
+          </button>
+        </footer>
       </div>
     </div>
   );
