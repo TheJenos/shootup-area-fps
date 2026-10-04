@@ -52,12 +52,31 @@ export interface DamageIndicator {
   strength: number;
 }
 
-export interface MatchEnd {
+export interface MvpView {
+  name: string;
+  color: string;
   title: string;
-  /** true/false when we're on the winning/losing side */
+  kills: number;
+  deaths: number;
+  captures: number;
+  damage: number;
+  me: boolean;
+}
+
+/** The round is over: first the results, then (if anyone stood out) the MVP replay. */
+export interface MatchEnd {
+  phase: 'results' | 'mvp';
+  title: string;
+  /** We're on the winning side */
   won: boolean;
-  /** Seconds until the next round */
+  draw: boolean;
+  reason: 'time' | 'score';
+  /** Best three players of the round */
+  top: { name: string; color: string; score: string }[];
+  mvp: MvpView | null;
+  /** Seconds until the next phase (the MVP replay, or the next map) */
   nextIn: number;
+  nextMap: { name: string; seed: string } | null;
 }
 
 export interface MatchInfo {
@@ -107,6 +126,8 @@ export interface HudState {
   score: ScoreView;
   /** CTF only */
   flags: Record<Team, FlagStatus> | null;
+  /** Seconds left in the round; null before the round clock is known */
+  clock: { left: number; urgent: boolean } | null;
   /** Set while the round-over screen is up */
   matchEnd: MatchEnd | null;
 }
@@ -136,6 +157,7 @@ const initialState: HudState = {
   team: null,
   score: { red: 0, blue: 0, mine: 0, leader: null },
   flags: null,
+  clock: null,
   matchEnd: null,
 };
 

@@ -30,11 +30,11 @@ To play with friends on your LAN while developing, run `npm run dev -- --host`.
 
 The room's creator picks the mode; the lobby shows it next to each room.
 
-| Mode | Goal | Round ends at |
-| --- | --- | --- |
-| **FFA** — Free-for-all | Most kills | 25 kills by one player |
-| **TDM** — Team Deathmatch | Red vs Blue; every kill scores for the killer's team | 50 team kills |
-| **CTF** — Capture the Flag | Grab the enemy flag and bring it to your own base | 3 captures |
+| Mode | Goal | Time limit | Or ends early at |
+| --- | --- | --- | --- |
+| **FFA** — Free-for-all | Most kills | 8 min | 25 kills by one player |
+| **TDM** — Team Deathmatch | Red vs Blue; every kill scores for the killer's team | 10 min | 50 team kills |
+| **CTF** — Capture the Flag | Grab the enemy flag and bring it to your own base | 12 min | 3 captures |
 
 - **Teams:** you join the smaller team. Teammates show up in the team color with their name always visible,
   bullets and grenades pass through them, and you spawn on your own half (red owns +z, blue −z).
@@ -43,8 +43,38 @@ The room's creator picks the mode; the lobby shows it next to each room.
   Walk over the enemy flag to take it, then walk onto your own base to score — only while your own flag is home.
   A carrier who dies (or switches team, or leaves) drops the flag where they stood. Touch your own dropped flag
   to send it home; otherwise it returns by itself after 20 s. The score bar shows where both flags are.
-- **Rounds:** when someone reaches the limit, a "round over" screen shows the winner for 8 s, then a new round
-  starts: everyone's score resets, flags go home and everyone respawns.
+- **Rounds:** the score bar shows the round clock, which turns red in the last 30 s. When the time runs out,
+  the best score wins; a tie is a draw. A score limit ends the round early. Then:
+  1. **Results** (6 s): the winner, why the round ended, and the top three.
+  2. **MVP** (10 s): a replay of the MVP's highlight, seen from behind them, with their card and the next
+     map. It's skipped when nobody got a kill or a capture.
+  3. **Next map:** a new round starts on a new map with a fresh seed. Scores reset, flags go home, pickups
+     are cleared and everyone respawns. The lobby list shows the map currently being played.
+
+### MVP
+
+Each player tracks their own best highlight of the round and publishes it with their stats:
+
+| Highlight | Score |
+| --- | --- |
+| Multi-kill: each kill within 4 s of the last (Double / Triple / Quad Kill / Rampage) | 10 × kills² |
+| Flag capture (CTF), plus 25 for each kill made while carrying | 60 + 25 per kill |
+| Killing the enemy flag carrier | 35 |
+| Streak of 5+ kills without dying | 8 per kill |
+| Any kill (headshot) | 5 (15) |
+
+The MVP has the best highlight score plus 0.3 × (kills × 4 + captures × 25 + damage ÷ 40). The client that
+ends the round picks the MVP and the next map, and stores them in the round record, so everyone shows the
+same ones.
+
+The replay works because every client records the round as it plays: everyone's positions about 10 times a
+second, plus shots, kills, grenades and flag moves. When the MVP screen starts, it replays the highlight from
+1.5 s before to 1.5 s after with stand-in avatars, tracers, grenades and carried flags, under a chase camera.
+A player who joined after the highlight sees a slow fly-around of the map instead. Highlights longer than
+9 s play faster to fit.
+
+Round times use the Firebase server clock (`.info/serverTimeOffset`), so every client moves through the
+screens together.
 
 Limits and team colors are in `src/game/modes.ts`.
 
@@ -163,7 +193,7 @@ lobby/{code}               room name, mode, map seed, host, members (presence)
 rooms/{code}/players/{id}  position, yaw/pitch, hp, alive, kills, deaths, team
 rooms/{code}/events/{id}   'shot', 'kill', 'grenade', 'blast' events, auto-deleted after 3 s
 rooms/{code}/pickups/{id}  abilities lying on the map
-rooms/{code}/game          round number, winner, team scores, flag positions
+rooms/{code}/game          round number, map seed, start time, winner + MVP + next seed, scores, flags
 ```
 
 - Each client sends its own position ~15×/s (only when it changes) and interpolates everyone else.
@@ -211,7 +241,9 @@ src/
     player.ts        first-person controller + collisions
     remotePlayer.ts  other players' avatars + interpolation
     nameTag.ts       name + health tag revealed to the shooter
-    modes.ts         game modes, score limits, teams, flag bases
+    modes.ts         game modes, score + time limits, teams, flag bases
+    moments.ts       tracks our highlights (multi-kills, flag runs, ...) for MVP
+    replay.ts        records the round and replays the MVP's highlight
     flags.ts         CTF bases and flags (waving, carried, dropped)
     settings.ts      mouse sensitivity + key bindings (saved in localStorage)
     abilities.ts     ability definitions, tuning numbers, 3-slot inventory

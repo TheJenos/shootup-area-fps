@@ -602,3 +602,75 @@ kbd {
 #match-summary td.ping.bad { color: var(--danger); }
 #match-summary tr.me td.ping.good { color: var(--good); }
 #match-summary tr.me td.ping.bad { color: var(--danger); }
+
+/* ---------- Round clock, results, MVP ---------- */
+
+#scorebar .clock { font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--text); }
+#scorebar .clock.urgent { color: var(--danger); animation: pulse 0.6s ease-in-out infinite alternate; }
+
+#round-over.draw h2 { color: var(--muted); }
+#round-over .podium { list-style: none; margin: 10px 0 6px; padding: 0; display: grid; gap: 6px; min-width: min(360px, 100%); }
+#round-over .podium li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.45);
+  text-align: left;
+}
+#round-over .podium .place { width: 22px; font-weight: 800; color: var(--accent); }
+#round-over .podium strong { flex: 1; }
+#round-over .podium li:first-child { border: 1px solid var(--accent); }
+
+#hud.cinematic #crosshair,
+#hud.cinematic .panel,
+#hud.cinematic #abilities,
+#hud.cinematic #scorebar-wrap,
+#hud.cinematic #scorebar,
+#hud.cinematic #room-tag,
+#hud.cinematic #damage-directions { display: none; }
+
+#mvp { position: absolute; inset: 0; }
+#mvp .bar { position: absolute; left: 0; right: 0; height: 9vh; background: #000; animation: letterbox 0.5s ease-out; }
+#mvp .bar.top { top: 0; }
+#mvp .bar.bottom { bottom: 0; }
+@keyframes letterbox { from { height: 0; } }
+#mvp .card {
+  position: absolute;
+  left: 32px;
+  bottom: calc(9vh + 24px);
+  max-width: min(460px, calc(100% - 64px));
+  padding: 16px 20px 14px;
+  border-radius: 12px;
+  background: rgba(8, 10, 14, 0.72);
+  border-left: 4px solid var(--accent);
+  animation: mvp-in 0.6s ease-out;
+}
+@keyframes mvp-in { from { opacity: 0; transform: translateX(-24px); } }
+#mvp .label { font-size: 12px; font-weight: 900; letter-spacing: 3px; color: var(--accent); }
+#mvp h2 { margin: 2px 0 0; font-size: 34px; text-transform: none; letter-spacing: 0; }
+#mvp .title { margin: 2px 0 10px; font-size: 18px; font-weight: 700; }
+#mvp .chips { display: flex; flex-wrap: wrap; gap: 6px; font-size: 13px; color: var(--muted); }
+#mvp .chips span { background: rgba(255, 255, 255, 0.06); padding: 3px 8px; border-radius: 6px; }
+#mvp .chips strong { color: var(--text); }
+#mvp .progress { margin-top: 12px; height: 3px; background: rgba(255, 255, 255, 0.12); border-radius: 2px; overflow: hidden; }
+#mvp .progress i { display: block; height: 100%; background: var(--accent); animation: mvp-progress linear forwards; }
+@keyframes mvp-progress { from { width: 0; } to { width: 100%; } }
+#mvp .next-map {
+  position: absolute;
+  right: 32px;
+  bottom: calc(9vh + 24px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: 13px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(8, 10, 14, 0.6);
+}
+#mvp .next-map strong { font-size: 18px; }
+@media (max-width: 640px) {
+  #mvp .card { left: 16px; max-width: calc(100% - 32px); }
+  #mvp .next-map { right: 16px; top: calc(9vh + 16px); bottom: auto; }
+}

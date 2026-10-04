@@ -18,17 +18,28 @@ export interface World {
   spawnPoints: THREE.Vector3[];
   /** Keep this centered on the camera so the horizon never gets closer */
   sky: THREE.Object3D;
+  /** Everything the map added to the scene */
+  root: THREE.Group;
+  /** Remove the map from the scene and free its geometry and materials (textures are shared) */
+  dispose(): void;
 }
 
 /**
  * Builds the arena from a generated layout (see mapgen.ts). Every client generates
  * the same layout from the room's seed, so they all see the same map.
- * Returns colliders (Box3) for movement and solids (meshes) for bullet raycasts.
+ *
+ * Fills `colliders` (Box3, for movement) and `solids` (meshes, for bullet raycasts) in place,
+ * so code holding on to those arrays sees the new map when it's rebuilt for the next round.
  */
-export function buildWorld(scene: THREE.Scene, layout: MapLayout): World {
-  const colliders: THREE.Box3[] = [];
-  const solids: THREE.Mesh[] = [];
+export function buildWorld(
+  scene: THREE.Scene, layout: MapLayout, colliders: THREE.Box3[], solids: THREE.Mesh[],
+): World {
+  colliders.length = 0;
+  solids.length = 0;
   const { theme } = layout;
+  const root = new THREE.Group();
+  root.name = `map:${layout.seed}`;
+  scene.add(root);
 
   // Flat color behind the sky dome, in case anything peeks past it.
   scene.background = new THREE.Color(theme.sky);
@@ -37,17 +48,17 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout): World {
     new THREE.MeshBasicMaterial({ map: skyTexture(theme), side: THREE.BackSide, fog: false, depthWrite: false }),
   );
   sky.renderOrder = -1;
-  scene.add(sky);
+  root.add(sky);
   scene.fog = new THREE.Fog(theme.sky, 45, 130);
 
-  scene.add(new THREE.HemisphereLight(theme.hemiSky, theme.hemiGround, 1.1));
+  root.add(new THREE.HemisphereLight(theme.hemiSky, theme.hemiGround, 1.1));
   const sun = new THREE.DirectionalLight(theme.sun, 2.2);
   sun.position.set(30, 60, 20);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   Object.assign(sun.shadow.camera, { left: -50, right: 50, top: 50, bottom: -50, near: 1, far: 150 });
   sun.shadow.bias = -0.0005;
-  scene.add(sun);
+  root.add(sun);
 
   // The texture is shared between games, so tile through the UVs rather than its repeat setting.
   const floorGeo = new THREE.PlaneGeometry(ARENA_HALF * 2, ARENA_HALF * 2);
@@ -62,7 +73,7 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout): World {
   );
   floor.rotation.x = -Math.PI / 2;
   floor.receiveShadow = true;
-  scene.add(floor);
+  root.add(floor);
   solids.push(floor);
 
   const materials = new Map<string, THREE.MeshStandardMaterial>();
@@ -91,7 +102,7 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout): World {
     const mesh = new THREE.Mesh(geo, material(surface, color));
     mesh.position.set(x, y + h / 2, z);
     mesh.castShadow = mesh.receiveShadow = true;
-    scene.add(mesh);
+    root.add(mesh);
     mesh.updateMatrixWorld();
     colliders.push(new THREE.Box3().setFromObject(mesh));
     solids.push(mesh);
@@ -126,8 +137,22 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout): World {
     // The arrow points along the texture's top, which is -z before rotating; face the center.
     marker.rotation.y = Math.atan2(p.x, p.z);
     marker.receiveShadow = true;
-    scene.add(marker);
+    root.add(marker);
   }
 
-  return { colliders, solids, spawnPoints, sky };
+  const dispose = () => {
+    scene.remove(root);
+    const geometries = new Set<THREE.BufferGeometry>();
+    const mats = new Set<THREE.Material>();
+    root.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      geometries.add(o.geometry);
+      for (const m of [o.material].flat()) mats.add(m as THREE.Material);
+    });
+    geometries.forEach((g) => g.dispose());
+    mats.forEach((m) => m.dispose());
+    sun.shadow.map?.dispose();
+  };
+
+  return { colliders, solids, spawnPoints, sky, root, dispose };
 }

@@ -26,6 +26,45 @@ export interface PlayerState {
   captures?: number;
   /** Round trip to the Firebase server in ms, measured by this player */
   ping?: number;
+  /** This player's best highlight of the round, used to pick the MVP; null clears it */
+  moment?: Moment | null;
+}
+
+/** A highlight, e.g. a triple kill. Times are server ms. */
+export interface Moment {
+  score: number;
+  title: string;
+  start: number;
+  end: number;
+}
+
+/** The round's MVP, decided by whoever ended the round so everyone shows the same one. */
+export interface MvpInfo {
+  id: string;
+  name: string;
+  color: string;
+  team?: Team;
+  title: string;
+  /** The highlight to replay (server ms); 0 when there's nothing to replay */
+  start: number;
+  end: number;
+  kills: number;
+  deaths: number;
+  captures: number;
+  damage: number;
+}
+
+export interface RoundEnd {
+  /** A player id (FFA), a team, or 'draw' */
+  winner: string;
+  name: string;
+  /** Missing on rounds ended before time limits existed */
+  reason?: 'time' | 'score';
+  /** When the round ended (server ms) */
+  at?: number;
+  /** The map for the next round */
+  nextSeed?: string;
+  mvp?: MvpInfo;
 }
 
 export type PlayerStats = Required<Pick<PlayerState, 'damage' | 'shots' | 'hits' | 'headshots' | 'streak' | 'best' | 'captures'>>;
@@ -118,8 +157,12 @@ export interface FlagRecord {
 export interface GameRecord {
   /** Increments every time a new round starts */
   round: number;
-  /** Set once someone reaches the score limit; the next round starts a few seconds later */
-  ended?: { winner: string; name: string };
+  /** This round's map; changes every round */
+  seed?: string;
+  /** When this round started (server ms), for the time limit */
+  startedAt?: number;
+  /** Set at the time or score limit; results, the MVP replay, then the next round follow */
+  ended?: RoundEnd;
   /** Team modes: kills (TDM) or captures (CTF) */
   score?: Partial<Record<Team, number>>;
   flags?: Partial<Record<Team, FlagRecord>>;

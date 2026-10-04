@@ -1,8 +1,8 @@
 import { useState, useSyncExternalStore, type MouseEvent } from 'react';
 import type { Game } from '../game/game';
-import type { FeedEntry, FlagStatus, HudState } from '../game/hudStore';
+import type { FeedEntry, FlagStatus, HudState, MatchEnd } from '../game/hudStore';
 import { ABILITIES, type SlotView } from '../game/abilities';
-import { MODES, TEAM_INFO, otherTeam } from '../game/modes';
+import { MODES, MVP_TIME, TEAM_INFO, otherTeam } from '../game/modes';
 import type { Team } from '../types';
 import { MatchSummary } from './MatchSummary';
 import { SettingsPanel, useSettings } from './SettingsPanel';
@@ -34,7 +34,8 @@ export function Hud({ game, roomCode, onLeave }: Props) {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   return (
-    <div id="hud">
+    // The MVP replay is a cinematic: hide the crosshair, health, ammo and abilities.
+    <div id="hud" className={hud.matchEnd?.phase === 'mvp' ? 'cinematic' : undefined}>
       {!hud.death && <div id="crosshair" />}
       {hud.hitmarker.n > 0 && (
         // A new key remounts the element, which restarts the CSS animation.
@@ -59,18 +60,14 @@ export function Hud({ game, roomCode, onLeave }: Props) {
           rows={hud.scoreboard}
           myMatch={hud.myMatch}
           map={hud.map}
+          clockLeft={hud.clock?.left ?? null}
           mode={hud.mode}
           score={hud.score}
         />
       )}
 
-      {hud.matchEnd && !hud.paused && !hud.scoreboardOpen && (
-        <div id="round-over" className={`overlay ${hud.matchEnd.won ? 'won' : 'lost'}`}>
-          <p className="muted">Round over</p>
-          <h2>{hud.matchEnd.title}</h2>
-          <p className="muted">Next round in {hud.matchEnd.nextIn}… · hold <kbd>Tab</kbd> for the scoreboard</p>
-        </div>
-      )}
+      {hud.matchEnd?.phase === 'results' && !hud.paused && !hud.scoreboardOpen && <RoundResults end={hud.matchEnd} />}
+      {hud.matchEnd?.phase === 'mvp' && !hud.paused && <MvpShowcase end={hud.matchEnd} />}
 
       {hud.death && !hud.paused && !hud.matchEnd && (
         <div id="death-overlay" className="overlay">
@@ -109,6 +106,7 @@ function ScoreBar({ hud }: { hud: HudState }) {
     return (
       <div id="scorebar" className="ffa">
         <span className="mode">{MODES[mode].short}</span>
+        <RoundClock clock={hud.clock} />
         <span>You <strong>{score.mine}</strong></span>
         {score.leader && (
           <span className="muted">Best other: {score.leader.name} <strong>{score.leader.kills}</strong></span>
@@ -131,6 +129,7 @@ function ScoreBar({ hud }: { hud: HudState }) {
         {teamBox('red')}
         <div className="center">
           <span className="mode">{MODES[mode].short}</span>
+          <RoundClock clock={hud.clock} />
           <span className="muted">to {limit}</span>
         </div>
         {teamBox('blue')}
@@ -140,6 +139,73 @@ function ScoreBar({ hud }: { hud: HudState }) {
       )}
       {flags?.[team].state === 'carried' && (
         <div className="flag-banner alert">Your flag was taken — get it back!</div>
+      )}
+    </div>
+  );
+}
+
+function formatClock(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+function RoundClock({ clock }: { clock: HudState['clock'] }) {
+  if (!clock) return null;
+  return <span className={clock.urgent ? 'clock urgent' : 'clock'}>{formatClock(clock.left)}</span>;
+}
+
+/** First screen after a round: who won, why, and the top three. */
+function RoundResults({ end }: { end: MatchEnd }) {
+  const outcome = end.draw ? 'draw' : end.won ? 'won' : 'lost';
+  return (
+    <div id="round-over" className={`overlay ${outcome}`}>
+      <p className="muted">{end.reason === 'time' ? "Time's up" : 'Score limit reached'}</p>
+      <h2>{end.title}</h2>
+      {end.top.length > 0 && (
+        <ol className="podium">
+          {end.top.map((p, i) => (
+            <li key={`${p.name}-${i}`}>
+              <span className="place">{i + 1}</span>
+              <span className="dot" style={{ background: safeColor(p.color) }} />
+              <strong>{p.name}</strong>
+              <span className="muted">{p.score}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+      <p className="muted">
+        {end.mvp ? `MVP in ${end.nextIn}…` : `Next map in ${end.nextIn}…`} · hold <kbd>Tab</kbd> for the scoreboard
+      </p>
+    </div>
+  );
+}
+
+/** Second screen: letterboxed replay of the MVP's highlight, with their card. */
+function MvpShowcase({ end }: { end: MatchEnd }) {
+  const mvp = end.mvp;
+  if (!mvp) return null;
+  return (
+    <div id="mvp">
+      <div className="bar top" />
+      <div className="bar bottom" />
+      <div className="card">
+        <span className="label">MVP</span>
+        <h2 style={{ color: safeColor(mvp.color) }}>{mvp.me ? `${mvp.name} (you)` : mvp.name}</h2>
+        <p className="title">{mvp.title}</p>
+        <div className="chips">
+          <span><strong>{mvp.kills}</strong> kills</span>
+          <span><strong>{mvp.deaths}</strong> deaths</span>
+          {mvp.captures > 0 && <span><strong>{mvp.captures}</strong> captures</span>}
+          <span><strong>{mvp.damage}</strong> damage</span>
+        </div>
+        {/* Restarts per round; runs for the length of the MVP screen. */}
+        <div className="progress"><i style={{ animationDuration: `${MVP_TIME}s` }} /></div>
+      </div>
+      {end.nextMap && (
+        <div className="next-map">
+          <span className="muted">Next map in {end.nextIn}</span>
+          <strong>{end.nextMap.name}</strong>
+          <span className="muted">seed {end.nextMap.seed}</span>
+        </div>
       )}
     </div>
   );

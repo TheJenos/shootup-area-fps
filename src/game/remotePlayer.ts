@@ -214,6 +214,11 @@ export class RemotePlayer {
     return this.group.rotation.y;
   }
 
+  /** Hide the avatar (e.g. while the MVP replay is on). */
+  setVisible(visible: boolean): void {
+    this.group.visible = visible;
+  }
+
   /** Teammates always show their name and health. */
   setAlly(ally: boolean): void {
     this.tag.setPinned(ally);

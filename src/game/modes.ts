@@ -8,12 +8,20 @@ export interface ModeDef {
   teams: boolean;
   /** Kills (FFA: one player's, TDM: a team's) or flag captures (CTF) needed to win the round */
   limit: number;
+  /** Round length in seconds; the best score when it runs out wins */
+  timeLimit: number;
 }
 
 export const MODES: Record<GameMode, ModeDef> = {
-  ffa: { name: 'Free-for-all', short: 'FFA', description: 'Everyone for themselves', teams: false, limit: 25 },
-  tdm: { name: 'Team Deathmatch', short: 'TDM', description: 'Red vs Blue, team kills count', teams: true, limit: 50 },
-  ctf: { name: 'Capture the Flag', short: 'CTF', description: "Bring the enemy flag to yours", teams: true, limit: 3 },
+  ffa: {
+    name: 'Free-for-all', short: 'FFA', description: 'Everyone for themselves', teams: false, limit: 25, timeLimit: 8 * 60,
+  },
+  tdm: {
+    name: 'Team Deathmatch', short: 'TDM', description: 'Red vs Blue, team kills count', teams: true, limit: 50, timeLimit: 10 * 60,
+  },
+  ctf: {
+    name: 'Capture the Flag', short: 'CTF', description: 'Bring the enemy flag to yours', teams: true, limit: 3, timeLimit: 12 * 60,
+  },
 };
 
 export const GAME_MODES = Object.keys(MODES) as GameMode[];
@@ -29,8 +37,12 @@ export const TEAM_INFO: Record<Team, { name: string; color: string }> = {
 
 export const otherTeam = (t: Team): Team => (t === 'red' ? 'blue' : 'red');
 
-/** Seconds the "round over" screen stays up before the next round starts */
-export const INTERMISSION = 8;
+/** Seconds the winner screen stays up after a round ends */
+export const RESULTS_TIME = 6;
+/** Seconds of MVP replay after that, before the next map loads */
+export const MVP_TIME = 10;
+/** The round clock turns red for the last this-many seconds */
+export const CLOCK_WARNING = 30;
 
 /** Each team's half of the map: red owns +z, blue owns -z. */
 const SIDE: Record<Team, number> = { red: 1, blue: -1 };

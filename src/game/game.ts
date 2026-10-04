@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import { buildWorld, type World } from './world';
-import { generateMap } from './mapgen';
+import { generateMap, normalizeSeed, randomSeed, CLASSIC_SEED } from './mapgen';
 import { LocalPlayer } from './player';
 import { RemotePlayer, type HitboxData } from './remotePlayer';
 import { loadCharacter, type CharacterAsset } from './character';
 import { Weapon, Effects } from './weapon';
-import { HudStore, type DamageIndicator, type HudState, type MyMatch, type ScoreRow } from './hudStore';
+import {
+  HudStore, type DamageIndicator, type HudState, type MatchEnd, type MyMatch, type ScoreRow,
+} from './hudStore';
 import {
   ABILITIES, ABILITY_TYPES, Inventory, DASH_SPEED, GRENADE_DAMAGE, GRENADE_RADIUS, MEDKIT_HEAL,
   SHIELD_AMOUNT, SHIELD_DURATION, SPEED_DURATION, SPEED_MULTIPLIER,
@@ -14,14 +16,17 @@ import { MAX_PICKUPS, PickupField } from './pickups';
 import { GrenadeFx, simulateGrenade, THROW_LIFT, THROW_SPEED } from './grenades';
 import { FlagField, placementOf, type FlagPlacement } from './flags';
 import {
-  FLAG_BASES, FLAG_RADIUS, FLAG_RETURN_TIME, INTERMISSION, MODES, TEAMS, TEAM_INFO, otherTeam, teamSpawns,
+  CLOCK_WARNING, FLAG_BASES, FLAG_RADIUS, FLAG_RETURN_TIME, MODES, MVP_TIME, RESULTS_TIME, TEAMS, TEAM_INFO, otherTeam,
+  teamSpawns,
 } from './modes';
+import { MomentTracker } from './moments';
+import { ReplayDirector, ReplayRecorder } from './replay';
 import { RoomConnection, randomId } from '../net/network';
 import * as sfx from './audio';
 import { actionFor, type Action } from './settings';
 import { StepTracker, type StepEvent } from './footsteps';
 import type {
-  GameEvent, GameMode, GameState, PickupRecord, PlayerState, PlayerStats, Pose, Team, Vec3Tuple, WeaponKind,
+  GameEvent, GameMode, GameState, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, Team, Vec3Tuple, WeaponKind,
 } from '../types';
 
 const SEND_INTERVAL = 1 / 15;
@@ -46,6 +51,8 @@ const PING_INTERVAL = 2;
 /** How long a damage direction arc stays fully visible, then how long it takes to fade (s) */
 const INDICATOR_HOLD = 0.6;
 const INDICATOR_FADE = 1;
+/** How often we record our own pose for the MVP replay (s) */
+const RECORD_INTERVAL = 0.1;
 
 export function colorFor(id: string): string {
   let h = 2166136261;
@@ -82,7 +89,11 @@ export class Game {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
   private readonly camera: THREE.PerspectiveCamera;
-  private readonly world: World;
+  /** The current map; rebuilt every round. The two arrays are filled in place. */
+  private world!: World;
+  private mapSeed = '';
+  private readonly colliders: THREE.Box3[] = [];
+  private readonly solids: THREE.Mesh[] = [];
   private readonly player: LocalPlayer;
   private readonly weapon: Weapon;
   private readonly effects: Effects;
@@ -134,9 +145,11 @@ export class Game {
   private team: Team | null = null;
   private game: GameState = { round: 0, score: {}, flags: {} };
   private gameLoaded = false;
-  /** When the round-over screen ends (performance.now() ms) */
-  private intermissionEnds = 0;
+  /** When the current round ended (server ms) */
+  private endedAt = 0;
   private nextRoundRequested = -1;
+  private timeUpRequested = -1;
+  private clockFixRequested = -1;
   private lastScoreKey = '';
   // Capture the flag
   private flagField: FlagField | null = null;
@@ -146,8 +159,19 @@ export class Game {
   /** When each flag was dropped, as seen by this client, so it can be sent home after a while */
   private flagDroppedAt: Partial<Record<Team, number>> = {};
 
+  // MVP: our own highlights, everything we saw this round, and the replay when it's on
+  private readonly moments = new MomentTracker();
+  private readonly recorder = new ReplayRecorder();
+  private replay: ReplayDirector | null = null;
+  private replayRound = -1;
+  private recordTimer = 0;
+  /** When we took the enemy flag, and kills since (for flag-run highlights) */
+  private carry: { since: number; kills: number } | null = null;
+  /** Who last dropped each team's flag, so killing the carrier still counts if the drop lands first */
+  private lastDrop: Partial<Record<Team, { id: string; at: number }>> = {};
+
   // Footsteps
-  private readonly floorSurface: sfx.Surface;
+  private floorSurface: sfx.Surface = 'hard';
   private readonly steps = new StepTracker();
   private readonly remoteSteps = new Map<string, StepTracker>();
 
@@ -179,14 +203,11 @@ export class Game {
     this.camera = new THREE.PerspectiveCamera(75, aspect, 0.05, 300);
     this.scene.add(this.camera);
 
-    const map = generateMap(seed);
-    this.floorSurface = map.theme.surface;
-    this.world = buildWorld(this.scene, map);
-    this.hud.update({ map: { name: map.theme.name, seed: map.seed } });
-    this.player = new LocalPlayer(this.camera, this.world.colliders, signal);
+    this.loadMap(seed);
+    this.player = new LocalPlayer(this.camera, this.colliders, signal);
     this.weapon = new Weapon(aspect);
     this.effects = new Effects(this.scene);
-    this.pickups = new PickupField(this.scene, this.world.colliders);
+    this.pickups = new PickupField(this.scene, this.colliders);
     this.grenades = new GrenadeFx(this.scene);
     this.hud.update({ ammo: this.weapon.ammo, magSize: this.weapon.magSize });
     this.raycaster.far = MAX_RANGE;
@@ -202,6 +223,16 @@ export class Game {
     });
 
     this.bindInput(signal);
+  }
+
+  /** Build the arena for `seed`, replacing the current one. */
+  private loadMap(seed: string): void {
+    const map = generateMap(seed);
+    this.world?.dispose();
+    this.world = buildWorld(this.scene, map, this.colliders, this.solids);
+    this.mapSeed = map.seed;
+    this.floorSurface = map.theme.surface;
+    this.hud.update({ map: { name: map.theme.name, seed: map.seed } });
   }
 
   /** Capture the mouse and start playing. Must be called from a user gesture. */
@@ -372,6 +403,7 @@ export class Game {
       return;
     }
     this.remotes.get(id)?.setData(data);
+    this.recorder.pose(id, data, this.net.serverNow());
   }
 
   private onPlayerRemoved(id: string): void {
@@ -387,6 +419,18 @@ export class Game {
   }
 
   private onEvent(evt: GameEvent): void {
+    // Server timestamp of the event, for the replay recording.
+    const t = typeof evt.t === 'number' ? evt.t : this.net.serverNow();
+    if (evt.type === 'shot' && evt.from !== this.playerId && evt.o && evt.e) {
+      this.recorder.event({ t, kind: 'shot', o: evt.o, e: evt.e, hit: !!evt.hit });
+    } else if (evt.type === 'grenade' && evt.from !== this.playerId) {
+      this.recorder.event({ t, kind: 'grenade', id: evt.id, o: evt.o, v: evt.v });
+    } else if (evt.type === 'blast' && evt.from !== this.playerId) {
+      this.recorder.event({ t, kind: 'blast', id: evt.id, p: evt.p });
+    } else if (evt.type === 'kill') {
+      this.recorder.event({ t, kind: 'kill', killer: evt.killer, victim: evt.victim, head: evt.head });
+    }
+
     if (evt.type === 'shot') {
       if (evt.from === this.playerId || !evt.o || !evt.e) return;
       const origin = fromArr(evt.o);
@@ -411,8 +455,24 @@ export class Game {
       const victim = this.players[evt.victim] ?? UNKNOWN_PLAYER;
       const mine = evt.killer === this.playerId || evt.victim === this.playerId;
       this.hud.pushKill(killer, victim, evt.head, mine, evt.weapon ?? 'rifle');
-      if (evt.killer === this.playerId && evt.victim !== this.playerId) sfx.playKill();
+      if (evt.killer === this.playerId && evt.victim !== this.playerId) {
+        sfx.playKill();
+        this.onOwnKill(evt.victim, evt.head, t);
+      }
     }
+  }
+
+  /** Feed our kills into the highlight tracker. */
+  private onOwnKill(victim: string, head: boolean, t: number): void {
+    if (this.roundOver) return;
+    let stoppedCarrier = false;
+    if (this.team) {
+      const drop = this.lastDrop[this.team];
+      stoppedCarrier = this.game.flags[this.team]?.by === victim
+        || (drop?.id === victim && performance.now() - drop.at < 2_000);
+    }
+    if (this.carry) this.carry.kills++;
+    this.moments.onKill(t, { head, stoppedCarrier });
   }
 
   // ---------------------------------------------------------------- rounds
@@ -424,8 +484,11 @@ export class Game {
     this.gameLoaded = true;
     const newRound = !first && next.round > prev.round;
 
+    // Every round has its own map. A late joiner may also find the room has moved on from the lobby's seed.
+    if (next.seed && (normalizeSeed(next.seed) || CLASSIC_SEED) !== this.mapSeed) this.loadMap(next.seed);
+
     if (next.ended && (first || !prev.ended || newRound)) {
-      this.intermissionEnds = performance.now() + INTERMISSION * 1000;
+      this.endedAt = next.ended.at ?? this.net.serverNow();
       this.triggerHeld = false;
       if (!first) this.announceWinner();
     }
@@ -433,12 +496,21 @@ export class Game {
 
     if (this.mode === 'ctf') {
       const now = performance.now();
+      const t = this.net.serverNow();
       for (const team of TEAMS) {
         const was = placementOf(prev.flags[team]);
         const is = placementOf(next.flags[team]);
-        this.flagField?.set(team, is);
+        if (!this.replay) this.flagField?.set(team, is);
         if (is.at !== 'ground') delete this.flagDroppedAt[team];
         else if (first || !samePlacement(was, is)) this.flagDroppedAt[team] = now;
+        if (!samePlacement(was, is)) this.recorder.event({ t, kind: 'flag', team, placement: is });
+        if (was.at === 'carried' && is.at !== 'carried') this.lastDrop[team] = { id: was.carrier, at: now };
+        // Our flag run starts when we pick up their flag.
+        if (team !== this.team && is.at === 'carried' && is.carrier === this.playerId && was.at !== 'carried') {
+          this.carry = { since: t, kills: 0 };
+        } else if (team !== this.team && is.at !== 'carried' && was.at === 'carried' && was.carrier === this.playerId) {
+          if (is.at === 'ground') this.carry = null;
+        }
         if (!first && !newRound) this.announceFlag(team, was, is);
       }
     }
@@ -448,6 +520,10 @@ export class Game {
   private announceWinner(): void {
     const ended = this.game.ended;
     if (!ended) return;
+    if (ended.winner === 'draw') {
+      this.hud.pushInfo('The round is a draw');
+      return;
+    }
     const won = this.team ? ended.winner === this.team : ended.winner === this.playerId;
     if (won) sfx.playKill();
     this.hud.pushInfo(this.team ? `${ended.name} team wins the round` : `${ended.name} wins the round`);
@@ -472,40 +548,74 @@ export class Game {
     }
   }
 
-  /** A new round began: everyone resets their own score and respawns. */
+  /** A new round began (on a new map): everyone resets their own score and respawns. */
   private startRound(): void {
+    this.stopReplay();
     this.kills = 0;
     this.deaths = 0;
     this.stats = { ...EMPTY_STATS };
     this.myMatch = { ...EMPTY_MY_MATCH };
     this.flagHomeToast = false;
+    this.moments.reset();
+    this.recorder.reset();
+    this.carry = null;
+    this.lastDrop = {};
     this.clearAbilities();
     this.hud.update({ myMatch: this.myMatch });
     this.respawn();
-    void this.net.sendState({ kills: 0, deaths: 0, shield: false, ...this.stats });
-    this.hud.toast(`Round ${this.game.round + 1} — fight!`);
+    void this.net.sendState({ kills: 0, deaths: 0, shield: false, moment: null, ...this.stats });
+    const map = this.hud.get().map;
+    this.hud.toast(`Round ${this.game.round + 1}${map ? ` · ${map.name}` : ''} — fight!`);
   }
 
-  /** Called once the round-over screen has run out: whoever gets there first starts the next round. */
+  /** How long the round-over screens last: results, then the MVP replay if there is an MVP. */
+  private intermissionMs(): number {
+    return (RESULTS_TIME + (this.game.ended?.mvp ? MVP_TIME : 0)) * 1000;
+  }
+
+  /** Whoever's intermission runs out first starts the next round, on the map picked when the last one ended. */
   private requestNextRound(): void {
     const round = this.game.round;
     if (this.nextRoundRequested === round) return;
     this.nextRoundRequested = round;
+    let seed = '';
     this.net.mutateGame((g) => {
       if (g.round !== round || !g.ended) return false;
+      seed = g.ended.nextSeed || randomSeed();
       g.round = round + 1;
+      g.seed = seed;
+      g.startedAt = this.net.serverNow();
       delete g.ended;
       g.score = {};
       g.flags = {};
       return true;
-    }).catch((err: unknown) => console.warn('Could not start the next round', err));
+    })
+      .then((committed) => {
+        if (!committed) return;
+        // Pickups were placed for the old walls, and the lobby should list the new map.
+        void this.net.clearPickups();
+        void this.net.setLobbySeed(seed);
+      })
+      .catch((err: unknown) => console.warn('Could not start the next round', err));
+  }
+
+  /**
+   * Mark the round as over (inside a transaction). Also picks the next map and the MVP here,
+   * so every client shows the same ones.
+   */
+  private finishRound(g: GameState, winner: string, name: string, reason: 'time' | 'score'): void {
+    const current = g.seed ?? this.mapSeed;
+    let nextSeed = randomSeed();
+    while (nextSeed === current) nextSeed = randomSeed();
+    const mvp = this.pickMvp();
+    g.ended = { winner, name, reason, at: this.net.serverNow(), nextSeed, ...(mvp ? { mvp } : {}) };
   }
 
   /** End the round if `winner` (a player id in FFA, a team otherwise) is still in this one. */
   private endRound(round: number, winner: string, name: string): void {
     this.net.mutateGame((g) => {
       if (g.round !== round || g.ended) return false;
-      g.ended = { winner, name };
+      this.finishRound(g, winner, name, 'score');
       return true;
     }).catch((err: unknown) => console.warn('Could not end the round', err));
   }
@@ -518,12 +628,139 @@ export class Game {
       if (g.round !== round || g.ended) return false;
       const score = (g.score[team] ?? 0) + 1;
       g.score[team] = score;
-      if (score >= limit) g.ended = { winner: team, name: TEAM_INFO[team].name };
+      if (score >= limit) this.finishRound(g, team, TEAM_INFO[team].name, 'score');
       return true;
     }).catch((err: unknown) => console.warn('Could not add score', err));
   }
 
-  /** Push the score bar / flags / round-over state to the HUD when it changes. */
+  /** Who's ahead right now: a team, a player id, or 'draw'. */
+  private standings(g: GameState): [winner: string, name: string] {
+    if (this.team) {
+      const red = g.score.red ?? 0;
+      const blue = g.score.blue ?? 0;
+      if (red === blue) return ['draw', 'Nobody'];
+      return red > blue ? ['red', TEAM_INFO.red.name] : ['blue', TEAM_INFO.blue.name];
+    }
+    const kills = Object.entries(this.players)
+      .map(([id, p]) => ({ id, name: p.name, kills: id === this.playerId ? this.kills : p.kills || 0 }))
+      .sort((a, b) => b.kills - a.kills);
+    const [top, second] = kills;
+    if (!top || top.kills === 0 || (second && second.kills === top.kills)) return ['draw', 'Nobody'];
+    return [top.id, top.name];
+  }
+
+  /** The round's time is up: the best score wins. Any client can do this; the transaction keeps it to one. */
+  private checkTimeLimit(): void {
+    const g = this.game;
+    if (this.roundOver || !g.startedAt || this.timeUpRequested === g.round) return;
+    if (this.net.serverNow() < g.startedAt + MODES[this.mode].timeLimit * 1000) return;
+    this.timeUpRequested = g.round;
+    const round = g.round;
+    this.net.mutateGame((next) => {
+      if (next.round !== round || next.ended) return false;
+      const [winner, name] = this.standings(next);
+      this.finishRound(next, winner, name, 'time');
+      return true;
+    }).catch((err: unknown) => console.warn('Could not end the round on time', err));
+  }
+
+  /** Rooms made before time limits (or before this round had a clock) get one now. */
+  private ensureRoundClock(): void {
+    const g = this.game;
+    if (g.startedAt || this.roundOver || !this.isLeader() || this.clockFixRequested === g.round) return;
+    this.clockFixRequested = g.round;
+    const round = g.round;
+    const seed = this.mapSeed;
+    this.net.mutateGame((next) => {
+      if (next.round !== round || next.startedAt) return false;
+      next.startedAt = this.net.serverNow();
+      next.seed ??= seed;
+      return true;
+    }).catch((err: unknown) => console.warn('Could not start the round clock', err));
+  }
+
+  /**
+   * The round's MVP: the best highlight, with overall performance as a smaller factor.
+   * Players who didn't kill or capture anything can't be MVP.
+   */
+  private pickMvp(): MvpInfo | null {
+    const candidates = Object.entries(this.players).map(([id, p]) => {
+      const me = id === this.playerId;
+      const kills = me ? this.kills : p.kills || 0;
+      const captures = me ? this.stats.captures : p.captures || 0;
+      const damage = Math.round(me ? this.stats.damage : p.damage || 0);
+      const moment = me ? this.moments.get() : p.moment ?? null;
+      const performance = kills * 4 + captures * 25 + damage / 40;
+      return { id, p, kills, captures, damage, deaths: me ? this.deaths : p.deaths || 0, moment,
+        rating: (moment?.score ?? 0) + 0.3 * performance };
+    }).filter((c) => c.kills > 0 || c.captures > 0);
+    candidates.sort((a, b) => b.rating - a.rating || (a.id < b.id ? -1 : 1));
+    const best = candidates[0];
+    if (!best) return null;
+    const team = best.id === this.playerId ? this.team : best.p.team;
+    return {
+      id: best.id,
+      name: best.p.name,
+      color: best.id === this.playerId ? this.color : best.p.color,
+      ...(team ? { team } : {}),
+      title: best.moment?.title ?? 'Top fragger',
+      start: best.moment?.start ?? 0,
+      end: best.moment?.end ?? 0,
+      kills: best.kills,
+      deaths: best.deaths,
+      captures: best.captures,
+      damage: best.damage,
+    };
+  }
+
+  /** Which round-over screen we're on, or null while playing. */
+  private intermissionPhase(): 'results' | 'mvp' | null {
+    const ended = this.game.ended;
+    if (!ended) return null;
+    const since = this.net.serverNow() - this.endedAt;
+    return ended.mvp && since >= RESULTS_TIME * 1000 ? 'mvp' : 'results';
+  }
+
+  /** Start the MVP replay when its screen comes up, and stop it when the next round starts. */
+  private updateReplay(dt: number): void {
+    const mvp = this.game.ended?.mvp;
+    const phase = this.intermissionPhase();
+    if (phase === 'mvp' && mvp && !this.replay && this.replayRound !== this.game.round && this.character) {
+      this.replayRound = this.game.round;
+      this.replay = new ReplayDirector({
+        mvp,
+        recorder: this.recorder,
+        scene: this.scene,
+        camera: this.camera,
+        character: this.character,
+        effects: this.effects,
+        grenades: this.grenades,
+        colliders: this.colliders,
+        solids: this.solids,
+        flagField: this.flagField,
+        onKill: (killer, victim, head) => {
+          const k = this.players[killer] ?? this.recorder.tracks.get(killer) ?? UNKNOWN_PLAYER;
+          const v = this.players[victim] ?? this.recorder.tracks.get(victim) ?? UNKNOWN_PLAYER;
+          this.hud.pushKill(k, v, head, killer === mvp.id);
+        },
+      });
+      for (const r of this.remotes.values()) r.setVisible(false);
+      this.hud.update({ scoreboardOpen: false });
+    }
+    if (phase !== 'mvp' && this.replay) this.stopReplay();
+    this.replay?.update(dt);
+  }
+
+  private stopReplay(): void {
+    if (!this.replay) return;
+    this.replay.dispose();
+    this.replay = null;
+    for (const r of this.remotes.values()) r.setVisible(true);
+    // Put the flags back where they really are.
+    for (const team of TEAMS) this.flagField?.set(team, placementOf(this.game.flags[team]));
+  }
+
+  /** Push the score bar / clock / flags / round-over state to the HUD when it changes. */
   private refreshScore(): void {
     let leader: { name: string; kills: number } | null = null;
     for (const [id, p] of Object.entries(this.players)) {
@@ -533,6 +770,7 @@ export class Game {
     }
     const g = this.game;
     const score = { red: g.score.red ?? 0, blue: g.score.blue ?? 0, mine: this.kills, leader };
+    const now = this.net.serverNow();
 
     const flags = this.mode === 'ctf'
       ? Object.fromEntries(TEAMS.map((team) => {
@@ -545,20 +783,70 @@ export class Game {
       })) as HudState['flags']
       : null;
 
-    const matchEnd = g.ended
-      ? {
-        title: this.team
-          ? `${g.ended.name} team wins!`
-          : g.ended.winner === this.playerId ? 'You win!' : `${g.ended.name} wins!`,
-        won: this.team ? g.ended.winner === this.team : g.ended.winner === this.playerId,
-        nextIn: Math.max(0, Math.ceil((this.intermissionEnds - performance.now()) / 1000)),
-      }
-      : null;
+    let clock: HudState['clock'] = null;
+    if (g.startedAt) {
+      const left = g.ended ? 0 : Math.max(0, Math.ceil((g.startedAt + MODES[this.mode].timeLimit * 1000 - now) / 1000));
+      clock = { left, urgent: !g.ended && left <= CLOCK_WARNING };
+    }
 
-    const key = JSON.stringify([score, flags, matchEnd]);
+    const matchEnd = this.matchEndView(now);
+    const key = JSON.stringify([score, flags, clock, matchEnd]);
     if (key === this.lastScoreKey) return;
     this.lastScoreKey = key;
-    this.hud.update({ score, flags, matchEnd });
+    this.hud.update({ score, flags, clock, matchEnd });
+  }
+
+  private matchEndView(now: number): MatchEnd | null {
+    const ended = this.game.ended;
+    const phase = this.intermissionPhase();
+    if (!ended || !phase) return null;
+    const draw = ended.winner === 'draw';
+    const won = !draw && (this.team ? ended.winner === this.team : ended.winner === this.playerId);
+    const title = draw
+      ? "It's a draw!"
+      : this.team ? `${ended.name} team wins!` : won ? 'You win!' : `${ended.name} wins!`;
+    const ctf = this.mode === 'ctf';
+    const top = this.scoreRows().slice(0, 3).map((r) => ({
+      name: r.name,
+      color: r.color,
+      score: ctf ? `${r.captures} cap · ${r.kills} K` : `${r.kills} K / ${r.deaths} D`,
+    }));
+    const mvp = ended.mvp
+      ? {
+        name: ended.mvp.name,
+        color: ended.mvp.color,
+        title: ended.mvp.title,
+        kills: ended.mvp.kills,
+        deaths: ended.mvp.deaths,
+        captures: ended.mvp.captures,
+        damage: ended.mvp.damage,
+        me: ended.mvp.id === this.playerId,
+      }
+      : null;
+    const phaseEnds = this.endedAt + (phase === 'results' ? RESULTS_TIME * 1000 : this.intermissionMs());
+    const next = ended.nextSeed ? this.mapInfo(ended.nextSeed) : null;
+    return {
+      phase,
+      title,
+      won,
+      draw,
+      reason: ended.reason ?? 'score',
+      top,
+      mvp,
+      nextIn: Math.max(0, Math.ceil((phaseEnds - now) / 1000)),
+      nextMap: next,
+    };
+  }
+
+  private nextMapCache: { seed: string; name: string } | null = null;
+  /** Theme name for a seed; generated once, since the HUD asks every frame. */
+  private mapInfo(seed: string): { name: string; seed: string } {
+    if (this.nextMapCache?.seed !== seed) {
+      const map = generateMap(seed);
+      this.nextMapCache = { seed, name: map.theme.name };
+      return { name: map.theme.name, seed: map.seed };
+    }
+    return { name: this.nextMapCache.name, seed: normalizeSeed(seed) || CLASSIC_SEED };
   }
 
   // ---------------------------------------------------------------- capture the flag
@@ -620,9 +908,15 @@ export class Game {
       delete g.flags[enemy];
       const score = (g.score[team] ?? 0) + 1;
       g.score[team] = score;
-      if (score >= limit) g.ended = { winner: team, name: TEAM_INFO[team].name };
+      if (score >= limit) this.finishRound(g, team, TEAM_INFO[team].name, 'score');
       return true;
-    }, () => { this.stats.captures++; });
+    }, () => {
+      this.stats.captures++;
+      const carry = this.carry;
+      this.carry = null;
+      const t = this.net.serverNow();
+      this.moments.onCapture(t, carry?.since ?? t, carry?.kills ?? 0);
+    });
   }
 
   private flagTransaction(change: (g: GameState) => boolean, onCommit?: () => void): void {
@@ -717,6 +1011,8 @@ export class Game {
     // Abilities and their effects are lost on death.
     this.clearAbilities();
     this.stats.streak = 0;
+    this.moments.onDeath();
+    this.carry = null;
     void this.dropFlag();
     void this.net.sendState({ alive: false, hp: 0, deaths: this.deaths, shield: false });
     this.net.sendEvent({ type: 'kill', killer: killerId, victim: this.playerId, head, weapon });
@@ -816,7 +1112,9 @@ export class Game {
     sfx.playShot(0.7);
     this.player.look((Math.random() - 0.5) * 0.006, 0.012);
 
-    this.net.sendEvent({ type: 'shot', o: toArr(muzzle), e: toArr(end), hit: hitId, dmg, head });
+    const shot = { o: toArr(muzzle), e: toArr(end) };
+    this.net.sendEvent({ type: 'shot', ...shot, hit: hitId, dmg, head });
+    this.recorder.event({ t: this.net.serverNow(), kind: 'shot', ...shot, hit: !!hitId });
   }
 
   // ---------------------------------------------------------------- abilities
@@ -928,6 +1226,7 @@ export class Game {
     const id = randomId(8);
     this.grenades.launch(id, trajectory);
     this.net.sendEvent({ type: 'grenade', id, o, v });
+    this.recorder.event({ t: this.net.serverNow(), kind: 'grenade', id, o, v });
     this.pendingBlasts.push({ id, at: performance.now() + trajectory.duration * 1000, p: trajectory.end });
   }
 
@@ -959,6 +1258,7 @@ export class Game {
     }
     // Firebase rejects undefined fields, so only include hits when there are some.
     this.net.sendEvent({ type: 'blast', id: blast.id, p: toArr(blast.p), ...(hitAnyone ? { hits } : {}) });
+    this.recorder.event({ t: this.net.serverNow(), kind: 'blast', id: blast.id, p: toArr(blast.p) });
   }
 
   private updateAbilities(dt: number): void {
@@ -1055,7 +1355,7 @@ export class Game {
     this.update(dt);
     this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
-    if (this.alive) {
+    if (this.alive && !this.replay) {
       this.renderer.clearDepth();
       this.renderer.render(this.weapon.scene, this.weapon.camera);
     }
@@ -1070,7 +1370,8 @@ export class Game {
       if (this.respawnTimer <= 0) this.respawn();
     }
 
-    this.player.update(dt, this.alive);
+    // Nobody moves between rounds.
+    this.player.update(dt, this.alive && !this.roundOver);
     const speed = this.player.horizontalSpeed;
     const sprinting = this.player.sprintHeld && speed > 7;
 
@@ -1093,6 +1394,9 @@ export class Game {
     this.updateDamageIndicators();
     this.updateAbilities(dt);
     this.updateMode();
+    // After the player update, so the replay's camera wins.
+    this.updateReplay(dt);
+    this.recordSelf(dt);
 
     if (this.joined) this.updatePing(dt);
 
@@ -1103,13 +1407,14 @@ export class Game {
         this.sendTimer = 0;
         const pose = this.poseState();
         const key = JSON.stringify(pose);
-        const statsKey = JSON.stringify(this.stats);
+        const moment = this.moments.get();
+        const statsKey = JSON.stringify([this.stats, moment]);
         const statsChanged = statsKey !== this.lastStatsKey;
         if (key !== this.lastSent || statsChanged || this.heartbeat > HEARTBEAT) {
           this.lastSent = key;
           this.lastStatsKey = statsKey;
           this.heartbeat = 0;
-          void this.net.sendState(statsChanged ? { ...pose, ...this.stats } : pose);
+          void this.net.sendState(statsChanged ? { ...pose, ...this.stats, ...(moment ? { moment } : {}) } : pose);
         }
       }
     }
@@ -1154,6 +1459,15 @@ export class Game {
     if (key === this.lastIndicatorKey) return;
     this.lastIndicatorKey = key;
     this.hud.update({ damageIndicators: indicators });
+  }
+
+  /** Our own movement for the replay recording (other players' come in with their updates). */
+  private recordSelf(dt: number): void {
+    if (!this.joined || this.roundOver) return;
+    this.recordTimer -= dt;
+    if (this.recordTimer > 0) return;
+    this.recordTimer = RECORD_INTERVAL;
+    this.recorder.pose(this.playerId, { name: this.name, color: this.color, ...this.poseState(), alive: this.alive }, this.net.serverNow());
   }
 
   /** Measure our ping every couple of seconds and publish it for everyone's scoreboard. */
@@ -1214,6 +1528,8 @@ export class Game {
   private updateMode(): void {
     if (this.flagField) {
       this.flagField.update(performance.now() / 1000, (id) => {
+        // During the replay, carried flags ride on the replay's stand-ins (including ours).
+        if (this.replay) return this.replay.carrier(id);
         const r = id === this.playerId ? undefined : this.remotes.get(id);
         return r?.alive ? { position: r.position, yaw: r.yaw } : null;
       });
@@ -1223,7 +1539,9 @@ export class Game {
       if (this.alive) this.updateFlags();
       this.refereeFlags();
     }
-    if (this.roundOver && performance.now() >= this.intermissionEnds) this.requestNextRound();
+    this.ensureRoundClock();
+    this.checkTimeLimit();
+    if (this.roundOver && this.net.serverNow() >= this.endedAt + this.intermissionMs()) this.requestNextRound();
     // Keeps the round-over countdown ticking; does nothing when the score hasn't changed.
     this.refreshScore();
   }
@@ -1264,7 +1582,9 @@ export class Game {
     this.remotes.clear();
     this.pickups.dispose();
     this.grenades.dispose();
+    this.stopReplay();
     this.flagField?.dispose();
+    this.world.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
     this.hud.dispose();

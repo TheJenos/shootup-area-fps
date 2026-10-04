@@ -65,6 +65,8 @@ export async function createRoom(
     createdAt: serverTimestamp(),
     members: { [playerId]: host },
   });
+  // The first round starts now, on the chosen map.
+  await set(ref(db(), `rooms/${code}/game`), { round: 0, seed, startedAt: serverTimestamp() });
   return code;
 }
 
@@ -107,6 +109,8 @@ export class RoomConnection {
   private readonly pickupsRef: DatabaseReference;
   private readonly gameRef: DatabaseReference;
   private lastOneHere = false;
+  /** Server clock minus ours, in ms, kept up to date by Firebase */
+  private serverOffset = 0;
   private unsubs: Unsubscribe[] = [];
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private getFullState: () => PlayerState = () => {
@@ -159,6 +163,10 @@ export class RoomConnection {
         }
       }),
     );
+
+    this.unsubs.push(onValue(ref(db(), '.info/serverTimeOffset'), (snap) => {
+      this.serverOffset = Number(snap.val()) || 0;
+    }));
 
     const playersRef = ref(db(), `rooms/${this.code}/players`);
     const { onPlayerAdded, onPlayerChanged, onPlayerRemoved, onEvent, onPickupAdded, onPickupRemoved, onGame } = this.handlers;
@@ -233,6 +241,21 @@ export class RoomConnection {
     const pickupRef = push(this.pickupsRef);
     set(pickupRef, pickup).catch((err: unknown) => console.warn('Failed to place pickup', err));
     return pickupRef.key;
+  }
+
+  /** Our best estimate of the server's clock (ms), so every client agrees on round times. */
+  serverNow(): number {
+    return Date.now() + this.serverOffset;
+  }
+
+  /** Remove every ability lying on the map (a new map has different walls). */
+  clearPickups(): Promise<void> {
+    return remove(this.pickupsRef);
+  }
+
+  /** Keep the lobby list showing the map that's currently being played. */
+  setLobbySeed(seed: string): Promise<void> {
+    return set(ref(db(), `lobby/${this.code}/seed`), seed);
   }
 
   /** Room name, mode and creation time. */

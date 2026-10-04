@@ -36,10 +36,12 @@ interface Props {
   mode: GameMode;
   score: ScoreView;
   map: { name: string; seed: string } | null;
+  /** Seconds left in the round */
+  clockLeft: number | null;
 }
 
 /** Held open with Tab: everyone's stats plus your own match summary. */
-export function MatchSummary({ roomCode, match, rows, myMatch, mode, score, map }: Props) {
+export function MatchSummary({ roomCode, match, rows, myMatch, mode, score, map, clockLeft }: Props) {
   const now = useNow();
   const me = rows.find((r) => r.me);
   const leader = rows[0];
@@ -90,8 +92,8 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, score, map 
           </div>
         )}
         <div className="clock">
-          <span className="muted">Match time</span>
-          <strong>{match ? formatClock(now - match.startedAt) : '—'}</strong>
+          <span className="muted">{clockLeft !== null ? 'Time left' : 'Match time'}</span>
+          <strong>{clockLeft !== null ? formatClock(clockLeft * 1000) : match ? formatClock(now - match.startedAt) : '—'}</strong>
         </div>
       </header>
 
