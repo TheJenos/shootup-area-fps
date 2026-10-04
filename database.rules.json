@@ -1,0 +1,41 @@
+{
+  "rules": {
+    "lobby": {
+      ".read": true,
+      "$room": {
+        ".write": true,
+        ".validate": "newData.hasChildren(['name', 'createdAt']) || !newData.exists()",
+        "name": {
+          ".validate": "newData.isString() && newData.val().length <= 24"
+        },
+        "seed": {
+          ".validate": "newData.isString() && newData.val().length <= 16"
+        },
+        "mode": {
+          ".validate": "newData.val() === 'ffa' || newData.val() === 'tdm' || newData.val() === 'ctf'"
+        },
+        "members": {
+          "$pid": {
+            ".validate": "newData.isString() && newData.val().length <= 16"
+          }
+        }
+      }
+    },
+    "rooms": {
+      "$room": {
+        ".read": true,
+        ".write": true,
+        "players": {
+          "$pid": {
+            "name": {
+              ".validate": "newData.isString() && newData.val().length <= 16"
+            },
+            "hp": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+            }
+          }
+        }
+      }
+    }
+  }
+}

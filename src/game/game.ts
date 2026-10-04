@@ -1,0 +1,1250 @@
+import * as THREE from 'three';
+import { buildWorld, type World } from './world';
+import { generateMap } from './mapgen';
+import { LocalPlayer } from './player';
+import { RemotePlayer, type HitboxData } from './remotePlayer';
+import { loadCharacter, type CharacterAsset } from './character';
+import { Weapon, Effects } from './weapon';
+import { HudStore, type DamageIndicator, type HudState, type MyMatch, type ScoreRow } from './hudStore';
+import {
+  ABILITIES, ABILITY_TYPES, Inventory, DASH_SPEED, GRENADE_DAMAGE, GRENADE_RADIUS, MEDKIT_HEAL,
+  SHIELD_AMOUNT, SHIELD_DURATION, SPEED_DURATION, SPEED_MULTIPLIER,
+} from './abilities';
+import { MAX_PICKUPS, PickupField } from './pickups';
+import { GrenadeFx, simulateGrenade, THROW_LIFT, THROW_SPEED } from './grenades';
+import { FlagField, placementOf, type FlagPlacement } from './flags';
+import {
+  FLAG_BASES, FLAG_RADIUS, FLAG_RETURN_TIME, INTERMISSION, MODES, TEAMS, TEAM_INFO, otherTeam, teamSpawns,
+} from './modes';
+import { RoomConnection, randomId } from '../net/network';
+import * as sfx from './audio';
+import { actionFor, type Action } from './settings';
+import { StepTracker, type StepEvent } from './footsteps';
+import type {
+  GameEvent, GameMode, GameState, PickupRecord, PlayerState, PlayerStats, Pose, Team, Vec3Tuple, WeaponKind,
+} from '../types';
+
+const SEND_INTERVAL = 1 / 15;
+const HEARTBEAT = 2;
+const RESPAWN_TIME = 3;
+const BODY_DAMAGE = 20;
+const HEAD_DAMAGE = 50;
+const MAX_RANGE = 200;
+const MAX_DAMAGE: Record<WeaponKind, number> = { rifle: HEAD_DAMAGE, grenade: GRENADE_DAMAGE };
+/** Dropped items land this far in front of the player */
+const DROP_DISTANCE = 1.6;
+const ABILITY_ACTIONS: Action[] = ['ability1', 'ability2', 'ability3'];
+const UNKNOWN_PLAYER = { name: '?', color: '#888888' };
+const EMPTY_STATS: PlayerStats = { damage: 0, shots: 0, hits: 0, headshots: 0, streak: 0, best: 0, captures: 0 };
+const EMPTY_MY_MATCH: MyMatch = { pickups: 0, abilitiesUsed: 0, dropped: 0 };
+/** Before trusting that a flag carrier has left, give the player list time to load */
+const REFEREE_GRACE_MS = 3_000;
+/** Other players' footsteps can't be heard further away than this (m) */
+const STEP_HEARING_RANGE = 35;
+/** How long a damage direction arc stays fully visible, then how long it takes to fade (s) */
+const INDICATOR_HOLD = 0.6;
+const INDICATOR_FADE = 1;
+
+export function colorFor(id: string): string {
+  let h = 2166136261;
+  for (const ch of id) h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0;
+  const hue = ((h >>> 8) * 0.618033988749895) % 1;
+  return `#${new THREE.Color().setHSL(hue, 0.75, 0.55).getHexString()}`;
+}
+
+const r2 = (n: number) => Math.round(n * 100) / 100;
+const r3 = (n: number) => Math.round(n * 1000) / 1000;
+const toArr = (v: THREE.Vector3): Vec3Tuple => [r2(v.x), r2(v.y), r2(v.z)];
+const fromArr = (a: Vec3Tuple) => new THREE.Vector3(a[0], a[1], a[2]);
+
+export interface GameOptions {
+  /** Element the WebGL canvas is mounted into */
+  host: HTMLElement;
+  roomCode: string;
+  playerId: string;
+  name: string;
+  /** Map seed; every client generates the same arena from it */
+  seed: string;
+}
+
+export class Game {
+  readonly roomCode: string;
+  readonly playerId: string;
+  readonly name: string;
+  readonly hud = new HudStore();
+  /** Our tint: unique per player in FFA, the team color otherwise */
+  private color: string;
+  joined = false;
+
+  private readonly abort = new AbortController();
+  private readonly renderer: THREE.WebGLRenderer;
+  private readonly scene = new THREE.Scene();
+  private readonly camera: THREE.PerspectiveCamera;
+  private readonly world: World;
+  private readonly player: LocalPlayer;
+  private readonly weapon: Weapon;
+  private readonly effects: Effects;
+  private readonly net: RoomConnection;
+  private readonly raycaster = new THREE.Raycaster();
+  private readonly timer = new THREE.Timer();
+
+  private readonly remotes = new Map<string, RemotePlayer>();
+  private readonly players: Record<string, PlayerState> = {};
+  private hp = 100;
+  private alive = true;
+  private kills = 0;
+  private deaths = 0;
+  private respawnTimer = 0;
+  private triggerHeld = false;
+  private locked = false;
+  private joinedAt = 0;
+  private sendTimer = 0;
+  private heartbeat = 0;
+  private lastSent = '';
+  private scoreTimer = 0;
+  private disposed = false;
+  private character: CharacterAsset | null = null;
+
+  // Abilities
+  private readonly inventory = new Inventory();
+  private readonly pickups: PickupField;
+  private readonly grenades: GrenadeFx;
+  private readonly losRay = new THREE.Raycaster();
+  private claimingPickup: string | null = null;
+  private fullToastFor: string | null = null;
+  private spawnTimer = 1;
+  private shieldHp = 0;
+  private shieldUntil = 0;
+  private speedUntil = 0;
+  private pendingBlasts: { id: string; at: number; p: THREE.Vector3 }[] = [];
+  private lastSlotsKey = '';
+  /** A pickup we just dropped; ignored until we've moved away from where it landed */
+  private ignorePickup: { id: string; x: number; z: number } | null = null;
+  private inventoryOpen = false;
+
+  // Match stats (synced so everyone's scoreboard can show them)
+  private stats: PlayerStats = { ...EMPTY_STATS };
+  private lastStatsKey = '';
+  private myMatch: MyMatch = { ...EMPTY_MY_MATCH };
+
+  // Game mode, teams and rounds
+  private mode: GameMode = 'ffa';
+  private team: Team | null = null;
+  private game: GameState = { round: 0, score: {}, flags: {} };
+  private gameLoaded = false;
+  /** When the round-over screen ends (performance.now() ms) */
+  private intermissionEnds = 0;
+  private nextRoundRequested = -1;
+  private lastScoreKey = '';
+  // Capture the flag
+  private flagField: FlagField | null = null;
+  private flagBusy = false;
+  private refereeBusy = false;
+  private flagHomeToast = false;
+  /** When each flag was dropped, as seen by this client, so it can be sent home after a while */
+  private flagDroppedAt: Partial<Record<Team, number>> = {};
+
+  // Footsteps
+  private readonly floorSurface: sfx.Surface;
+  private readonly steps = new StepTracker();
+  private readonly remoteSteps = new Map<string, StepTracker>();
+
+  /** Where recent hits came from, keyed by attacker */
+  private readonly hitSources = new Map<string, { at: THREE.Vector3; time: number; damage: number }>();
+  private lastIndicatorKey = '';
+
+  constructor({ host, roomCode, playerId, name, seed }: GameOptions) {
+    this.roomCode = roomCode;
+    this.playerId = playerId;
+    this.name = name;
+    this.color = colorFor(playerId);
+    const signal = this.abort.signal;
+
+    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setSize(host.clientWidth, host.clientHeight);
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.autoClear = false;
+    host.appendChild(this.renderer.domElement);
+
+    const aspect = host.clientWidth / host.clientHeight;
+    this.camera = new THREE.PerspectiveCamera(75, aspect, 0.05, 300);
+    this.scene.add(this.camera);
+
+    const map = generateMap(seed);
+    this.floorSurface = map.theme.surface;
+    this.world = buildWorld(this.scene, map);
+    this.hud.update({ map: { name: map.theme.name, seed: map.seed } });
+    this.player = new LocalPlayer(this.camera, this.world.colliders, signal);
+    this.weapon = new Weapon(aspect);
+    this.effects = new Effects(this.scene);
+    this.pickups = new PickupField(this.scene, this.world.colliders);
+    this.grenades = new GrenadeFx(this.scene);
+    this.hud.update({ ammo: this.weapon.ammo, magSize: this.weapon.magSize });
+    this.raycaster.far = MAX_RANGE;
+
+    this.net = new RoomConnection(roomCode, playerId, {
+      onPlayerAdded: (id, data) => this.onPlayerAdded(id, data),
+      onPlayerChanged: (id, data) => this.onPlayerChanged(id, data),
+      onPlayerRemoved: (id) => this.onPlayerRemoved(id),
+      onEvent: (evt) => this.onEvent(evt),
+      onPickupAdded: (id, pickup) => this.pickups.add(id, pickup),
+      onPickupRemoved: (id) => this.pickups.remove(id),
+      onGame: (game) => this.onGame(game),
+    });
+
+    this.bindInput(signal);
+  }
+
+  /** Capture the mouse and start playing. Must be called from a user gesture. */
+  requestPointerLock(): void {
+    // Browsers throttle re-locking right after Esc; older ones return void instead of a promise.
+    const result = this.renderer.domElement.requestPointerLock() as Promise<void> | undefined;
+    result?.catch(() => {});
+  }
+
+  private bindInput(signal: AbortSignal): void {
+    const canvas = this.renderer.domElement;
+
+    window.addEventListener('resize', () => this.resize(), { signal });
+
+    document.addEventListener('pointerlockchange', () => {
+      this.locked = document.pointerLockElement === canvas;
+      this.player.setEnabled(this.locked);
+      if (!this.locked) this.triggerHeld = false;
+      if (this.locked && this.inventoryOpen) this.closeInventory(false);
+      this.hud.update({ paused: !this.locked && this.joined && !this.inventoryOpen });
+    }, { signal });
+    canvas.addEventListener('click', () => { if (!this.locked) this.requestPointerLock(); }, { signal });
+
+    window.addEventListener('mousedown', (e) => {
+      if (e.button === 0 && this.locked) this.triggerHeld = true;
+    }, { signal });
+    window.addEventListener('mouseup', (e) => {
+      if (e.button === 0) {
+        this.triggerHeld = false;
+        this.weapon.releaseTrigger();
+      }
+    }, { signal });
+
+    window.addEventListener('keydown', (e) => {
+      const action = actionFor(e.code);
+      // Keep bound keys (Tab, Space, ...) from also moving focus or scrolling the page.
+      if (action && this.locked) e.preventDefault();
+      if (action === 'scoreboard') {
+        e.preventDefault();
+        this.hud.update({ scoreboardOpen: true, scoreboard: this.scoreRows() });
+      }
+      if (action === 'reload' && this.alive && this.locked) this.weapon.reload();
+      const slot = action ? ABILITY_ACTIONS.indexOf(action) : -1;
+      if (slot >= 0 && !e.repeat && this.alive && this.locked) this.useAbility(slot);
+      if (action === 'inventory' && !e.repeat) {
+        if (this.inventoryOpen) this.closeInventory(true);
+        else this.openInventory();
+      }
+      if (e.code === 'Escape' && this.inventoryOpen) this.closeInventory(false);
+    }, { signal });
+    window.addEventListener('keyup', (e) => {
+      if (actionFor(e.code) === 'scoreboard') this.hud.update({ scoreboardOpen: false });
+    }, { signal });
+  }
+
+  async start(): Promise<void> {
+    this.hud.update({ connecting: true, paused: false });
+    this.renderer.setAnimationLoop(() => this.frame());
+
+    // Remote players are built as soon as we join, so the model has to be ready first.
+    const [character, info] = await Promise.all([
+      loadCharacter(),
+      this.net.roomInfo().catch((err: unknown) => {
+        console.warn('Could not load room info', err);
+        return null;
+      }),
+    ]);
+    this.character = character;
+    if (this.disposed) return;
+    this.mode = info?.mode ?? 'ffa';
+    if (MODES[this.mode].teams) this.setTeam(await this.pickTeam());
+    if (this.mode === 'ctf') this.flagField = new FlagField(this.scene);
+    if (info) this.hud.update({ match: { roomName: info.name, startedAt: info.createdAt } });
+    this.hud.update({ mode: this.mode });
+    if (this.disposed) return;
+
+    const spawn = this.pickSpawn();
+    this.player.teleport(spawn, Math.atan2(spawn.x, spawn.z));
+    await this.net.join(() => this.fullState());
+    if (this.disposed) return;
+
+    this.joined = true;
+    this.joinedAt = performance.now();
+    this.hud.update({ connecting: false, paused: !this.locked });
+  }
+
+  /** Join whichever team is smaller. */
+  private async pickTeam(): Promise<Team> {
+    const players = Object.values(await this.net.players().catch(() => ({})));
+    const count = (t: Team) => players.filter((p) => p.team === t).length;
+    const red = count('red');
+    const blue = count('blue');
+    if (red === blue) return Math.random() < 0.5 ? 'red' : 'blue';
+    return red < blue ? 'red' : 'blue';
+  }
+
+  private setTeam(team: Team): void {
+    this.team = team;
+    this.color = TEAM_INFO[team].color;
+    this.hud.update({ team });
+  }
+
+  /** Move to the other team (pause menu). Respawns at the new team's side. */
+  switchTeam(): void {
+    if (!this.team || !this.joined) return;
+    void this.dropFlag();
+    this.setTeam(otherTeam(this.team));
+    void this.net.sendState({ team: this.team, color: this.color });
+    this.hud.toast(`Joined ${TEAM_INFO[this.team].name} team`);
+    if (this.alive) this.respawn();
+  }
+
+  /** A teammate (never ourselves). Teammates can't hurt each other. */
+  private isAlly(id: string): boolean {
+    return !!this.team && id !== this.playerId && this.players[id]?.team === this.team;
+  }
+
+  /** The player with the lowest id runs shared chores (pickups, flag returns). */
+  private isLeader(): boolean {
+    return Object.keys(this.players).sort()[0] === this.playerId;
+  }
+
+  /** Fighting is paused while the round-over screen is up. */
+  private get roundOver(): boolean {
+    return !!this.game.ended;
+  }
+
+  private fullState(): PlayerState {
+    return {
+      name: this.name,
+      color: this.color,
+      ...(this.team ? { team: this.team } : {}),
+      ...this.poseState(),
+      hp: Math.max(0, this.hp),
+      alive: this.alive,
+      kills: this.kills,
+      deaths: this.deaths,
+      ...this.stats,
+    };
+  }
+
+  private poseState(): Pose {
+    const p = this.player.position;
+    return { x: r2(p.x), y: r2(p.y), z: r2(p.z), yaw: r3(this.player.yaw), pitch: r3(this.player.pitch) };
+  }
+
+  // ---------------------------------------------------------------- network
+
+  private onPlayerAdded(id: string, data: PlayerState): void {
+    this.players[id] = data;
+    if (id === this.playerId) return;
+    if (!this.character) return;
+    this.remotes.get(id)?.dispose();
+    this.remotes.set(id, new RemotePlayer(id, data, this.scene, this.character));
+    if (this.joined && performance.now() - this.joinedAt > 1000) this.hud.pushInfo(`${data.name} joined`);
+  }
+
+  private onPlayerChanged(id: string, data: PlayerState): void {
+    this.players[id] = data;
+    if (id === this.playerId) {
+      // Kills are incremented by our victims, so take them from the server copy.
+      const kills = data.kills || 0;
+      if (kills > this.kills) {
+        this.stats.streak += kills - this.kills;
+        this.stats.best = Math.max(this.stats.best, this.stats.streak);
+      }
+      this.kills = kills;
+      return;
+    }
+    this.remotes.get(id)?.setData(data);
+  }
+
+  private onPlayerRemoved(id: string): void {
+    if (id === this.playerId) return; // presence is re-registered when the connection recovers
+    const remote = this.remotes.get(id);
+    if (remote) {
+      this.hud.pushInfo(`${this.players[id]?.name || 'Someone'} left`);
+      remote.dispose();
+      this.remotes.delete(id);
+    }
+    this.remoteSteps.delete(id);
+    delete this.players[id];
+  }
+
+  private onEvent(evt: GameEvent): void {
+    if (evt.type === 'shot') {
+      if (evt.from === this.playerId || !evt.o || !evt.e) return;
+      const origin = fromArr(evt.o);
+      const end = fromArr(evt.e);
+      this.effects.tracer(origin, end, 0xffa27a);
+      this.effects.impact(end, evt.hit ? 0xff3b3b : 0xffc35c);
+      const dist = origin.distanceTo(this.camera.position);
+      sfx.playShot(1 / (1 + dist / 10));
+      if (evt.hit === this.playerId) this.takeDamage(evt.dmg, evt.from, !!evt.head, 'rifle', origin);
+    } else if (evt.type === 'grenade') {
+      if (evt.from === this.playerId) return;
+      this.grenades.launch(evt.id, simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders));
+    } else if (evt.type === 'blast') {
+      if (evt.from === this.playerId) return;
+      const at = fromArr(evt.p);
+      this.grenades.explode(evt.id, at, GRENADE_RADIUS);
+      sfx.playExplosion(1 / (1 + at.distanceTo(this.camera.position) / 12));
+      const dmg = evt.hits?.[this.playerId];
+      if (dmg) this.takeDamage(dmg, evt.from, false, 'grenade', at);
+    } else if (evt.type === 'kill') {
+      const killer = this.players[evt.killer] ?? UNKNOWN_PLAYER;
+      const victim = this.players[evt.victim] ?? UNKNOWN_PLAYER;
+      const mine = evt.killer === this.playerId || evt.victim === this.playerId;
+      this.hud.pushKill(killer, victim, evt.head, mine, evt.weapon ?? 'rifle');
+      if (evt.killer === this.playerId && evt.victim !== this.playerId) sfx.playKill();
+    }
+  }
+
+  // ---------------------------------------------------------------- rounds
+
+  private onGame(next: GameState): void {
+    const prev = this.game;
+    this.game = next;
+    const first = !this.gameLoaded;
+    this.gameLoaded = true;
+    const newRound = !first && next.round > prev.round;
+
+    if (next.ended && (first || !prev.ended || newRound)) {
+      this.intermissionEnds = performance.now() + INTERMISSION * 1000;
+      this.triggerHeld = false;
+      if (!first) this.announceWinner();
+    }
+    if (newRound) this.startRound();
+
+    if (this.mode === 'ctf') {
+      const now = performance.now();
+      for (const team of TEAMS) {
+        const was = placementOf(prev.flags[team]);
+        const is = placementOf(next.flags[team]);
+        this.flagField?.set(team, is);
+        if (is.at !== 'ground') delete this.flagDroppedAt[team];
+        else if (first || !samePlacement(was, is)) this.flagDroppedAt[team] = now;
+        if (!first && !newRound) this.announceFlag(team, was, is);
+      }
+    }
+    this.refreshScore();
+  }
+
+  private announceWinner(): void {
+    const ended = this.game.ended;
+    if (!ended) return;
+    const won = this.team ? ended.winner === this.team : ended.winner === this.playerId;
+    if (won) sfx.playKill();
+    this.hud.pushInfo(this.team ? `${ended.name} team wins the round` : `${ended.name} wins the round`);
+  }
+
+  /** Feed messages for flags changing hands. */
+  private announceFlag(team: Team, was: FlagPlacement, is: FlagPlacement): void {
+    if (samePlacement(was, is)) return;
+    const flag = `${TEAM_INFO[team].name} flag`;
+    const who = (id: string) => (id === this.playerId ? 'You' : this.players[id]?.name || 'Someone');
+    if (is.at === 'carried') {
+      this.hud.pushInfo(`${who(is.carrier)} took the ${flag}`);
+      if (is.carrier === this.playerId) sfx.playPickup();
+      else if (team === this.team) sfx.playDenied();
+    } else if (was.at === 'carried' && is.at === 'ground') {
+      this.hud.pushInfo(`${who(was.carrier)} dropped the ${flag}`);
+    } else if (was.at === 'carried' && is.at === 'base') {
+      this.hud.pushInfo(`${who(was.carrier)} captured the ${flag}!`);
+      if (team !== this.team) sfx.playKill();
+    } else if (is.at === 'base') {
+      this.hud.pushInfo(`The ${flag} was returned`);
+    }
+  }
+
+  /** A new round began: everyone resets their own score and respawns. */
+  private startRound(): void {
+    this.kills = 0;
+    this.deaths = 0;
+    this.stats = { ...EMPTY_STATS };
+    this.myMatch = { ...EMPTY_MY_MATCH };
+    this.flagHomeToast = false;
+    this.clearAbilities();
+    this.hud.update({ myMatch: this.myMatch });
+    this.respawn();
+    void this.net.sendState({ kills: 0, deaths: 0, shield: false, ...this.stats });
+    this.hud.toast(`Round ${this.game.round + 1} — fight!`);
+  }
+
+  /** Called once the round-over screen has run out: whoever gets there first starts the next round. */
+  private requestNextRound(): void {
+    const round = this.game.round;
+    if (this.nextRoundRequested === round) return;
+    this.nextRoundRequested = round;
+    this.net.mutateGame((g) => {
+      if (g.round !== round || !g.ended) return false;
+      g.round = round + 1;
+      delete g.ended;
+      g.score = {};
+      g.flags = {};
+      return true;
+    }).catch((err: unknown) => console.warn('Could not start the next round', err));
+  }
+
+  /** End the round if `winner` (a player id in FFA, a team otherwise) is still in this one. */
+  private endRound(round: number, winner: string, name: string): void {
+    this.net.mutateGame((g) => {
+      if (g.round !== round || g.ended) return false;
+      g.ended = { winner, name };
+      return true;
+    }).catch((err: unknown) => console.warn('Could not end the round', err));
+  }
+
+  /** One point for `team`; the point that reaches the limit ends the round. */
+  private addTeamScore(team: Team): void {
+    const round = this.game.round;
+    const limit = MODES[this.mode].limit;
+    this.net.mutateGame((g) => {
+      if (g.round !== round || g.ended) return false;
+      const score = (g.score[team] ?? 0) + 1;
+      g.score[team] = score;
+      if (score >= limit) g.ended = { winner: team, name: TEAM_INFO[team].name };
+      return true;
+    }).catch((err: unknown) => console.warn('Could not add score', err));
+  }
+
+  /** Push the score bar / flags / round-over state to the HUD when it changes. */
+  private refreshScore(): void {
+    let leader: { name: string; kills: number } | null = null;
+    for (const [id, p] of Object.entries(this.players)) {
+      if (id === this.playerId) continue;
+      const kills = p.kills || 0;
+      if (!leader || kills > leader.kills) leader = { name: p.name, kills };
+    }
+    const g = this.game;
+    const score = { red: g.score.red ?? 0, blue: g.score.blue ?? 0, mine: this.kills, leader };
+
+    const flags = this.mode === 'ctf'
+      ? Object.fromEntries(TEAMS.map((team) => {
+        const at = placementOf(g.flags[team]);
+        if (at.at === 'carried') {
+          const carrier = at.carrier === this.playerId ? 'You' : this.players[at.carrier]?.name || 'Someone';
+          return [team, { state: 'carried', carrier, mine: at.carrier === this.playerId }];
+        }
+        return [team, { state: at.at === 'ground' ? 'dropped' : 'home' }];
+      })) as HudState['flags']
+      : null;
+
+    const matchEnd = g.ended
+      ? {
+        title: this.team
+          ? `${g.ended.name} team wins!`
+          : g.ended.winner === this.playerId ? 'You win!' : `${g.ended.name} wins!`,
+        won: this.team ? g.ended.winner === this.team : g.ended.winner === this.playerId,
+        nextIn: Math.max(0, Math.ceil((this.intermissionEnds - performance.now()) / 1000)),
+      }
+      : null;
+
+    const key = JSON.stringify([score, flags, matchEnd]);
+    if (key === this.lastScoreKey) return;
+    this.lastScoreKey = key;
+    this.hud.update({ score, flags, matchEnd });
+  }
+
+  // ---------------------------------------------------------------- capture the flag
+
+  /** Where a flag can be touched, or null while someone carries it. */
+  private flagSpot(team: Team): { x: number; y: number; z: number } | null {
+    const at = placementOf(this.game.flags[team]);
+    if (at.at === 'carried') return null;
+    return at.at === 'base' ? FLAG_BASES[team] : at;
+  }
+
+  private carryingFlag(): boolean {
+    return !!this.team && this.game.flags[otherTeam(this.team)]?.by === this.playerId;
+  }
+
+  /** Take the enemy flag, return our own, or score by bringing theirs to our base. */
+  private updateFlags(): void {
+    const team = this.team;
+    if (!team || this.flagBusy || this.roundOver) return;
+    const enemy = otherTeam(team);
+    const me = this.player.position;
+    const near = (p: { x: number; y: number; z: number }) =>
+      Math.hypot(p.x - me.x, p.z - me.z) < FLAG_RADIUS && Math.abs(p.y - me.y) < 1.5;
+    const round = this.game.round;
+    const guard = (g: GameState) => g.round === round && !g.ended;
+
+    const theirs = this.flagSpot(enemy);
+    if (theirs && near(theirs)) {
+      this.flagTransaction((g) => {
+        if (!guard(g) || g.flags[enemy]?.by) return false;
+        g.flags[enemy] = { by: this.playerId };
+        return true;
+      });
+      return;
+    }
+
+    const ours = placementOf(this.game.flags[team]);
+    if (ours.at === 'ground' && near(ours)) {
+      this.flagTransaction((g) => {
+        if (!guard(g) || placementOf(g.flags[team]).at !== 'ground') return false;
+        delete g.flags[team];
+        return true;
+      });
+      return;
+    }
+
+    if (!this.carryingFlag() || !near(FLAG_BASES[team])) {
+      this.flagHomeToast = false;
+      return;
+    }
+    if (ours.at !== 'base') {
+      if (!this.flagHomeToast) this.hud.toast('Your flag must be at your base to score');
+      this.flagHomeToast = true;
+      return;
+    }
+    const limit = MODES[this.mode].limit;
+    this.flagTransaction((g) => {
+      if (!guard(g) || g.flags[enemy]?.by !== this.playerId || placementOf(g.flags[team]).at !== 'base') return false;
+      delete g.flags[enemy];
+      const score = (g.score[team] ?? 0) + 1;
+      g.score[team] = score;
+      if (score >= limit) g.ended = { winner: team, name: TEAM_INFO[team].name };
+      return true;
+    }, () => { this.stats.captures++; });
+  }
+
+  private flagTransaction(change: (g: GameState) => boolean, onCommit?: () => void): void {
+    this.flagBusy = true;
+    this.net.mutateGame(change)
+      .then((committed) => { if (committed) onCommit?.(); })
+      .catch((err: unknown) => console.warn('Flag update failed', err))
+      .finally(() => { this.flagBusy = false; });
+  }
+
+  /** Drop the enemy flag where we stand (on death, switching team or leaving). */
+  private dropFlag(): Promise<unknown> {
+    if (!this.team || !this.carryingFlag()) return Promise.resolve();
+    const enemy = otherTeam(this.team);
+    const p = this.player.position;
+    const spot = { x: r2(p.x), y: r2(this.groundBelow(p)), z: r2(p.z) };
+    return this.net.mutateGame((g) => {
+      if (g.flags[enemy]?.by !== this.playerId) return false;
+      g.flags[enemy] = spot;
+      return true;
+    }).catch((err: unknown) => console.warn('Could not drop the flag', err));
+  }
+
+  /** Height of whatever is under `p`, so a flag dropped mid-jump lands on the floor or a crate. */
+  private groundBelow(p: THREE.Vector3): number {
+    let y = 0;
+    for (const c of this.world.colliders) {
+      if (p.x > c.min.x && p.x < c.max.x && p.z > c.min.z && p.z < c.max.z && c.max.y <= p.y + 0.05) {
+        y = Math.max(y, c.max.y);
+      }
+    }
+    return y;
+  }
+
+  /** Leader only: send flags home when left lying around too long or their carrier disappeared. */
+  private refereeFlags(): void {
+    if (this.refereeBusy || this.roundOver || !this.isLeader()) return;
+    if (performance.now() - this.joinedAt < REFEREE_GRACE_MS) return;
+    const now = performance.now();
+    for (const team of TEAMS) {
+      const flag = this.game.flags[team];
+      const at = placementOf(flag);
+      const droppedAt = this.flagDroppedAt[team];
+      const expired = at.at === 'ground' && droppedAt !== undefined && now - droppedAt > FLAG_RETURN_TIME * 1000;
+      const orphaned = at.at === 'carried' && !this.players[at.carrier];
+      if (!expired && !orphaned) continue;
+      const snapshot = JSON.stringify(flag);
+      this.refereeBusy = true;
+      this.net.mutateGame((g) => {
+        // Only if nobody touched it in the meantime.
+        if (JSON.stringify(g.flags[team]) !== snapshot) return false;
+        delete g.flags[team];
+        return true;
+      })
+        .catch((err: unknown) => console.warn('Could not return the flag', err))
+        .finally(() => { this.refereeBusy = false; });
+      return;
+    }
+  }
+
+  // ---------------------------------------------------------------- combat
+
+  /** @param source where the hit came from (the shooter's muzzle, or the grenade blast) */
+  private takeDamage(
+    dmg: number | undefined, fromId: string, head: boolean, weapon: WeaponKind, source: THREE.Vector3,
+  ): void {
+    if (!this.alive || this.roundOver || this.isAlly(fromId)) return;
+    // Never trust the number another client sent beyond what the game allows.
+    let amount = Math.min(Math.max(Number(dmg) || 0, 0), MAX_DAMAGE[weapon]);
+    // Show where it came from even when the shield soaks it up.
+    this.hitSources.set(fromId, { at: source, time: performance.now(), damage: amount });
+    if (this.shieldHp > 0) {
+      const absorbed = Math.min(this.shieldHp, amount);
+      this.shieldHp -= absorbed;
+      amount -= absorbed;
+      if (this.shieldHp <= 0) this.endShield();
+    }
+    this.hp -= amount;
+    this.hud.update({ hp: Math.max(0, this.hp) });
+    this.hud.flashDamage();
+    sfx.playHurt();
+    if (this.hp <= 0) this.die(fromId, head, weapon);
+    else if (amount > 0) void this.net.sendState({ hp: this.hp });
+  }
+
+  private die(killerId: string, head: boolean, weapon: WeaponKind): void {
+    this.alive = false;
+    this.hp = 0;
+    this.deaths++;
+    this.respawnTimer = RESPAWN_TIME;
+    this.triggerHeld = false;
+    // Abilities and their effects are lost on death.
+    this.clearAbilities();
+    this.stats.streak = 0;
+    void this.dropFlag();
+    void this.net.sendState({ alive: false, hp: 0, deaths: this.deaths, shield: false });
+    this.net.sendEvent({ type: 'kill', killer: killerId, victim: this.playerId, head, weapon });
+    if (killerId && killerId !== this.playerId) this.creditKiller(killerId);
+    this.hud.update({
+      hp: 0,
+      death: { killerName: this.players[killerId]?.name || 'someone', respawnIn: RESPAWN_TIME },
+    });
+  }
+
+  /** Give the kill to `killerId`, and the point to their team in TDM. */
+  private creditKiller(killerId: string): void {
+    const round = this.game.round;
+    const killer = this.players[killerId];
+    if (this.mode === 'tdm' && killer?.team && killer.team !== this.team) this.addTeamScore(killer.team);
+    this.net.creditKill(killerId)
+      .then((kills) => {
+        if (this.mode === 'ffa' && kills !== null && kills >= MODES.ffa.limit) {
+          this.endRound(round, killerId, killer?.name || 'Someone');
+        }
+      })
+      .catch((err: unknown) => console.warn('Could not credit the kill', err));
+  }
+
+  private clearAbilities(): void {
+    this.inventory.clear();
+    if (this.inventoryOpen) this.closeInventory(false);
+    this.shieldHp = 0;
+    this.speedUntil = 0;
+    this.player.speedMultiplier = 1;
+  }
+
+  private respawn(): void {
+    const spawn = this.pickSpawn();
+    this.player.teleport(spawn, Math.atan2(spawn.x, spawn.z));
+    this.hp = 100;
+    this.alive = true;
+    this.weapon.reset();
+    this.hitSources.clear();
+    this.hud.update({ hp: 100, death: null });
+    void this.net.sendState({ ...this.poseState(), hp: 100, alive: true });
+  }
+
+  /** Prefer spawn points far away from living enemies. */
+  private pickSpawn(): THREE.Vector3 {
+    const enemies = [...this.remotes]
+      .filter(([id, r]) => r.alive && !this.isAlly(id))
+      .map(([, r]) => r.target);
+    const points = this.team ? teamSpawns(this.world.spawnPoints, this.team) : this.world.spawnPoints;
+    const scored = points.map((p) => ({
+      p,
+      d: enemies.length ? Math.min(...enemies.map((e) => e.distanceTo(p))) : Math.random() * 100,
+    }));
+    scored.sort((a, b) => b.d - a.d);
+    const choice = scored[Math.floor(Math.random() * Math.min(3, scored.length))];
+    return (choice?.p ?? new THREE.Vector3()).clone();
+  }
+
+  private shoot(): void {
+    const origin = this.camera.getWorldPosition(new THREE.Vector3());
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+
+    const moving = this.player.horizontalSpeed > 1;
+    const spread = 0.002
+      + (moving ? 0.012 : 0)
+      + (this.player.onGround ? 0 : 0.04)
+      + Math.min(this.weapon.shotsInBurst, 10) * 0.0015;
+    dir.add(new THREE.Vector3().randomDirection().multiplyScalar(spread)).normalize();
+
+    const targets: THREE.Object3D[] = [...this.world.solids];
+    // Bullets pass through teammates.
+    for (const [id, r] of this.remotes) if (!this.isAlly(id)) targets.push(...r.hitboxes);
+    this.raycaster.set(origin, dir);
+    const hit = this.raycaster.intersectObjects(targets, false)[0];
+
+    const end = hit ? hit.point : origin.clone().addScaledVector(dir, MAX_RANGE);
+    const hitbox = hit?.object.userData as Partial<HitboxData> | undefined;
+    const hitId = hitbox?.playerId ?? null;
+    const head = !!hitbox?.head;
+    const dmg = head ? HEAD_DAMAGE : BODY_DAMAGE;
+    this.stats.shots++;
+    const target = hitId ? this.remotes.get(hitId) : undefined;
+    if (target) {
+      this.stats.hits++;
+      if (head) this.stats.headshots++;
+      this.stats.damage += Math.min(dmg, target.displayedHp);
+    }
+
+    const muzzle = this.camera.localToWorld(this.weapon.muzzleOffset());
+    this.effects.tracer(muzzle, end);
+    if (hit) this.effects.impact(end, hitId ? 0xff3b3b : 0xffc35c);
+    if (hitId) {
+      this.remotes.get(hitId)?.reveal(dmg);
+      this.hud.hitmarker(head);
+      sfx.playHit(head);
+    }
+    sfx.playShot(0.7);
+    this.player.look((Math.random() - 0.5) * 0.006, 0.012);
+
+    this.net.sendEvent({ type: 'shot', o: toArr(muzzle), e: toArr(end), hit: hitId, dmg, head });
+  }
+
+  // ---------------------------------------------------------------- abilities
+
+  private useAbility(slot: number): void {
+    if (this.roundOver) return;
+    const now = performance.now();
+    const check = this.inventory.check(slot, now);
+    if (!check.ok) {
+      if (check.reason === 'cooldown') sfx.playDenied();
+      return;
+    }
+    const type = check.type;
+    // Refuse instead of wasting a use
+    if (type === 'medkit' && this.hp >= 100) {
+      this.hud.toast('Already at full health');
+      sfx.playDenied();
+      return;
+    }
+
+    switch (type) {
+      case 'medkit':
+        this.hp = Math.min(100, this.hp + MEDKIT_HEAL);
+        this.hud.update({ hp: this.hp });
+        void this.net.sendState({ hp: this.hp });
+        break;
+      case 'shield':
+        this.shieldHp = SHIELD_AMOUNT;
+        this.shieldUntil = now + SHIELD_DURATION * 1000;
+        void this.net.sendState({ shield: true });
+        break;
+      case 'speed':
+        this.speedUntil = now + SPEED_DURATION * 1000;
+        this.player.speedMultiplier = SPEED_MULTIPLIER;
+        break;
+      case 'dash':
+        this.player.dash(DASH_SPEED);
+        break;
+      case 'grenade':
+        this.throwGrenade();
+        break;
+    }
+
+    sfx.playAbility();
+    this.bumpMyMatch('abilitiesUsed');
+    if (this.inventory.consume(slot, now)) this.hud.toast(`${ABILITIES[type].name} used up`);
+  }
+
+  // ---------------------------------------------------------------- inventory
+
+  private openInventory(): void {
+    if (!this.alive || !this.joined) return;
+    this.inventoryOpen = true;
+    this.triggerHeld = false;
+    this.hud.update({ inventoryOpen: true, paused: false });
+    // Free the mouse so the panel's buttons can be clicked.
+    if (document.pointerLockElement) document.exitPointerLock();
+  }
+
+  /** @param resume grab the mouse again (only works from a key press or click) */
+  closeInventory(resume: boolean): void {
+    if (!this.inventoryOpen) return;
+    this.inventoryOpen = false;
+    this.hud.update({ inventoryOpen: false, paused: !this.locked && !resume });
+    if (resume && !this.locked) this.requestPointerLock();
+  }
+
+  /** Put the ability in `slot` on the floor in front of us, with its remaining uses. */
+  dropAbility(slot: number): void {
+    if (!this.alive || !this.joined) return;
+    const item = this.inventory.remove(slot);
+    if (!item) return;
+    const spot = this.dropSpot();
+    const id = this.net.spawnPickup({ type: item.type, uses: item.usesLeft, ...spot });
+    if (id) this.ignorePickup = { id, ...spot };
+    this.bumpMyMatch('dropped');
+    this.hud.toast(`Dropped ${ABILITIES[item.type].name}`);
+    sfx.playAbility();
+  }
+
+  private dropSpot(): { x: number; z: number } {
+    const p = this.player.position;
+    const ahead = { x: p.x - Math.sin(this.player.yaw) * DROP_DISTANCE, z: p.z - Math.cos(this.player.yaw) * DROP_DISTANCE };
+    const inside = (x: number, z: number) => this.world.colliders.some((c) =>
+      x > c.min.x - 0.3 && x < c.max.x + 0.3 && z > c.min.z - 0.3 && z < c.max.z + 0.3 && c.max.y > p.y + 0.2);
+    // Facing a wall: drop it at our feet instead (we'll ignore it until we step away).
+    const spot = inside(ahead.x, ahead.z) ? { x: p.x, z: p.z } : ahead;
+    return { x: Math.round(spot.x * 100) / 100, z: Math.round(spot.z * 100) / 100 };
+  }
+
+  private bumpMyMatch(key: keyof MyMatch): void {
+    this.myMatch = { ...this.myMatch, [key]: this.myMatch[key] + 1 };
+    this.hud.update({ myMatch: this.myMatch });
+  }
+
+  private endShield(): void {
+    this.shieldHp = 0;
+    void this.net.sendState({ shield: false });
+  }
+
+  private throwGrenade(): void {
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const start = this.camera.getWorldPosition(new THREE.Vector3()).addScaledVector(dir, 0.6);
+    const velocity = dir.multiplyScalar(THROW_SPEED).add(new THREE.Vector3(0, THROW_LIFT, 0));
+    // Simulate from the rounded values we send, so every client computes the identical arc.
+    const o = toArr(start);
+    const v = toArr(velocity);
+    const trajectory = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders);
+    const id = randomId(8);
+    this.grenades.launch(id, trajectory);
+    this.net.sendEvent({ type: 'grenade', id, o, v });
+    this.pendingBlasts.push({ id, at: performance.now() + trajectory.duration * 1000, p: trajectory.end });
+  }
+
+  /** Our grenade went off: work out who it hurt (walls block it) and tell everyone. */
+  private detonate(blast: { id: string; p: THREE.Vector3 }): void {
+    const hits: Record<string, number> = {};
+    for (const [id, remote] of this.remotes) {
+      if (!remote.alive || this.isAlly(id)) continue;
+      const chest = remote.position.clone().setY(remote.position.y + 1);
+      const dist = chest.distanceTo(blast.p);
+      if (dist > GRENADE_RADIUS) continue;
+      const from = blast.p.clone().setY(blast.p.y + 0.2);
+      this.losRay.set(from, chest.clone().sub(from).normalize());
+      this.losRay.far = from.distanceTo(chest);
+      if (this.losRay.intersectObjects(this.world.solids, false).length > 0) continue;
+      const dmg = Math.round(GRENADE_DAMAGE * (1 - dist / GRENADE_RADIUS));
+      if (dmg < 5) continue;
+      hits[id] = dmg;
+      this.stats.damage += Math.min(dmg, remote.displayedHp);
+      remote.reveal(dmg);
+    }
+
+    this.grenades.explode(blast.id, blast.p, GRENADE_RADIUS);
+    sfx.playExplosion(1 / (1 + blast.p.distanceTo(this.camera.position) / 12));
+    const hitAnyone = Object.keys(hits).length > 0;
+    if (hitAnyone) {
+      this.hud.hitmarker(false);
+      sfx.playHit(false);
+    }
+    // Firebase rejects undefined fields, so only include hits when there are some.
+    this.net.sendEvent({ type: 'blast', id: blast.id, p: toArr(blast.p), ...(hitAnyone ? { hits } : {}) });
+  }
+
+  private updateAbilities(dt: number): void {
+    const now = performance.now();
+
+    if (this.shieldHp > 0 && now >= this.shieldUntil) this.endShield();
+    if (this.speedUntil && now >= this.speedUntil) {
+      this.speedUntil = 0;
+      this.player.speedMultiplier = 1;
+    }
+
+    const due = this.pendingBlasts.filter((b) => now >= b.at);
+    if (due.length) {
+      this.pendingBlasts = this.pendingBlasts.filter((b) => now < b.at);
+      due.forEach((b) => this.detonate(b));
+    }
+
+    this.pickups.update(now / 1000);
+    this.grenades.update();
+    if (this.joined && this.alive) this.tryPickup();
+    if (this.joined) this.runSpawner(dt);
+
+    const slots = this.inventory.view(now);
+    const buffs = {
+      speed: this.speedUntil ? Math.ceil((this.speedUntil - now) / 100) / 10 : null,
+      shield: this.shieldHp > 0 ? Math.ceil(this.shieldHp) : null,
+    };
+    const key = JSON.stringify([slots, buffs]);
+    if (key !== this.lastSlotsKey) {
+      this.lastSlotsKey = key;
+      this.hud.update({ slots, buffs });
+    }
+  }
+
+  private tryPickup(): void {
+    const p = this.player.position;
+    const ignored = this.ignorePickup;
+    if (ignored && Math.hypot(p.x - ignored.x, p.z - ignored.z) > 1.5) this.ignorePickup = null;
+    const id = this.pickups.touching(p);
+    if (!id || id === this.ignorePickup?.id) {
+      this.fullToastFor = null;
+      return;
+    }
+    if (this.claimingPickup) return; // one claim at a time, so two can't race for the last slot
+    if (!this.inventory.hasRoom) {
+      if (this.fullToastFor !== id) this.hud.toast('Slots full — use an ability to make room');
+      this.fullToastFor = id;
+      return;
+    }
+    this.claimingPickup = id;
+    this.net.claimPickup(id)
+      .then((pickup) => {
+        if (pickup && this.alive && this.inventory.add(pickup.type, pickup.uses) >= 0) {
+          this.hud.toast(`Picked up ${ABILITIES[pickup.type].name}`);
+          this.bumpMyMatch('pickups');
+          sfx.playPickup();
+        }
+      })
+      .catch((err: unknown) => console.warn('Pickup claim failed', err))
+      .finally(() => { this.claimingPickup = null; });
+  }
+
+  /** One player (the lowest id) keeps the map stocked; if they leave, the next one takes over. */
+  private runSpawner(dt: number): void {
+    if (!this.isLeader()) return;
+    this.spawnTimer -= dt;
+    if (this.spawnTimer > 0) return;
+    // Fill up quickly when the map is bare, then trickle in.
+    this.spawnTimer = this.pickups.count < MAX_PICKUPS / 2 ? 1.5 : 7;
+    if (this.pickups.count >= MAX_PICKUPS) return;
+    const spot = this.pickups.randomSpot();
+    if (!spot) return;
+    const type = ABILITY_TYPES[Math.floor(Math.random() * ABILITY_TYPES.length)] ?? 'medkit';
+    const pickup: PickupRecord = { type, ...spot };
+    void this.net.spawnPickup(pickup);
+  }
+
+  // ---------------------------------------------------------------- loop
+
+  private resize(): void {
+    const host = this.renderer.domElement.parentElement;
+    if (!host) return;
+    const w = host.clientWidth;
+    const h = host.clientHeight;
+    this.renderer.setSize(w, h);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+    this.weapon.setAspect(w / h);
+  }
+
+  private frame(): void {
+    this.timer.update();
+    const dt = Math.min(this.timer.getDelta(), 0.05);
+    this.update(dt);
+    this.renderer.clear();
+    this.renderer.render(this.scene, this.camera);
+    if (this.alive) {
+      this.renderer.clearDepth();
+      this.renderer.render(this.weapon.scene, this.weapon.camera);
+    }
+  }
+
+  private update(dt: number): void {
+    if (!this.alive && this.joined) {
+      this.respawnTimer -= dt;
+      const respawnIn = Math.max(0, Math.ceil(this.respawnTimer));
+      const death = this.hud.get().death;
+      if (death && death.respawnIn !== respawnIn) this.hud.update({ death: { ...death, respawnIn } });
+      if (this.respawnTimer <= 0) this.respawn();
+    }
+
+    this.player.update(dt, this.alive);
+    const speed = this.player.horizontalSpeed;
+    const sprinting = this.player.sprintHeld && speed > 7;
+
+    if (this.triggerHeld && this.alive && this.locked && this.joined && !this.roundOver && this.weapon.tryFire()) this.shoot();
+    this.weapon.update(dt, speed, sprinting && !this.triggerHeld);
+    this.hud.update({ ammo: this.weapon.ammo, reloading: this.weapon.reloading });
+
+    if (this.alive) {
+      const step = this.steps.update(dt, speed, this.player.onGround);
+      if (step) this.playStep(step, this.player.position);
+    }
+
+    for (const [id, r] of this.remotes) {
+      r.setAlly(this.isAlly(id));
+      r.update(dt);
+      this.updateRemoteSteps(id, r, dt);
+    }
+    this.effects.update(dt);
+    this.updateDamageIndicators();
+    this.updateAbilities(dt);
+    this.updateMode();
+
+    if (this.joined) {
+      this.sendTimer += dt;
+      this.heartbeat += dt;
+      if (this.sendTimer >= SEND_INTERVAL) {
+        this.sendTimer = 0;
+        const pose = this.poseState();
+        const key = JSON.stringify(pose);
+        const statsKey = JSON.stringify(this.stats);
+        const statsChanged = statsKey !== this.lastStatsKey;
+        if (key !== this.lastSent || statsChanged || this.heartbeat > HEARTBEAT) {
+          this.lastSent = key;
+          this.lastStatsKey = statsKey;
+          this.heartbeat = 0;
+          void this.net.sendState(statsChanged ? { ...pose, ...this.stats } : pose);
+        }
+      }
+    }
+
+    this.scoreTimer += dt;
+    if (this.scoreTimer > 0.25 && this.hud.get().scoreboardOpen) {
+      this.scoreTimer = 0;
+      this.hud.update({ scoreboard: this.scoreRows() });
+    }
+  }
+
+  /**
+   * Point an arc at each recent attacker. Recomputed every frame from their position
+   * at the time of the hit, so the arc swings around as we turn.
+   */
+  private updateDamageIndicators(): void {
+    const now = performance.now();
+    const p = this.player.position;
+    const yaw = this.player.yaw;
+    const indicators: DamageIndicator[] = [];
+    for (const [id, hit] of this.hitSources) {
+      const age = (now - hit.time) / 1000;
+      if (age > INDICATOR_HOLD + INDICATOR_FADE) {
+        this.hitSources.delete(id);
+        continue;
+      }
+      const dx = hit.at.x - p.x;
+      const dz = hit.at.z - p.z;
+      // Project onto our facing (forward = -z at yaw 0) and right vectors.
+      const ahead = -Math.sin(yaw) * dx - Math.cos(yaw) * dz;
+      const right = Math.cos(yaw) * dx - Math.sin(yaw) * dz;
+      const opacity = age < INDICATOR_HOLD ? 1 : 1 - (age - INDICATOR_HOLD) / INDICATOR_FADE;
+      indicators.push({
+        id,
+        // Rounded so the HUD only re-renders when the arc visibly moves.
+        angle: Math.round(THREE.MathUtils.radToDeg(Math.atan2(right, ahead))),
+        opacity: Math.round(opacity * 20) / 20,
+        strength: Math.round(Math.min(1, 0.4 + hit.damage / 60) * 10) / 10,
+      });
+    }
+    const key = JSON.stringify(indicators);
+    if (key === this.lastIndicatorKey) return;
+    this.lastIndicatorKey = key;
+    this.hud.update({ damageIndicators: indicators });
+  }
+
+  // ---------------------------------------------------------------- footsteps
+
+  /** Other players' footsteps, quieter with distance and panned toward where they are. */
+  private updateRemoteSteps(id: string, remote: RemotePlayer, dt: number): void {
+    if (!remote.alive) {
+      this.remoteSteps.delete(id);
+      return;
+    }
+    let tracker = this.remoteSteps.get(id);
+    if (!tracker) {
+      tracker = new StepTracker();
+      this.remoteSteps.set(id, tracker);
+    }
+    // We only get their position, so "on the ground" means standing on the floor or on top of a box.
+    const pos = remote.position;
+    const grounded = pos.y - this.groundBelow(pos) < 0.08;
+    const step = tracker.update(dt, remote.moveSpeed, grounded);
+    if (step && this.joined) this.playStep(step, pos, true);
+  }
+
+  private playStep(step: StepEvent, at: THREE.Vector3, remote = false): void {
+    const surface: sfx.Surface = this.groundBelow(at) > 0.05 ? 'wood' : this.floorSurface;
+    const land = step.kind === 'land';
+    // Our own steps: quiet and centered. Bigger drops land harder.
+    let volume = land ? Math.min(1, 0.35 + step.airTime * 0.5) : step.running ? 0.5 : 0.38;
+    let pan = 0;
+    if (remote) {
+      const ear = this.camera.position;
+      const distance = at.distanceTo(ear);
+      if (distance > STEP_HEARING_RANGE) return;
+      // Fade out smoothly toward the edge of hearing range.
+      const edge = 1 - Math.max(0, (distance - STEP_HEARING_RANGE * 0.7) / (STEP_HEARING_RANGE * 0.3));
+      volume = (volume * 1.8 * edge) / (1 + distance / 5);
+      const local = this.camera.worldToLocal(at.clone());
+      pan = distance > 0.5 ? THREE.MathUtils.clamp(local.x / distance, -1, 1) * 0.85 : 0;
+    }
+    sfx.playFootstep(surface, volume, pan, land);
+  }
+
+  private updateMode(): void {
+    if (this.flagField) {
+      this.flagField.update(performance.now() / 1000, (id) => {
+        const r = id === this.playerId ? undefined : this.remotes.get(id);
+        return r?.alive ? { position: r.position, yaw: r.yaw } : null;
+      });
+    }
+    if (!this.joined) return;
+    if (this.mode === 'ctf') {
+      if (this.alive) this.updateFlags();
+      this.refereeFlags();
+    }
+    if (this.roundOver && performance.now() >= this.intermissionEnds) this.requestNextRound();
+    // Keeps the round-over countdown ticking; does nothing when the score hasn't changed.
+    this.refreshScore();
+  }
+
+  private scoreRows(): ScoreRow[] {
+    return Object.entries(this.players)
+      .map(([id, p]) => {
+        // Our own stats are fresher locally than the last copy we sent.
+        const s = id === this.playerId ? this.stats : p;
+        return {
+          id,
+          name: p.name,
+          color: p.color,
+          kills: p.kills || 0,
+          deaths: p.deaths || 0,
+          damage: Math.round(s.damage || 0),
+          accuracy: s.shots ? (s.hits || 0) / s.shots : null,
+          headshots: s.headshots || 0,
+          bestStreak: s.best || 0,
+          captures: s.captures || 0,
+          team: (id === this.playerId ? this.team : p.team) ?? null,
+          me: id === this.playerId,
+        };
+      })
+      .sort((a, b) => b.captures - a.captures || b.kills - a.kills || b.damage - a.damage || a.deaths - b.deaths);
+  }
+
+  /** Stop the game, free GPU resources and leave the room. Safe to call more than once. */
+  async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.renderer.setAnimationLoop(null);
+    this.abort.abort();
+    if (document.pointerLockElement) document.exitPointerLock();
+    for (const r of this.remotes.values()) r.dispose();
+    this.remotes.clear();
+    this.pickups.dispose();
+    this.grenades.dispose();
+    this.flagField?.dispose();
+    this.renderer.dispose();
+    this.renderer.domElement.remove();
+    this.hud.dispose();
+    await this.dropFlag();
+    await this.net.leave();
+  }
+}
+
+function samePlacement(a: FlagPlacement, b: FlagPlacement): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
