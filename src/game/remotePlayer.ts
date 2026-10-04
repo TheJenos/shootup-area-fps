@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { NameTag } from './nameTag';
 import { AllyMarker } from './allyMarker';
+import { makeXrayMaterial, makeXrayMeshes } from './xray';
 import { REMOTE_GUN_SIZE } from './guns';
 import { wornMetalTexture } from './textures';
 import { cloneCharacter, GAITS, type CharacterAsset, type Gait } from './character';
@@ -116,7 +117,9 @@ export class RemotePlayer {
   private gunMesh!: THREE.Mesh;
   private gunNow: GunKind = 'rifle';
   private ally = false;
-  /** Icon drawn over the walls while a teammate is behind cover (made on first need) */
+  /** Flat silhouette and name label drawn over the walls while a teammate is behind cover (made on first need) */
+  private xray: THREE.Mesh[] = [];
+  private xrayMaterial: THREE.ShaderMaterial | null = null;
   private marker: AllyMarker | null = null;
   private occluded = false;
   private teamNow: Team | undefined;
@@ -232,7 +235,7 @@ export class RemotePlayer {
     if (data.color || data.team) this.setColor(data.color ?? this.colorNow, data.team ?? this.teamNow);
     if (data.name) {
       this.tag.setName(data.name);
-      this.marker?.set({ name: data.name });
+      this.marker?.setName(data.name);
     }
     this.shield.visible = !!data.shield && this.alive;
     if (data.gun && data.gun !== this.gunNow) this.setGun(data.gun);
@@ -318,18 +321,26 @@ export class RemotePlayer {
   }
 
   /**
-   * A teammate is behind cover: show a marker (a little figure and their name) over the walls
-   * in place of their name tag. Only for allies; enemies behind walls stay hidden.
+   * A teammate is behind cover: show a flat 2D silhouette of their character in team colour,
+   * with their name above it, over the walls (in place of their name tag).
+   * Only for allies; enemies behind walls stay hidden.
    */
   setOccluded(occluded: boolean): void {
     const show = occluded && this.ally && this.alive;
     if (show === this.occluded) return;
     this.occluded = show;
     if (show && !this.marker) {
+      this.xrayMaterial = makeXrayMaterial(this.colorNow ?? '#ffffff');
+      this.xray = makeXrayMeshes(this.model, this.xrayMaterial);
+      // The gun they're holding is part of the silhouette too (it follows gun swaps, being its child).
+      const gunCopy = new THREE.Mesh(this.gunMesh.geometry, this.xrayMaterial);
+      gunCopy.renderOrder = 10;
+      this.gunMesh.add(gunCopy);
+      this.xray.push(gunCopy);
       this.marker = new AllyMarker(this.tag.name);
-      this.marker.set({ color: this.colorNow ?? '#ffffff' });
       this.group.add(this.marker.sprite);
     }
+    for (const mesh of this.xray) mesh.visible = show;
     if (this.marker) this.marker.sprite.visible = show;
   }
 
@@ -364,9 +375,8 @@ export class RemotePlayer {
     this.group.rotation.x = (-Math.PI / 2) * this.fall * this.fall;
     this.tag.update(this.alive && !this.occluded);
     if (this.occluded && this.marker) {
-      this.marker.sprite.position.y = this.chestHeight;
-      const pose = this.crouchAmount > 0.5 || this.slideAmount > 0.5 ? 'crouch' : this.speed >= WALK_FROM ? 'run' : 'stand';
-      this.marker.set({ pose });
+      // Just above the head, following crouches and slides.
+      this.marker.sprite.position.y = this.tag.sprite.position.y - 0.25;
     }
   }
 
@@ -437,7 +447,7 @@ export class RemotePlayer {
     if (color === this.colorNow && team === this.teamNow) return;
     this.colorNow = color;
     this.teamNow = team;
-    this.marker?.set({ color });
+    this.xrayMaterial?.uniforms.color?.value.set(color);
     const onTeam = !!(team ?? teamOfColor(color));
     const tint = new THREE.Color(color);
     for (const mat of this.materials) {
@@ -457,6 +467,7 @@ export class RemotePlayer {
     this.mixer.uncacheRoot(this.model);
     this.scene.remove(this.group);
     for (const mat of this.materials) mat.dispose();
+    this.xrayMaterial?.dispose();
     this.marker?.dispose();
     this.tag.dispose();
   }
