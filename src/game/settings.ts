@@ -1,7 +1,7 @@
 /** Player preferences (mouse + key bindings), saved in this browser. */
 
 export type Action =
-  | 'forward' | 'back' | 'left' | 'right' | 'jump' | 'sprint' | 'reload'
+  | 'forward' | 'back' | 'left' | 'right' | 'jump' | 'sprint' | 'crouch' | 'reload'
   | 'ability1' | 'ability2' | 'ability3' | 'inventory' | 'scoreboard';
 
 export const ACTIONS: { action: Action; label: string }[] = [
@@ -11,6 +11,7 @@ export const ACTIONS: { action: Action; label: string }[] = [
   { action: 'right', label: 'Strafe right' },
   { action: 'jump', label: 'Jump' },
   { action: 'sprint', label: 'Sprint' },
+  { action: 'crouch', label: 'Crouch (slide while sprinting)' },
   { action: 'reload', label: 'Reload' },
   { action: 'ability1', label: 'Ability slot 1' },
   { action: 'ability2', label: 'Ability slot 2' },
@@ -39,6 +40,8 @@ export const DEFAULT_BINDINGS: Bindings = {
   right: 'KeyD',
   jump: 'Space',
   sprint: 'ShiftLeft',
+  // Not Ctrl: browsers don't let pages block Ctrl+W, so crouch-walking forward would close the tab.
+  crouch: 'KeyC',
   reload: 'KeyR',
   ability1: 'Digit1',
   ability2: 'Digit2',

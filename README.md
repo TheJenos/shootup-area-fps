@@ -18,7 +18,8 @@ Open the game in two browser windows, create a room in one and join it from the 
 ## Using a real Firebase project
 
 1. Create a project at https://console.firebase.google.com
-2. **Build → Realtime Database → Create database**
+2. **Build → Realtime Database → Create database**, picking the location closest to your players (it can't be
+   changed later; this game's live database is in Singapore, `asia-southeast1`)
 3. **Project settings → Your apps → Web app**, then copy the config values.
 4. `cp .env.example .env` and fill them in (`VITE_FIREBASE_DATABASE_URL` is the important one).
 5. Paste `database.rules.json` into **Realtime Database → Rules** (or `firebase deploy --only database`).
@@ -141,6 +142,7 @@ All sound is synthesized with Web Audio (no audio files), including footsteps:
 | Left click (hold) | Shoot (automatic) |
 | Space | Jump |
 | Shift | Sprint |
+| C (hold) | Crouch; press while sprinting to slide |
 | R | Reload |
 | 1 / 2 / 3 | Use the ability in that slot |
 | I | Inventory (details + drop items) |
@@ -150,6 +152,20 @@ All sound is synthesized with Web Audio (no audio files), including footsteps:
 These are the defaults. **Settings** (in the lobby, or the pause menu) lets you change mouse sensitivity
 (0.1×–4×), invert vertical look and rebind every key except shooting (left click) and Esc. Binding a key
 that's already in use swaps the two. Settings are saved in your browser (`src/game/settings.ts`).
+
+## Crouch and slide
+
+- **Crouch** (hold C): lower eyes, a smaller hitbox, walking at about half speed, 40% tighter aim and much
+  quieter footsteps. You stay crouched under anything too low to stand up under.
+- **Slide** (press C while sprinting on the ground): a burst of up to 13 m/s along the way you're running
+  that bleeds off over about 0.8 s (roughly 6 m), with the camera dipping and tilting, then you're
+  crouching. You can't steer mid-slide, but jumping out of one keeps its speed. There's a 1.2 s cooldown.
+- Other players see you crouch and slide, and hear the scrape of a slide. The model has no crouch
+  animation, so `remotePlayer.ts` bends its legs in code and lowers the hips to keep the feet on the ground.
+  Stance is also recorded for the MVP replay.
+
+The default is C, not Ctrl: browsers don't let a page block Ctrl+W, so crouch-walking forward would close the
+tab. Rebind it in Settings.
 
 ## Abilities
 

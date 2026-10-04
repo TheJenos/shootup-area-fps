@@ -376,7 +376,9 @@ export class Game {
 
   private poseState(): Pose {
     const p = this.player.position;
-    return { x: r2(p.x), y: r2(p.y), z: r2(p.z), yaw: r3(this.player.yaw), pitch: r3(this.player.pitch) };
+    return {
+      x: r2(p.x), y: r2(p.y), z: r2(p.z), yaw: r3(this.player.yaw), pitch: r3(this.player.pitch), stance: this.player.stance,
+    };
   }
 
   // ---------------------------------------------------------------- network
@@ -1076,10 +1078,12 @@ export class Game {
     const dir = this.camera.getWorldDirection(new THREE.Vector3());
 
     const moving = this.player.horizontalSpeed > 1;
-    const spread = 0.002
+    // Crouching steadies your aim; sliding doesn't.
+    const steady = this.player.stance === 'crouch' ? 0.6 : 1;
+    const spread = (0.002
       + (moving ? 0.012 : 0)
       + (this.player.onGround ? 0 : 0.04)
-      + Math.min(this.weapon.shotsInBurst, 10) * 0.0015;
+      + Math.min(this.weapon.shotsInBurst, 10) * 0.0015) * steady;
     dir.add(new THREE.Vector3().randomDirection().multiplyScalar(spread)).normalize();
 
     const targets: THREE.Object3D[] = [...this.world.solids];
@@ -1235,7 +1239,7 @@ export class Game {
     const hits: Record<string, number> = {};
     for (const [id, remote] of this.remotes) {
       if (!remote.alive || this.isAlly(id)) continue;
-      const chest = remote.position.clone().setY(remote.position.y + 1);
+      const chest = remote.position.clone().setY(remote.position.y + remote.chestHeight);
       const dist = chest.distanceTo(blast.p);
       if (dist > GRENADE_RADIUS) continue;
       const from = blast.p.clone().setY(blast.p.y + 0.2);
@@ -1380,8 +1384,11 @@ export class Game {
     this.hud.update({ ammo: this.weapon.ammo, reloading: this.weapon.reloading });
 
     if (this.alive) {
-      const step = this.steps.update(dt, speed, this.player.onGround);
-      if (step) this.playStep(step, this.player.position);
+      if (this.player.slideStarted) sfx.playSlide(this.surfaceAt(this.player.position), 0.7);
+      // Feet don't step during a slide.
+      const sliding = this.player.stance === 'slide';
+      const step = this.steps.update(dt, sliding ? 0 : speed, this.player.onGround);
+      if (step) this.playStep(step, this.player.position, false, this.player.stance === 'crouch');
     }
 
     for (const [id, r] of this.remotes) {
@@ -1502,27 +1509,43 @@ export class Game {
     // We only get their position, so "on the ground" means standing on the floor or on top of a box.
     const pos = remote.position;
     const grounded = pos.y - this.groundBelow(pos) < 0.08;
-    const step = tracker.update(dt, remote.moveSpeed, grounded);
-    if (step && this.joined) this.playStep(step, pos, true);
+    if (remote.consumeSlideStart() && this.joined) {
+      const heard = this.heardFrom(pos);
+      if (heard) sfx.playSlide(this.surfaceAt(pos), heard.volume * 1.4, heard.pan);
+    }
+    const step = tracker.update(dt, remote.stance === 'slide' ? 0 : remote.moveSpeed, grounded);
+    if (step && this.joined) this.playStep(step, pos, true, remote.stance === 'crouch');
   }
 
-  private playStep(step: StepEvent, at: THREE.Vector3, remote = false): void {
-    const surface: sfx.Surface = this.groundBelow(at) > 0.05 ? 'wood' : this.floorSurface;
+  private surfaceAt(at: THREE.Vector3): sfx.Surface {
+    return this.groundBelow(at) > 0.05 ? 'wood' : this.floorSurface;
+  }
+
+  /** How loud, and from which side, a sound at `at` reaches us; null when out of hearing range. */
+  private heardFrom(at: THREE.Vector3): { volume: number; pan: number } | null {
+    const distance = at.distanceTo(this.camera.position);
+    if (distance > STEP_HEARING_RANGE) return null;
+    // Fade out smoothly toward the edge of hearing range.
+    const edge = 1 - Math.max(0, (distance - STEP_HEARING_RANGE * 0.7) / (STEP_HEARING_RANGE * 0.3));
+    const local = this.camera.worldToLocal(at.clone());
+    const pan = distance > 0.5 ? THREE.MathUtils.clamp(local.x / distance, -1, 1) * 0.85 : 0;
+    return { volume: edge / (1 + distance / 5), pan };
+  }
+
+  /** @param crouched crouch-walking is much quieter */
+  private playStep(step: StepEvent, at: THREE.Vector3, remote = false, crouched = false): void {
     const land = step.kind === 'land';
     // Our own steps: quiet and centered. Bigger drops land harder.
     let volume = land ? Math.min(1, 0.35 + step.airTime * 0.5) : step.running ? 0.5 : 0.38;
+    if (crouched && !land) volume *= 0.4;
     let pan = 0;
     if (remote) {
-      const ear = this.camera.position;
-      const distance = at.distanceTo(ear);
-      if (distance > STEP_HEARING_RANGE) return;
-      // Fade out smoothly toward the edge of hearing range.
-      const edge = 1 - Math.max(0, (distance - STEP_HEARING_RANGE * 0.7) / (STEP_HEARING_RANGE * 0.3));
-      volume = (volume * 1.8 * edge) / (1 + distance / 5);
-      const local = this.camera.worldToLocal(at.clone());
-      pan = distance > 0.5 ? THREE.MathUtils.clamp(local.x / distance, -1, 1) * 0.85 : 0;
+      const heard = this.heardFrom(at);
+      if (!heard) return;
+      volume *= 1.8 * heard.volume;
+      pan = heard.pan;
     }
-    sfx.playFootstep(surface, volume, pan, land);
+    sfx.playFootstep(this.surfaceAt(at), volume, pan, land);
   }
 
   private updateMode(): void {

@@ -13,6 +13,8 @@ export interface PlayerState {
   deaths: number;
   /** Shield ability active (shown as a bubble to others) */
   shield?: boolean;
+  /** Crouching or sliding; missing means standing */
+  stance?: Stance;
   /** Team in TDM / CTF; absent in free-for-all */
   team?: Team;
   /** Match stats, reported by each player about themselves */
@@ -69,7 +71,9 @@ export interface RoundEnd {
 
 export type PlayerStats = Required<Pick<PlayerState, 'damage' | 'shots' | 'hits' | 'headshots' | 'streak' | 'best' | 'captures'>>;
 
-export type Pose = Pick<PlayerState, 'x' | 'y' | 'z' | 'yaw' | 'pitch'>;
+export type Stance = 'stand' | 'crouch' | 'slide';
+
+export type Pose = Pick<PlayerState, 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'stance'>;
 
 export type Vec3Tuple = [number, number, number];
 

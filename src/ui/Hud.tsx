@@ -14,7 +14,7 @@ function controls(b: Bindings): [key: string, action: string][] {
   const k = (...codes: string[]) => codes.map(keyLabel).join(' ');
   return [
     [k(b.forward, b.left, b.back, b.right), 'move'], ['Mouse', 'aim'], ['Click', 'shoot'], [k(b.jump), 'jump'],
-    [k(b.sprint), 'sprint'], [k(b.reload), 'reload'], [k(b.ability1, b.ability2, b.ability3), 'abilities'],
+    [k(b.sprint), 'sprint'], [k(b.crouch), 'crouch / slide'], [k(b.reload), 'reload'], [k(b.ability1, b.ability2, b.ability3), 'abilities'],
     [k(b.inventory), 'inventory'], [k(b.scoreboard), 'match summary'],
   ];
 }

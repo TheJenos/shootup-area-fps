@@ -86,6 +86,24 @@ export const playPickup = () => { blip(660, 0.12, 0.08, 'triangle'); blip(990, 0
 export const playAbility = () => blip(520, 0.12, 0.15, 'triangle');
 export const playDenied = () => blip(160, 0.1, 0.08, 'square');
 
+/** Scrape of a slide along the floor. Softer surfaces muffle it. */
+export function playSlide(surface: 'hard' | 'sand' | 'snow' | 'wood', volume = 1, pan = 0): void {
+  if (!ctx || !noise || volume < 0.01) return;
+  const { gain, t } = envelope(ctx, 0.32 * volume, 0.65, 0, pan);
+  const src = ctx.createBufferSource();
+  src.buffer = noise;
+  src.loop = true;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'bandpass';
+  const top = surface === 'hard' || surface === 'wood' ? 2400 : surface === 'snow' ? 3200 : 1100;
+  filter.frequency.setValueAtTime(top, t);
+  filter.frequency.exponentialRampToValueAtTime(top * 0.25, t + 0.6);
+  filter.Q.value = 0.8;
+  src.connect(filter).connect(gain);
+  src.start(t, Math.random() * 0.3);
+  src.stop(t + 0.7);
+}
+
 // ---------------------------------------------------------------- footsteps
 
 /** What a foot lands on: the map's floor, or the top of a crate. */

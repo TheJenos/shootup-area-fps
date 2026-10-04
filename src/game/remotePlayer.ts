@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { NameTag } from './nameTag';
 import { wornMetalTexture } from './textures';
 import { cloneCharacter, GAITS, type CharacterAsset, type Gait } from './character';
-import type { PlayerState } from '../types';
+import type { PlayerState, Stance } from '../types';
 
 /** Attached to hitbox meshes so a raycast hit can be traced back to a player. */
 export interface HitboxData {
@@ -20,6 +20,19 @@ const BONE_SCALE = 100;
 const SPINE_PITCH = 0.7;
 // After we hit someone, trust our own damage estimate over slightly stale server updates for this long.
 const HP_PREDICTION_MS = 600;
+
+/*
+ * The model has no crouch or slide animation, so they're posed on top of whatever it's
+ * playing: thighs forward, knees bent, upper body leaning (radians), then the hips are
+ * lowered until the feet are back on the ground. The pose blends in and out.
+ */
+const CROUCH_POSE = { thigh: 1.1, knee: 1.75, lean: 0.35 };
+const SLIDE_POSE = { thigh: 1.65, knee: 0.3, lean: -0.8 };
+/** How high the feet sit above the ground when standing (m) */
+const FOOT_REST = 0.12;
+/** Body hitbox height (scale) and how far a crouch / slide lowers the head tag and chest */
+const CROUCH_BODY = 0.68;
+const SLIDE_BODY = 0.42;
 
 // Hitboxes are invisible but still raycastable.
 const hitboxMat = new THREE.MeshBasicMaterial({ visible: false });
@@ -77,6 +90,15 @@ export class RemotePlayer {
   private readonly mixer: THREE.AnimationMixer;
   private readonly actions: Record<Gait, THREE.AnimationAction>;
   private readonly spine: THREE.Object3D;
+  private readonly hips: THREE.Object3D;
+  private readonly thighs: THREE.Object3D[];
+  private readonly shins: THREE.Object3D[];
+  private readonly feet: THREE.Object3D[];
+  private stanceNow: Stance = 'stand';
+  /** 0..1 blend toward the crouch and slide poses */
+  private crouchAmount = 0;
+  private slideAmount = 0;
+  private slideStarted = false;
   private readonly bodyHit: THREE.Mesh;
   private readonly headHit: THREE.Mesh;
   private readonly tag: NameTag;
@@ -127,6 +149,11 @@ export class RemotePlayer {
     this.actions.Idle.play();
 
     this.spine = bone(this.model, 'mixamorigSpine2');
+    this.hips = bone(this.model, 'mixamorigHips');
+    this.thighs = [bone(this.model, 'mixamorigLeftUpLeg'), bone(this.model, 'mixamorigRightUpLeg')];
+    this.shins = [bone(this.model, 'mixamorigLeftLeg'), bone(this.model, 'mixamorigRightLeg')];
+    this.feet = [bone(this.model, 'mixamorigLeftFoot'), bone(this.model, 'mixamorigRightFoot')];
+    this.stanceNow = data.stance ?? 'stand';
 
     const gun = new THREE.Mesh(gunGeo, rifleMaterial());
     gun.castShadow = true;
@@ -178,6 +205,10 @@ export class RemotePlayer {
     if (data.color) this.setColor(data.color);
     if (data.name) this.tag.setName(data.name);
     this.shield.visible = !!data.shield && this.alive;
+    if (data.stance) {
+      if (data.stance === 'slide' && this.stanceNow !== 'slide') this.slideStarted = true;
+      this.stanceNow = data.stance;
+    }
     if (data.hp !== undefined) {
       this.hp = data.hp;
       const predicting = performance.now() - this.lastHitAt < HP_PREDICTION_MS;
@@ -214,6 +245,22 @@ export class RemotePlayer {
     return this.group.rotation.y;
   }
 
+  get stance(): Stance {
+    return this.stanceNow;
+  }
+
+  /** True once after this player starts a slide (for its sound). */
+  consumeSlideStart(): boolean {
+    const started = this.slideStarted;
+    this.slideStarted = false;
+    return started;
+  }
+
+  /** Height of their chest above their feet, lower when crouching or sliding (for grenade line of sight). */
+  get chestHeight(): number {
+    return 1 - 0.35 * this.crouchAmount - 0.55 * this.slideAmount;
+  }
+
   /** Hide the avatar (e.g. while the MVP replay is on). */
   setVisible(visible: boolean): void {
     this.group.visible = visible;
@@ -240,10 +287,48 @@ export class RemotePlayer {
     this.mixer.update(dt);
     // Lean the upper body to match where they're aiming (applied after the animation).
     this.spine.rotateX(-this.pitch * SPINE_PITCH);
+    this.applyStance(dt);
 
     this.fall = THREE.MathUtils.clamp(this.fall + (this.alive ? -dt * 4 : dt * 2.5), 0, 1);
     this.group.rotation.x = (-Math.PI / 2) * this.fall * this.fall;
     this.tag.update(this.alive);
+  }
+
+  /** Blend the crouch / slide pose and shrink the hitbox, name tag and shield to match. */
+  private applyStance(dt: number): void {
+    const ease = 1 - Math.exp(-12 * dt);
+    const crouch = this.alive && this.stanceNow === 'crouch' ? 1 : 0;
+    const slide = this.alive && this.stanceNow === 'slide' ? 1 : 0;
+    this.crouchAmount += (crouch - this.crouchAmount) * ease;
+    this.slideAmount += (slide - this.slideAmount) * ease;
+    const c = this.crouchAmount;
+    const sl = this.slideAmount;
+
+    if (c > 0.001 || sl > 0.001) {
+      for (const thigh of this.thighs) thigh.rotateX(-(c * CROUCH_POSE.thigh + sl * SLIDE_POSE.thigh));
+      for (const shin of this.shins) shin.rotateX(c * CROUCH_POSE.knee + sl * SLIDE_POSE.knee);
+      this.spine.rotateX(c * CROUCH_POSE.lean + sl * SLIDE_POSE.lean);
+      this.plantFeet();
+    }
+
+    const body = 1 - (1 - CROUCH_BODY) * c - (1 - SLIDE_BODY) * sl;
+    this.bodyHit.scale.y = body;
+    this.bodyHit.position.y = 0.75 * body;
+    this.tag.sprite.position.y = 2.15 - 0.6 * c - 0.95 * sl;
+    this.shield.scale.y = 1.05 * body;
+    this.shield.position.y = 0.95 * body;
+  }
+
+  /** Lower the hips so the lowest foot is back at standing height after the legs were bent. */
+  private plantFeet(): void {
+    this.model.updateMatrixWorld(true);
+    const v = new THREE.Vector3();
+    const lowest = Math.min(...this.feet.map((f) => f.getWorldPosition(v).y)) - this.group.position.y;
+    const lift = lowest - FOOT_REST;
+    if (lift <= 0) return;
+    // The rig is Z-up inside the scaled armature, so "down" for the hips is local -Z.
+    const scale = this.hips.parent?.getWorldScale(v).z || 1;
+    this.hips.position.z -= lift / scale;
   }
 
   /** Pick Idle / Walk / Run from how fast the avatar is actually moving. */

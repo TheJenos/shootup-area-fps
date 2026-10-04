@@ -7,7 +7,7 @@ import type { CharacterAsset } from './character';
 import { GRENADE_RADIUS } from './abilities';
 import { TEAMS } from './modes';
 import * as sfx from './audio';
-import type { MvpInfo, PlayerState, Team, Vec3Tuple } from '../types';
+import type { MvpInfo, PlayerState, Stance, Team, Vec3Tuple } from '../types';
 
 /** Keep at most one pose per player per this many ms (about 12 a second). */
 const SAMPLE_GAP = 80;
@@ -25,6 +25,7 @@ interface PoseSample {
   yaw: number;
   pitch: number;
   alive: boolean;
+  stance?: Stance;
 }
 
 interface Track {
@@ -56,7 +57,9 @@ export class ReplayRecorder {
     this.initialFlags = { ...flags };
   }
 
-  pose(id: string, data: Pick<PlayerState, 'name' | 'color' | 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'alive'>, t: number): void {
+  pose(
+    id: string, data: Pick<PlayerState, 'name' | 'color' | 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'alive' | 'stance'>, t: number,
+  ): void {
     let track = this.tracks.get(id);
     if (!track) {
       track = { name: data.name, color: data.color, samples: [] };
@@ -66,9 +69,12 @@ export class ReplayRecorder {
     track.color = data.color;
     const alive = data.alive !== false;
     const last = track.samples[track.samples.length - 1];
-    // Always keep deaths and respawns, otherwise thin out to the sample rate.
-    if (last && t - last.t < SAMPLE_GAP && last.alive === alive) return;
-    track.samples.push({ t, x: data.x || 0, y: data.y || 0, z: data.z || 0, yaw: data.yaw || 0, pitch: data.pitch || 0, alive });
+    const stance = data.stance ?? 'stand';
+    // Always keep deaths, respawns and stance changes, otherwise thin out to the sample rate.
+    if (last && t - last.t < SAMPLE_GAP && last.alive === alive && last.stance === stance) return;
+    track.samples.push({
+      t, x: data.x || 0, y: data.y || 0, z: data.z || 0, yaw: data.yaw || 0, pitch: data.pitch || 0, alive, stance,
+    });
   }
 
   event(e: ReplayEvent): void {
@@ -108,6 +114,7 @@ function sampleAt(samples: PoseSample[], t: number): PoseSample | null {
     yaw: a.yaw + dYaw * k,
     pitch: a.pitch + (b.pitch - a.pitch) * k,
     alive: true,
+    stance: a.stance,
   };
 }
 
@@ -193,7 +200,9 @@ export class ReplayDirector {
       const track = this.opts.recorder.tracks.get(id);
       const pose = track ? sampleAt(track.samples, this.time) : null;
       ghost.setVisible(!!pose);
-      if (pose) ghost.setData({ x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw, pitch: pose.pitch, alive: pose.alive });
+      if (pose) {
+        ghost.setData({ x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw, pitch: pose.pitch, alive: pose.alive, stance: pose.stance ?? 'stand' });
+      }
       ghost.update(dt);
     }
     this.chaseCamera(dt);
