@@ -23,7 +23,7 @@ import { MomentTracker } from './moments';
 import { ReplayDirector, ReplayRecorder } from './replay';
 import { RoomConnection, randomId } from '../net/network';
 import * as sfx from './audio';
-import { actionFor, type Action } from './settings';
+import { actionFor, settings, type Action } from './settings';
 import { StepTracker, type StepEvent } from './footsteps';
 import type {
   GameEvent, GameMode, GameState, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, Team, Vec3Tuple, WeaponKind,
@@ -65,6 +65,26 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
 const toArr = (v: THREE.Vector3): Vec3Tuple => [r2(v.x), r2(v.y), r2(v.z)];
 const fromArr = (a: Vec3Tuple) => new THREE.Vector3(a[0], a[1], a[2]);
+
+/** Keyboard Lock API (Chrome / Edge, fullscreen only); not in TypeScript's DOM types yet. */
+interface KeyboardLock {
+  lock(codes?: string[]): Promise<void>;
+  unlock(): void;
+}
+const keyboardLock = (): KeyboardLock | undefined => (navigator as Navigator & { keyboard?: KeyboardLock }).keyboard;
+
+/**
+ * Keys to take from the browser while playing fullscreen: every bound key (crouch is Ctrl, and
+ * Ctrl+1 / Ctrl+Tab would switch tabs), plus the letters of tab / window shortcuts. Esc is left
+ * alone so it still releases the mouse and leaves fullscreen.
+ */
+function keysToLock(): string[] {
+  const keys = new Set<string>(Object.values(settings.get().bindings));
+  for (const code of ['KeyW', 'KeyT', 'KeyN', 'KeyQ', 'Tab']) keys.add(code);
+  for (let d = 1; d <= 9; d++) keys.add(`Digit${d}`);
+  keys.delete('Escape');
+  return [...keys];
+}
 
 export interface GameOptions {
   /** Element the WebGL canvas is mounted into */
@@ -235,11 +255,34 @@ export class Game {
     this.hud.update({ map: { name: map.theme.name, seed: map.seed } });
   }
 
-  /** Capture the mouse and start playing. Must be called from a user gesture. */
+  /** Capture the mouse (and go fullscreen) to start playing. Must be called from a user gesture. */
   requestPointerLock(): void {
+    // Fullscreen first: it needs the click, and pointer lock doesn't once we're fullscreen.
+    if (settings.get().fullscreen) this.enterFullscreen();
+    this.lockPointer();
+  }
+
+  private lockPointer(): void {
+    if (document.pointerLockElement === this.renderer.domElement) return;
     // Browsers throttle re-locking right after Esc; older ones return void instead of a promise.
     const result = this.renderer.domElement.requestPointerLock() as Promise<void> | undefined;
     result?.catch(() => {});
+  }
+
+  /**
+   * Fullscreen, then ask the browser to hand us our keys even with Ctrl / Cmd held, so crouching
+   * (Ctrl) plus W, 1, Tab... can't close or switch the tab mid-game. Keyboard Lock only works in
+   * fullscreen and only in Chrome / Edge; elsewhere the "leave site?" prompt is the safety net.
+   */
+  private enterFullscreen(): void {
+    if (document.fullscreenElement || !document.documentElement.requestFullscreen) return;
+    document.documentElement.requestFullscreen({ navigationUI: 'hide' })
+      .then(() => {
+        // Entering fullscreen can cancel a pointer lock that was requested in the same click.
+        this.lockPointer();
+        return keyboardLock()?.lock(keysToLock());
+      })
+      .catch(() => { /* refused or unsupported: play windowed */ });
   }
 
   private bindInput(signal: AbortSignal): void {
@@ -256,17 +299,28 @@ export class Game {
     }, { signal });
     canvas.addEventListener('click', () => { if (!this.locked) this.requestPointerLock(); }, { signal });
 
+    // On a Mac, Ctrl+click is a right-click; crouching (Ctrl) and shooting must still shoot.
+    const isFire = (e: MouseEvent) => e.button === 0 || (e.button === 2 && e.ctrlKey);
     window.addEventListener('mousedown', (e) => {
-      if (e.button === 0 && this.locked) this.triggerHeld = true;
+      if (isFire(e) && this.locked) this.triggerHeld = true;
     }, { signal });
+    window.addEventListener('contextmenu', (e) => { if (this.locked) e.preventDefault(); }, { signal });
+    // Rebinding keys mid-game: lock the new set.
+    signal.addEventListener('abort', settings.subscribe(() => {
+      if (document.fullscreenElement) keyboardLock()?.lock(keysToLock()).catch(() => {});
+    }), { once: true });
     window.addEventListener('mouseup', (e) => {
-      if (e.button === 0) {
+      if (isFire(e)) {
         this.triggerHeld = false;
         this.weapon.releaseTrigger();
       }
     }, { signal });
 
     window.addEventListener('keydown', (e) => {
+      // Ctrl+W / Cmd+W would close the tab. This only reaches us while the key is locked (see enterFullscreen).
+      if (e.code === 'KeyW' && (e.ctrlKey || e.metaKey)) e.preventDefault();
+      // While playing, Ctrl means crouch: stop Ctrl+S (save), Ctrl+D (bookmark), Ctrl+A, Ctrl+R...
+      if (this.locked && e.ctrlKey && !e.metaKey) e.preventDefault();
       const action = actionFor(e.code);
       // Keep bound keys (Tab, Space, ...) from also moving focus or scrolling the page.
       if (action && this.locked) e.preventDefault();
@@ -285,6 +339,14 @@ export class Game {
     }, { signal });
     window.addEventListener('keyup', (e) => {
       if (actionFor(e.code) === 'scoreboard') this.hud.update({ scoreboardOpen: false });
+    }, { signal });
+
+    // Closing or reloading the tab mid-game (e.g. a stray Ctrl+W) asks first. Leaving through
+    // the menu doesn't, because the game is disposed (and this listener removed) before that.
+    window.addEventListener('beforeunload', (e) => {
+      if (!this.joined) return;
+      e.preventDefault();
+      e.returnValue = '';
     }, { signal });
   }
 
@@ -1601,6 +1663,8 @@ export class Game {
     this.renderer.setAnimationLoop(null);
     this.abort.abort();
     if (document.pointerLockElement) document.exitPointerLock();
+    keyboardLock()?.unlock();
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     for (const r of this.remotes.values()) r.dispose();
     this.remotes.clear();
     this.pickups.dispose();

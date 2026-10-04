@@ -26,6 +26,11 @@ export interface Settings {
   /** Multiplier on the base mouse speed */
   sensitivity: number;
   invertY: boolean;
+  /**
+   * Go fullscreen when play starts. In Chrome / Edge this also lets the game keep Ctrl+W (Cmd+W),
+   * which otherwise closes the tab.
+   */
+  fullscreen: boolean;
   /** KeyboardEvent.code for each action */
   bindings: Bindings;
 }
@@ -40,8 +45,9 @@ export const DEFAULT_BINDINGS: Bindings = {
   right: 'KeyD',
   jump: 'Space',
   sprint: 'ShiftLeft',
-  // Not Ctrl: browsers don't let pages block Ctrl+W, so crouch-walking forward would close the tab.
-  crouch: 'KeyC',
+  // Ctrl + other keys are browser shortcuts (Ctrl+W closes the tab); the game guards against
+  // that while playing, see Game.enterFullscreen and the keydown handler.
+  crouch: 'ControlLeft',
   reload: 'KeyR',
   ability1: 'Digit1',
   ability2: 'Digit2',
@@ -50,22 +56,33 @@ export const DEFAULT_BINDINGS: Bindings = {
   scoreboard: 'Tab',
 };
 
-const DEFAULTS: Settings = { sensitivity: 1, invertY: false, bindings: DEFAULT_BINDINGS };
+const DEFAULTS: Settings = { sensitivity: 1, invertY: false, fullscreen: true, bindings: DEFAULT_BINDINGS };
 
 /** Esc always releases the mouse, so it can't be bound. */
 export const RESERVED_KEYS = new Set(['Escape']);
 
 const STORAGE_KEY = 'fps-settings';
+/**
+ * Bumped when a default changes in a way saved settings should pick up.
+ * 2: crouch moved from C to Ctrl.
+ */
+const VERSION = 2;
 
 function load(): Settings {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') as Partial<Settings>;
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') as Omit<Partial<Settings>, 'bindings'> & {
+      version?: number;
+      bindings?: Partial<Bindings>;
+    };
+    // C was only ever saved because it used to be the default; let those players get Ctrl.
+    if ((saved.version ?? 1) < 2 && saved.bindings?.crouch === 'KeyC') delete saved.bindings.crouch;
     const sensitivity = Number(saved.sensitivity);
     return {
       sensitivity: Number.isFinite(sensitivity)
         ? Math.min(SENSITIVITY_MAX, Math.max(SENSITIVITY_MIN, sensitivity))
         : DEFAULTS.sensitivity,
       invertY: saved.invertY === true,
+      fullscreen: saved.fullscreen !== false,
       // Start from the defaults so actions added later still get a key.
       bindings: { ...DEFAULT_BINDINGS, ...pickStrings(saved.bindings) },
     };
@@ -90,7 +107,7 @@ const listeners = new Set<() => void>();
 function set(next: Settings): void {
   current = next;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...next, version: VERSION }));
   } catch { /* storage unavailable: keep the settings for this session */ }
   listeners.forEach((l) => l());
 }

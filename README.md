@@ -142,7 +142,7 @@ All sound is synthesized with Web Audio (no audio files), including footsteps:
 | Left click (hold) | Shoot (automatic) |
 | Space | Jump |
 | Shift | Sprint |
-| C (hold) | Crouch; press while sprinting to slide |
+| Ctrl (hold) | Crouch; press while sprinting to slide |
 | R | Reload |
 | 1 / 2 / 3 | Use the ability in that slot |
 | I | Inventory (details + drop items) |
@@ -155,17 +155,36 @@ that's already in use swaps the two. Settings are saved in your browser (`src/ga
 
 ## Crouch and slide
 
-- **Crouch** (hold C): lower eyes, a smaller hitbox, walking at about half speed, 40% tighter aim and much
+- **Crouch** (hold Ctrl): lower eyes, a smaller hitbox, walking at about half speed, 40% tighter aim and much
   quieter footsteps. You stay crouched under anything too low to stand up under.
-- **Slide** (press C while sprinting on the ground): a burst of up to 13 m/s along the way you're running
+- **Slide** (press Ctrl while sprinting on the ground): a burst of up to 13 m/s along the way you're running
   that bleeds off over about 0.8 s (roughly 6 m), with the camera dipping and tilting, then you're
   crouching. You can't steer mid-slide, but jumping out of one keeps its speed. There's a 1.2 s cooldown.
 - Other players see you crouch and slide, and hear the scrape of a slide. The model has no crouch
   animation, so `remotePlayer.ts` bends its legs in code and lowers the hips to keep the feet on the ground.
   Stance is also recorded for the MVP replay.
 
-The default is C, not Ctrl: browsers don't let a page block Ctrl+W, so crouch-walking forward would close the
-tab. Rebind it in Settings.
+Crouch defaults to Ctrl. Holding Ctrl while pressing other keys would normally trigger browser shortcuts,
+so the game guards against that while you're playing (see below). Players whose saved settings had the old
+default, C, are moved to Ctrl; anyone who picked a key themselves keeps it.
+
+## Ctrl+W / Cmd+W
+
+Browsers normally don't let a page catch the close-tab shortcut, so the game uses two safeguards:
+
+- **Keyboard Lock (Chrome, Edge, Opera):** "Click to play" also goes fullscreen and asks the browser for every
+  bound key, plus W, T, N, Q, Tab and 1–9 (`navigator.keyboard.lock`). The game then receives Ctrl+W, Ctrl+T,
+  Ctrl+1 (switch tab), Ctrl+Tab and Cmd+W itself and ignores them, so crouching never closes or switches the
+  tab. Esc isn't locked, so it still releases the mouse and leaves fullscreen as usual. Turn off
+  **Fullscreen while playing** in Settings to play windowed (and lose this protection).
+- **Ctrl shortcuts a page can block** (Ctrl+S save, Ctrl+D bookmark, Ctrl+A, Ctrl+R, Ctrl+F...) are blocked
+  while the mouse is captured, in every browser.
+- **Mac:** Ctrl+click is a right-click there, so it counts as a normal shot, and the context menu is blocked
+  while playing. macOS itself uses Ctrl+Space to switch input language, and no web page can intercept that.
+  If you have more than one keyboard language, crouch-jumping may switch it; rebind crouch or jump if so.
+- **"Leave site?" prompt (all browsers):** while you're in a room, closing or reloading the tab asks first.
+  This is the only protection in Firefox and Safari, which don't support Keyboard Lock. Leaving through the
+  menu doesn't prompt.
 
 ## Abilities
 

@@ -70,6 +70,14 @@ export function SettingsPanel({ onClose }: Props) {
             />
             <span>Invert vertical look</span>
           </label>
+          <label className="setting check">
+            <input
+              type="checkbox"
+              checked={current.fullscreen}
+              onChange={(e) => settings.update({ fullscreen: e.target.checked })}
+            />
+            <span>Fullscreen while playing (in Chrome / Edge this stops Ctrl+W from closing the tab)</span>
+          </label>
         </section>
 
         <section>
