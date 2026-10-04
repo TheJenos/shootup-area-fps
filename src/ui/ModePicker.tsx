@@ -10,42 +10,85 @@ interface PickerProps {
   onChange(rules: ModeRules): void;
 }
 
+/** The plain base modes come first; everything else is an arcade preset. */
+const CLASSIC = PRESETS.filter((p) => p.id === 'ffa' || p.id === 'tdm' || p.id === 'ctf');
+const ARCADE = PRESETS.filter((p) => !CLASSIC.includes(p));
+
 /**
- * Choose the room's mode: a prebuilt one, one of your saved custom modes, or build a new one.
+ * Choose the room's mode as compact chips (Classic · Arcade · Your modes), with one card below
+ * describing the selected mode and a Customize button that starts the editor from it.
  * Used by the lobby and the Discord lobby.
  */
 export function ModePicker({ value, onChange }: PickerProps) {
   const [mine, setMine] = useState<ModeRules[]>(loadCustomModes);
   const [editing, setEditing] = useState<ModeRules | null>(null);
-  const extras = tweaks(value);
+  const presetOf = PRESETS.find((p) => sameRules(p.rules, value));
+  const isMine = !presetOf && mine.some((m) => sameRules(m, value));
+  const chips = [`${value.limit} ${value.base === 'ctf' ? 'captures' : value.loadout === 'gungame' ? 'guns' : 'kills'} to win`, `${value.minutes} min`, ...tweaks(value)];
+
+  const chip = (rules: ModeRules, key: string) => {
+    const selected = sameRules(rules, value);
+    return (
+      <button
+        key={key}
+        type="button"
+        role="radio"
+        aria-checked={selected}
+        className={selected ? 'mode-chip selected' : 'mode-chip'}
+        title={rules.name}
+        onClick={() => onChange(rules)}
+      >
+        <span className={`mode-badge ${rules.base}`}>{rules.short}</span>{rules.name}
+      </button>
+    );
+  };
 
   return (
     <div className="mode-picker">
-      <div className="modes" role="radiogroup" aria-label="Game mode">
-        {PRESETS.map((p) => (
-          <ModeCard key={p.id} rules={p.rules} description={p.description} selected={sameRules(p.rules, value)} onPick={onChange} />
-        ))}
-        {mine.map((m) => (
-          <ModeCard
-            key={`mine-${m.name}`}
-            rules={m}
-            description={`Your mode · ${MODES[m.base].short}${tweaks(m).length ? ` · ${tweaks(m).slice(0, 2).join(' · ')}` : ''}`}
-            selected={sameRules(m, value)}
-            onPick={onChange}
-            onEdit={() => setEditing(m)}
-            onDelete={() => setMine(deleteCustomMode(m.name))}
-          />
-        ))}
-        <button type="button" className="mode create" onClick={() => setEditing({ ...value, name: value.name.startsWith('Custom') ? value.name : 'Custom mode' })}>
-          <strong>＋ Create custom mode</strong>
-          <small>Pick FFA, TDM or CTF, then mix guns, health, speed, gravity…</small>
-        </button>
+      <div className="mode-group" role="radiogroup" aria-label="Classic modes">
+        <span className="mode-group-label">Classic</span>
+        <div className="mode-chips">{CLASSIC.map((p) => chip(p.rules, p.id))}</div>
       </div>
-      <p className="mode-summary muted">
-        <span className={`mode-badge ${value.base}`}>{value.short}</span>
-        <strong>{value.name}</strong> — {MODES[value.base].name}
-        {extras.length > 0 && <> · {extras.join(' · ')}</>}
-      </p>
+      <div className="mode-group" role="radiogroup" aria-label="Arcade modes">
+        <span className="mode-group-label">Arcade</span>
+        <div className="mode-chips">{ARCADE.map((p) => chip(p.rules, p.id))}</div>
+      </div>
+      <div className="mode-group" role="radiogroup" aria-label="Your modes">
+        <span className="mode-group-label">Yours</span>
+        <div className="mode-chips">
+          {mine.map((m) => chip(m, `mine-${m.name}`))}
+          <button type="button" className="mode-chip create" onClick={() => setEditing({ ...baseRules(value.base), name: 'Custom mode' })}>
+            ＋ New mode
+          </button>
+        </div>
+      </div>
+
+      <div className="mode-detail" aria-live="polite">
+        <div className="mode-detail-head">
+          <span className={`mode-badge ${value.base}`}>{value.short}</span>
+          <div className="mode-detail-title">
+            <strong>{value.name}</strong>
+            <small className="muted">
+              {MODES[value.base].name}{presetOf ? ` · ${presetOf.description}` : isMine ? ' · your mode' : ' · custom (not saved)'}
+            </small>
+          </div>
+          <div className="mode-detail-tools">
+            {isMine && (
+              <button type="button" className="icon" aria-label={`Delete ${value.name}`} title="Delete this mode"
+                onClick={() => { setMine(deleteCustomMode(value.name)); onChange(PRESETS[0]!.rules); }}>
+                ✕
+              </button>
+            )}
+            <button type="button" onClick={() => setEditing(isMine ? value : { ...value, name: presetOf ? `${value.name} (custom)`.slice(0, 24) : value.name })}>
+              {isMine ? 'Edit' : 'Customize'}
+            </button>
+          </div>
+        </div>
+        <ul className="mode-rules">
+          {chips.map((c) => <li key={c}>{c}</li>)}
+        </ul>
+      </div>
+
       {editing && (
         <ModeEditor
           initial={editing}
@@ -56,25 +99,6 @@ export function ModePicker({ value, onChange }: PickerProps) {
             setEditing(null);
           }}
         />
-      )}
-    </div>
-  );
-}
-
-function ModeCard({ rules, description, selected, onPick, onEdit, onDelete }: {
-  rules: ModeRules; description: string; selected: boolean; onPick(r: ModeRules): void; onEdit?(): void; onDelete?(): void;
-}) {
-  return (
-    <div className={selected ? 'mode selected' : 'mode'}>
-      <button type="button" role="radio" aria-checked={selected} className="mode-pick" onClick={() => onPick(rules)}>
-        <strong><span className={`mode-badge ${rules.base}`}>{rules.short}</span>{rules.name}</strong>
-        <small>{description}</small>
-      </button>
-      {(onEdit || onDelete) && (
-        <span className="mode-tools">
-          {onEdit && <button type="button" aria-label={`Edit ${rules.name}`} title="Edit" onClick={onEdit}>✎</button>}
-          {onDelete && <button type="button" aria-label={`Delete ${rules.name}`} title="Delete" onClick={onDelete}>✕</button>}
-        </span>
       )}
     </div>
   );
