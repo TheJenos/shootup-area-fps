@@ -447,7 +447,10 @@ export class RemotePlayer {
     this.group.rotation.y = angleLerp(this.group.rotation.y, this.targetYaw, t);
     this.pitch = THREE.MathUtils.lerp(this.pitch, this.targetPitch, t);
 
-    this.updateGait(dt);
+    // A body doesn't change gait: with the mixer frozen a cross-fade would never finish and
+    // both clips would end up at full weight.
+    if (this.alive) this.updateGait(dt);
+    else this.lastPos.copy(this.group.position);
     // Freeze the pose while falling over, so the body drops stiffly.
     this.mixer.timeScale = this.alive ? 1 : 0;
     this.mixer.update(dt);
@@ -472,6 +475,8 @@ export class RemotePlayer {
       // Sink a touch so the slumped body meets the floor.
       this.model.position.y = -0.25 * buckle * (1 - eased) - 0.05 * eased;
     } else {
+      // Back on their feet (a respawn snaps `fall` straight to 0, so undo the whole tilt here).
+      this.group.rotation.x = 0;
       this.group.rotation.z = 0;
       this.model.position.y = 0;
     }
