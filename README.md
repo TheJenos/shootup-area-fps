@@ -1,3 +1,5 @@
+<p align="center"><img src="public/brand/logo.svg" alt="Arena FPS logo" width="128"></p>
+
 # Arena FPS
 
 A multiplayer browser FPS built with **Three.js**, with realtime sync over **Firebase Realtime Database**.
@@ -349,6 +351,10 @@ src/
 ```
 
 ## Assets
+
+The logo lives in `public/brand/`: `logo.svg` (source), PNG exports (`icon-512.png`, `icon-1024.png`), and
+`og-image.png` (1200×630 link preview). `public/favicon.svg` is a simplified version for tiny sizes, with
+`favicon-32.png` and `apple-touch-icon.png` rendered from it and the logo.
 
 `public/models/Soldier.glb` is the soldier from the [three.js examples](https://github.com/mrdoob/three.js/tree/r186/examples/models/gltf)
 (originally a [Mixamo](https://www.mixamo.com) character), with Idle / Walk / Run animations.

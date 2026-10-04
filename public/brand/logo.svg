@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Arena FPS">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#252e40"/>
+      <stop offset="1" stop-color="#0c0f15"/>
+    </linearGradient>
+    <linearGradient id="cloth" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffcd73"/>
+      <stop offset="1" stop-color="#ff6b35"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffb547" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#ffb547" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- Tile -->
+  <rect width="512" height="512" rx="112" fill="url(#tile)"/>
+  <rect x="8" y="8" width="496" height="496" rx="105" fill="none" stroke="#ffb547" stroke-opacity="0.22" stroke-width="4"/>
+  <circle cx="256" cy="256" r="200" fill="url(#glow)"/>
+  <!-- Crosshair: ring and four outer ticks -->
+  <circle cx="256" cy="256" r="158" fill="none" stroke="#ffb547" stroke-width="30"/>
+  <g stroke="#ffb547" stroke-width="30" stroke-linecap="round">
+    <line x1="256" y1="44" x2="256" y2="92"/>
+    <line x1="256" y1="420" x2="256" y2="468"/>
+    <line x1="44" y1="256" x2="92" y2="256"/>
+    <line x1="420" y1="256" x2="468" y2="256"/>
+  </g>
+  <!-- Flag at the centre of the sights -->
+  <line x1="208" y1="168" x2="208" y2="346" stroke="#f2f4f8" stroke-width="18" stroke-linecap="round"/>
+  <path d="M216 170 C 252 150, 288 192, 336 172 L 336 262 C 288 282, 252 240, 216 260 Z" fill="url(#cloth)"/>
+</svg>

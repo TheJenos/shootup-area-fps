@@ -7,6 +7,7 @@ import { GAME_MODES, MODES } from '../game/modes';
 import { generateMap, randomSeed } from '../game/mapgen';
 import type { GameMode } from '../types';
 import type { Session } from './App';
+import { Brand } from './Brand';
 import { errorMessage } from './errors';
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -75,7 +76,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
   return (
     <section id="lobby" className="screen">
       <div className="card discord">
-        <h1>ARENA<span>FPS</span></h1>
+        <Brand />
         {!discord ? (
           <p className="subtitle">{error ? 'Could not connect to Discord.' : 'Connecting to Discord…'}</p>
         ) : (

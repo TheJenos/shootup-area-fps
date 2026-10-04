@@ -8,6 +8,7 @@ import { loadCharacter } from '../game/character';
 import { GAME_MODES, MODES } from '../game/modes';
 import type { GameMode, RoomSummary } from '../types';
 import type { Session } from './App';
+import { Brand } from './Brand';
 import { errorMessage } from './errors';
 import { SettingsPanel } from './SettingsPanel';
 
@@ -112,7 +113,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
   return (
     <section id="lobby" className="screen">
       <div className="card">
-        <h1>ARENA<span>FPS</span></h1>
+        <Brand />
         <p className="subtitle">Pick a name, open a room, frag your friends.</p>
 
         {!isConfigured && (

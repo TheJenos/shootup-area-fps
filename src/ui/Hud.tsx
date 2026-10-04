@@ -92,6 +92,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
 
       {hud.connecting && (
         <div id="connecting-overlay" className="overlay">
+          <img className="loading-logo" src="/brand/logo.svg" alt="" width={96} height={96} />
           <h2>Connecting…</h2>
         </div>
       )}
