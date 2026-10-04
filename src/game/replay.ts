@@ -37,7 +37,7 @@ interface Track {
 }
 
 export type ReplayEvent =
-  | { t: number; kind: 'shot'; o: Vec3Tuple; e: Vec3Tuple; hit: boolean; w?: GunKind; ends?: Vec3Tuple[] }
+  | { t: number; kind: 'shot'; o: Vec3Tuple; e: Vec3Tuple; hit: boolean; w?: GunKind; ends?: Vec3Tuple[]; from?: string }
   | { t: number; kind: 'kill'; killer: string; victim: string; head: boolean }
   | { t: number; kind: 'grenade'; id: string; o: Vec3Tuple; v: Vec3Tuple }
   | { t: number; kind: 'blast'; id: string; p: Vec3Tuple }
@@ -154,12 +154,9 @@ export class ReplayDirector {
   private readonly start: number;
   private readonly end: number;
   private readonly rate: number;
-  private readonly camRay = new THREE.Raycaster();
   private time: number;
   private eventIndex = 0;
   private orbit = 0;
-  /** Our own smoothed camera position: the player controller resets the real camera every frame. */
-  private camPos: THREE.Vector3 | null = null;
 
   constructor(opts: ReplayOptions) {
     this.opts = opts;
@@ -211,7 +208,13 @@ export class ReplayDirector {
       }
       ghost.update(dt);
     }
-    this.chaseCamera(dt);
+  }
+
+  /** Whose eyes the replay is seen through: the MVP, while their stand-in is on screen. */
+  get pov(): RemotePlayer | null {
+    if (!this.hasFootage) return null;
+    const ghost = this.ghosts.get(this.opts.mvp.id);
+    return ghost && ghost.alive && ghost.visible ? ghost : null;
   }
 
   dispose(): void {
@@ -228,6 +231,7 @@ export class ReplayDirector {
       this.eventIndex++;
       if (e.t <= from) continue;
       if (e.kind === 'shot') {
+        if (e.from) this.ghosts.get(e.from)?.noteShot();
         const o = fromArr(e.o);
         for (const p of [e.e, ...(e.ends ?? [])]) {
           const end = fromArr(p);
@@ -251,31 +255,6 @@ export class ReplayDirector {
         flagField?.set(e.team, e.placement);
       }
     }
-  }
-
-  /** Behind and above the MVP, looking a little ahead of them; pulled in if a wall is in the way. */
-  private chaseCamera(dt: number): void {
-    const { camera, solids, mvp } = this.opts;
-    const ghost = this.ghosts.get(mvp.id);
-    if (!ghost) return;
-    const target = ghost.position;
-    const yaw = ghost.yaw;
-    const head = target.clone().setY(target.y + 1.6);
-    const back = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
-    const wanted = head.clone().addScaledVector(back, 3.4).setY(head.y + 0.9);
-
-    const toCam = wanted.clone().sub(head);
-    const dist = toCam.length();
-    this.camRay.set(head, toCam.normalize());
-    this.camRay.far = dist;
-    const hit = this.camRay.intersectObjects(solids, false)[0];
-    if (hit) wanted.copy(head).addScaledVector(toCam, Math.max(0.4, hit.distance - 0.3));
-
-    if (this.camPos) this.camPos.lerp(wanted, 1 - Math.exp(-7 * dt));
-    else this.camPos = wanted.clone();
-    camera.position.copy(this.camPos);
-    const lookAt = head.clone().addScaledVector(back, -4).setY(head.y - 0.2);
-    camera.lookAt(lookAt);
   }
 
   /** No recording of the moment: slowly circle the arena instead. */

@@ -207,6 +207,19 @@ export class Weapon {
     playReload();
   }
 
+  /** Watching through someone's eyes: hold whatever gun they hold. */
+  showGun(kind: GunKind): void {
+    if (this.gun !== kind) this.setForcedGun(kind);
+  }
+
+  /** Their shot, shown here: muzzle flash and kick, no ammo involved. */
+  flashShot(): void {
+    const def = GUNS[this.gun];
+    this.kick = Math.min(this.kick + (def.pellets > 1 || def.scope ? 2.5 : 1), 3);
+    this.flashTimer = 0.04;
+    this.view().flash.rotation.z = Math.random() * Math.PI;
+  }
+
   /** Hold the flag (guns stowed) or go back to the guns. `color` tints the cloth. */
   setMelee(on: boolean, color = '#ffffff'): void {
     if (on === this.melee) return;

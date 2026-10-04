@@ -245,9 +245,9 @@ function SpectateBanner({ spectate, touch }: { spectate: NonNullable<HudState['s
           spectate.count > 0 ? 'tap: next player · ❚❚: menu' : 'nobody to follow · ❚❚: menu'
         ) : (
           <>
-            {spectate.count > 0 ? 'click: next · right-click: previous · ' : 'nobody to follow · '}
-            {keyLabel(bindings.jump)}: {free ? 'follow a player' : 'free camera'}
-            {free && ` · ${keyLabel(bindings.forward)}${keyLabel(bindings.left)}${keyLabel(bindings.back)}${keyLabel(bindings.right)} fly · E up · ${keyLabel(bindings.crouch)} down · ${keyLabel(bindings.sprint)} fast`}
+            {free
+              ? `nobody to follow — free camera · ${keyLabel(bindings.forward)}${keyLabel(bindings.left)}${keyLabel(bindings.back)}${keyLabel(bindings.right)} fly · E / ${keyLabel(bindings.jump)} up · ${keyLabel(bindings.crouch)} down · ${keyLabel(bindings.sprint)} fast`
+              : 'click: next player · right-click: previous'}
             {' · Esc: menu'}
           </>
         )}
@@ -454,7 +454,8 @@ function AmmoPanel({ hud, touch }: { hud: HudState; touch: boolean }) {
   return (
     <div id="ammo" className={`panel ${classes}`}>
       <div className="gun-slots">
-        {slot('rifle')}
+        {/* First slot: the gun you always carry (the rifle, or the mode's gun in Sniper Only / Gun Game). */}
+        {slot(special && gun === special ? 'rifle' : gun)}
         {special ? slot(special) : <span className="gun-slot empty">—</span>}
       </div>
       <span id="ammo-value">{ammo}</span>

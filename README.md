@@ -38,6 +38,8 @@ The room's creator picks the mode; the lobby shows it next to each room.
 | **FFA** — Free-for-all | Most kills | 8 min | 25 kills by one player |
 | **TDM** — Team Deathmatch | Red vs Blue; every kill scores for the killer's team | 10 min | 50 team kills |
 | **CTF** — Capture the Flag | Grab the enemy flag and bring it to your own base | 12 min | 3 captures |
+| **SNP** — Sniper Only | Free-for-all where everyone always holds the sniper (endless ammo). No gun pickups or ammo boxes; abilities still spawn | 8 min | 20 kills by one player |
+| **SNT** — Sniper TDM | Red vs Blue with snipers only (endless ammo); every kill scores for the killer's team. No gun pickups or ammo boxes; abilities still spawn | 10 min | 40 team kills |
 | **GG** — Gun Game | Every kill hands you the next gun on a 12-step ladder (rifle → deagle → shotgun → sniper → …); first through the ladder wins. No pickups, endless ammo | 10 min | 12 kills by one player |
 
 - **Teams:** you join the smaller team. Every player's uniform takes their team colour (65%, with a faint glow
@@ -57,7 +59,7 @@ The room's creator picks the mode; the lobby shows it next to each room.
 - **Rounds:** the score bar shows the round clock, which turns red in the last 30 s. When the time runs out,
   the best score wins; a tie is a draw. A score limit ends the round early. Then:
   1. **Results** (6 s): the winner, why the round ended, and the top three.
-  2. **MVP** (10 s): a replay of the MVP's highlight, seen from behind them, with their card and the next
+  2. **MVP** (10 s): a replay of the MVP's highlight, seen through their eyes, with their card and the next
      map. It's skipped when nobody got a kill or a capture.
   3. **Next map:** a new round starts on a new map with a fresh seed. Scores reset, flags go home, pickups
      are cleared and everyone respawns. The lobby list shows the map currently being played.
@@ -80,7 +82,7 @@ same ones.
 
 The replay works because every client records the round as it plays: everyone's positions about 10 times a
 second, plus shots, kills, grenades and flag moves. When the MVP screen starts, it replays the highlight from
-1.5 s before to 1.5 s after with stand-in avatars, tracers, grenades and carried flags, under a chase camera.
+1.5 s before to 1.5 s after with stand-in avatars, tracers, grenades and carried flags, seen in first person through the MVP's eyes (their gun in view, raised when they aimed, flashing when they fired).
 A player who joined after the highlight sees a slow fly-around of the map instead. Highlights longer than
 9 s play faster to fit.
 
@@ -294,8 +296,10 @@ fit too.
 
 **Spectate** in the pause menu takes you out of the match: your body disappears, you can't be hit, you're
 listed as spectating in the summary and left out of the standings and the MVP pick. The camera follows a
-player from behind; left click goes to the next player, right click to the previous, and **space** switches
-to a free camera (move keys to fly, E up, crouch down, sprint for speed). **Back to the fight** respawns you.
+player in first person, through their eyes: you see what they see, with their gun in view (raised and zoomed
+when they aim, flashing when they fire), and their body hidden. Left click goes to the next player, right click
+to the previous. With nobody to follow you get a free camera (move keys to fly, E or jump up, crouch down,
+sprint for speed), which hands back to first person as soon as someone is alive. **Back to the fight** respawns you.
 
 These are the defaults. **Settings** (in the lobby, or the pause menu) lets you change mouse sensitivity
 (0.1×–4×), invert vertical look and rebind every key except shooting (left click) and Esc. Binding a key

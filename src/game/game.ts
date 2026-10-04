@@ -231,12 +231,15 @@ export class Game {
   private readonly hitSources = new Map<string, { at: THREE.Vector3; time: number; damage: number }>();
   private lastIndicatorKey = '';
 
-  // Spectating: following one player with a chase camera, or flying free
+  /** Whose eyes we're watching through (spectating or the MVP replay), and their gun in our view */
+  private pov: RemotePlayer | null = null;
+  private readonly povWeapon: Weapon;
+
+  // Spectating: following one player through their eyes, or flying free when there's nobody
   private spectating = false;
   private specTarget: string | null = null;
   private specFree = false;
   private readonly specPos = new THREE.Vector3();
-  private readonly specRay = new THREE.Raycaster();
   private specKey = '';
 
   /** Discord rich presence: what we last showed and when */
@@ -286,6 +289,7 @@ export class Game {
     signal.addEventListener('abort', settings.subscribe(() => this.applyQuality()), { once: true });
     this.player = new LocalPlayer(this.camera, this.colliders, this.ramps, signal);
     this.weapon = new Weapon(aspect);
+    this.povWeapon = new Weapon(aspect);
     this.effects = new Effects(this.scene);
     this.pickups = new PickupField(this.scene, this.obstacles);
     this.grenades = new GrenadeFx(this.scene);
@@ -541,7 +545,6 @@ export class Game {
         e.preventDefault();
         this.hud.update({ scoreboardOpen: true, scoreboard: this.scoreRows() });
       }
-      if (action === 'jump' && this.spectating && this.locked && !e.repeat) this.toggleFreeCamera();
       if (action === 'reload' && this.alive && this.locked) this.weapon.reload();
       if (action === 'swap' && !e.repeat && this.locked) this.switchGun();
       const slot = action ? ABILITY_ACTIONS.indexOf(action) : -1;
@@ -582,7 +585,7 @@ export class Game {
     this.character = character;
     if (this.disposed) return;
     this.mode = info?.mode ?? 'ffa';
-    if (this.mode === 'gungame') this.weapon.setForcedGun(gunGameGun(0));
+    this.applyLoadout();
     if (MODES[this.mode].teams) this.setTeam(await this.pickTeam());
     if (this.mode === 'ctf') this.flagField = new FlagField(this.scene);
     if (info) this.hud.update({ match: { roomName: info.name, startedAt: info.createdAt } });
@@ -640,7 +643,7 @@ export class Game {
     this.hud.update({ death: null, hp: 0 });
     void this.net.sendState({ alive: false, hp: 0, spec: true, shield: false });
     this.cycleSpectate(1);
-    this.hud.toast(this.touch ? 'Spectating · tap: next player' : `Spectating · click: next player · ${keyLabel(keyFor('jump'))}: free camera`);
+    this.hud.toast(this.touch ? 'Spectating · tap: next player' : 'Spectating · click: next player · right-click: previous');
   }
 
   /** Back into the fight: respawn as usual. */
@@ -649,6 +652,8 @@ export class Game {
     this.spectating = false;
     this.specTarget = null;
     this.specKey = '';
+    this.pov?.setFirstPerson(false);
+    this.pov = null;
     this.hud.update({ spectate: null });
     void this.net.sendState({ spec: false });
     this.respawn();
@@ -675,42 +680,29 @@ export class Game {
     this.specTarget = ids[((i < 0 ? (step > 0 ? -1 : 0) : i) + step + ids.length) % ids.length] ?? null;
   }
 
-  private toggleFreeCamera(): void {
-    this.specFree = !this.specFree;
-    if (this.specFree) this.specTarget = null;
-    else this.cycleSpectate(1);
-  }
-
-  /** Chase camera behind whoever we're following, or free flight on the movement keys. */
+  /**
+   * Watch through the eyes of whoever we're following (see applyPov); with nobody to follow,
+   * fly free on the movement keys.
+   */
   private updateSpectator(dt: number): void {
     const target = this.specTarget ? this.remotes.get(this.specTarget) : null;
     if (this.specTarget && (!target || !target.alive || this.players[this.specTarget]?.spec)) {
       this.cycleSpectate(1);
       return;
     }
+    // Someone to watch again after flying around alone: go back to their eyes.
+    if (this.specFree && this.spectatable().length) this.cycleSpectate(1);
     const cam = this.camera;
     if (target && !this.specFree) {
-      const head = target.position.clone().setY(target.position.y + 1.6);
-      const yaw = target.yaw;
-      const back = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
-      const wanted = head.clone().addScaledVector(back, 3.2).setY(head.y + 0.9);
-      const toCam = wanted.clone().sub(head);
-      const dist = toCam.length();
-      this.specRay.set(head, toCam.normalize());
-      this.specRay.far = dist;
-      const hit = this.specRay.intersectObjects(this.solids, false)[0];
-      if (hit) wanted.copy(head).addScaledVector(toCam, Math.max(0.4, hit.distance - 0.3));
-      this.specPos.lerp(wanted, 1 - Math.exp(-7 * dt));
-      cam.position.copy(this.specPos);
-      cam.lookAt(head.clone().addScaledVector(back, -4).setY(head.y - 0.2));
+      this.specPos.copy(target.eyePosition());
     } else {
       // Free camera: look with the mouse, fly with the movement keys (sprint for speed).
       const k = this.player.keys;
       const held = (a: Action) => (k.has(settings.get().bindings[a]) ? 1 : 0);
       const forward = held('forward') - held('back');
       const strafe = held('right') - held('left');
-      // E climbs, crouch descends (space is taken: it toggles following).
-      const rise = (k.has('KeyE') ? 1 : 0) - held('crouch');
+      // E / jump climbs, crouch descends.
+      const rise = (k.has('KeyE') || held('jump') ? 1 : 0) - held('crouch');
       const speed = (held('sprint') ? 24 : 11) * dt;
       const dir = cam.getWorldDirection(new THREE.Vector3());
       const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
@@ -826,7 +818,7 @@ export class Game {
     const t = typeof evt.t === 'number' ? evt.t : this.net.serverNow();
     if (evt.type === 'shot' && evt.from !== this.playerId && evt.o && evt.e) {
       this.recorder.event({
-        t, kind: 'shot', o: evt.o, e: evt.e, hit: !!(evt.hit || evt.hits),
+        t, kind: 'shot', o: evt.o, e: evt.e, hit: !!(evt.hit || evt.hits), from: evt.from,
         ...(evt.w ? { w: evt.w } : {}), ...(evt.ends ? { ends: evt.ends } : {}),
       });
     } else if (evt.type === 'grenade' && evt.from !== this.playerId) {
@@ -841,6 +833,7 @@ export class Game {
 
     if (evt.type === 'shot') {
       if (evt.from === this.playerId || !evt.o || !evt.e) return;
+      this.remotes.get(evt.from)?.noteShot();
       const origin = fromArr(evt.o);
       const gun = evt.w && evt.w in GUNS ? evt.w : 'rifle';
       for (const e of [evt.e, ...(evt.ends ?? [])]) {
@@ -884,8 +877,9 @@ export class Game {
       const dmg = evt.hits?.[this.playerId];
       if (dmg) this.takeDamage(dmg, evt.from, false, 'grenade', at);
     } else if (evt.type === 'kill') {
-      const killer = this.players[evt.killer] ?? UNKNOWN_PLAYER;
       const victim = this.players[evt.victim] ?? UNKNOWN_PLAYER;
+      // No killer means they took themselves out (their own grenade): name them on both sides.
+      const killer = evt.killer ? this.players[evt.killer] ?? UNKNOWN_PLAYER : victim;
       const mine = evt.killer === this.playerId || evt.victim === this.playerId;
       const teamOf = (id: string) => (id === this.playerId ? this.team : this.players[id]?.team) ?? null;
       this.hud.pushKill(killer, victim, evt.head, mine, evt.weapon ?? 'rifle', {
@@ -898,6 +892,12 @@ export class Game {
         this.onOwnKill(evt.victim, evt.head, t);
       }
     }
+  }
+
+  /** Modes that decide what you hold: the Gun Game ladder starts on its first gun, Sniper Only is snipers. */
+  private applyLoadout(): void {
+    const fixed = this.mode === 'gungame' ? gunGameGun(0) : MODES[this.mode].fixedGun;
+    if (fixed) this.weapon.setForcedGun(fixed);
   }
 
   /** Gun Game: a kill hands us the next gun on the ladder. */
@@ -1060,7 +1060,7 @@ export class Game {
     this.stopReplay();
     this.hud.clearToasts();
     this.kills = 0;
-    if (this.mode === 'gungame') this.weapon.setForcedGun(gunGameGun(0));
+    this.applyLoadout();
     this.deaths = 0;
     this.stats = { ...EMPTY_STATS };
     this.myMatch = { ...EMPTY_MY_MATCH };
@@ -1284,6 +1284,7 @@ export class Game {
 
   private stopReplay(): void {
     if (!this.replay) return;
+    if (this.pov && this.pov === this.replay.pov) this.pov = null;
     this.replay.dispose();
     this.replay = null;
     for (const [id, r] of this.remotes) r.setVisible(!this.players[id]?.spec);
@@ -1591,7 +1592,8 @@ export class Game {
   private creditKiller(killerId: string): void {
     const round = this.game.round;
     const killer = this.players[killerId];
-    if (this.mode === 'tdm' && killer?.team && killer.team !== this.team) this.addTeamScore(killer.team);
+    // Team modes without flags score a point per kill (TDM, Sniper TDM).
+    if (MODES[this.mode].teams && this.mode !== 'ctf' && killer?.team && killer.team !== this.team) this.addTeamScore(killer.team);
     this.net.creditKill(killerId)
       .then((kills) => {
         if (!MODES[this.mode].teams && kills !== null && kills >= MODES[this.mode].limit) {
@@ -1707,7 +1709,7 @@ export class Game {
       const [hitId, dmg] = [...damageTo][0] ?? [null, 0];
       this.net.sendEvent({ type: 'shot', ...shot, ...extra, hit: hitId, dmg, head: anyHead });
     }
-    this.recorder.event({ t: this.net.serverNow(), kind: 'shot', ...shot, ...extra, hit: damageTo.size > 0 });
+    this.recorder.event({ t: this.net.serverNow(), kind: 'shot', ...shot, ...extra, hit: damageTo.size > 0, from: this.playerId });
   }
 
   /**
@@ -2111,10 +2113,12 @@ export class Game {
     this.spawnTimer -= dt;
     if (this.spawnTimer > 0) return;
     if (!MODES[this.mode].pickups) return;
+    // With a fixed gun (Sniper Only) there's no point in other guns or ammo boxes: abilities only.
+    const fixed = !!MODES[this.mode].fixedGun;
     const stock: { kind: PickupKind; have: number; max: number }[] = [
       { kind: 'ability', have: this.pickups.countOf('ability'), max: MAX_PICKUPS },
-      { kind: 'gun', have: this.pickups.countOf('gun'), max: MAX_GUN_PICKUPS },
-      { kind: 'ammo', have: this.pickups.countOf('ammo'), max: MAX_AMMO_PICKUPS },
+      { kind: 'gun', have: this.pickups.countOf('gun'), max: fixed ? 0 : MAX_GUN_PICKUPS },
+      { kind: 'ammo', have: this.pickups.countOf('ammo'), max: fixed ? 0 : MAX_AMMO_PICKUPS },
     ];
     // Fill up quickly when the map is bare, then trickle in.
     this.spawnTimer = stock.some((s) => s.have < s.max / 2) ? 1.5 : 7;
@@ -2160,6 +2164,7 @@ export class Game {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.weapon.setAspect(w / h);
+    this.povWeapon.setAspect(w / h);
   }
 
   private frame(): void {
@@ -2171,6 +2176,9 @@ export class Game {
     if (this.alive && !this.replay && !this.hud.get().scoped) {
       this.renderer.clearDepth();
       this.renderer.render(this.weapon.scene, this.weapon.camera);
+    } else if (this.pov) {
+      this.renderer.clearDepth();
+      this.renderer.render(this.povWeapon.scene, this.povWeapon.camera);
     }
   }
 
@@ -2264,6 +2272,7 @@ export class Game {
     this.updateMode();
     // After the player update, so the replay's camera wins.
     this.updateReplay(dt);
+    this.applyPov(dt);
     this.recordSelf(dt);
 
     if (this.joined) this.updatePing(dt);
@@ -2291,6 +2300,41 @@ export class Game {
     if (this.scoreTimer > 0.25 && this.hud.get().scoreboardOpen) {
       this.scoreTimer = 0;
       this.hud.update({ scoreboard: this.scoreRows() });
+    }
+  }
+
+  /**
+   * Spectating someone, or the MVP replay: see through their eyes. The camera sits at their eye
+   * height looking where they look, their body is hidden from us, and their gun is drawn in
+   * first person (raised when they aim, flashing when they fire, zoomed like theirs).
+   */
+  private applyPov(dt: number): void {
+    const target = this.replay
+      ? this.replay.pov
+      : this.spectating && !this.specFree && this.specTarget ? this.remotes.get(this.specTarget) ?? null : null;
+    if (target !== this.pov) {
+      this.pov?.setFirstPerson(false);
+      this.pov = target;
+      target?.setFirstPerson(true);
+    }
+    if (!target) return;
+    const cam = this.camera;
+    target.eyePosition(cam.position);
+    cam.rotation.set(target.lookPitch, target.yaw, 0);
+
+    const gun = target.heldGun;
+    const pv = this.povWeapon;
+    // A flag carrier holds the flag they took, in its team's colour.
+    const carried = !this.replay && this.specTarget ? TEAMS.find((t) => this.game.flags[t]?.by === this.specTarget) : undefined;
+    pv.setMelee(target.carryingFlag, carried ? TEAM_INFO[carried].color : undefined);
+    pv.showGun(gun);
+    if (target.consumeShotFlash()) pv.flashShot();
+    const aim = target.aimAmount;
+    pv.update(dt, target.moveSpeed, target.sprinting && aim < 0.5, aim > 0.5);
+    const fov = THREE.MathUtils.lerp(settings.get().fov, GUNS[gun].adsFov, aim);
+    if (Math.abs(cam.fov - fov) > 0.01) {
+      cam.fov = fov;
+      cam.updateProjectionMatrix();
     }
   }
 

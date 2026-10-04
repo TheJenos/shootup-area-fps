@@ -193,7 +193,7 @@ export interface LobbyRecord {
   members?: Record<string, string>;
 }
 
-export type GameMode = 'ffa' | 'tdm' | 'ctf' | 'gungame';
+export type GameMode = 'ffa' | 'tdm' | 'ctf' | 'gungame' | 'sniper' | 'snipertdm';
 
 export type Team = 'red' | 'blue';
 

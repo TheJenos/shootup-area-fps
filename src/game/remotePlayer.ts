@@ -38,6 +38,8 @@ const PISTOL_ADS = { forward: 0.5, up: -0.08, right: -0.02 };
 /** Where the eye is relative to the head bone: up the skull and a bit forward (m) */
 const EYE_UP = 0.09;
 const EYE_FORWARD = 0.08;
+/** After a shot the aim pose holds this long, so a burst fired on the run reads as shooting (ms) */
+const SHOOT_HOLD_MS = 700;
 /** Blend speeds for the ready pose (on/off) and for raising the sights */
 const READY_SPEED = 8;
 const ADS_SPEED = 12;
@@ -173,6 +175,12 @@ export class RemotePlayer {
   private fallRoll = 0;
   /** Carrying the enemy flag: no gun in hand, arms swing free except when they strike */
   private carrying = false;
+  /** When they last fired (performance.now ms): shooting holds the aim pose even at a sprint */
+  private firedAt = -Infinity;
+  /** A shot not yet shown as a muzzle flash in the first-person view of this player */
+  private shotFlash = false;
+  /** We're watching through their eyes: their own body is hidden so it doesn't block the view */
+  private firstPerson = false;
   /** 0..1 blend from the animation's arms to the aim pose, and from the ready pose to the sights */
   private readyAmount = 1;
   private adsAmount = 0;
@@ -390,6 +398,10 @@ export class RemotePlayer {
     this.group.visible = visible;
   }
 
+  get visible(): boolean {
+    return this.group.visible;
+  }
+
   /** Teammates always show their name and health. */
   setAlly(ally: boolean): void {
     if (ally === this.ally) return;
@@ -421,6 +433,54 @@ export class RemotePlayer {
       this.xray.push(gunCopy);
     }
     for (const mesh of this.xray) mesh.visible = show;
+  }
+
+  /** They just fired: bring the gun up (and keep it up for a moment) whatever they're doing. */
+  noteShot(): void {
+    this.firedAt = performance.now();
+    this.shotFlash = true;
+  }
+
+  /** True once per shot (for the muzzle flash when watching through their eyes). */
+  consumeShotFlash(): boolean {
+    const flash = this.shotFlash;
+    this.shotFlash = false;
+    return flash;
+  }
+
+  /** Where their eyes are, following crouches and slides (same heights as our own camera). */
+  eyePosition(out = new THREE.Vector3()): THREE.Vector3 {
+    return out.copy(this.group.position).setY(this.group.position.y + 1.6 - 0.55 * this.crouchAmount - 0.75 * this.slideAmount);
+  }
+
+  /** Where they're looking up / down (radians, smoothed) */
+  get lookPitch(): number {
+    return this.pitch;
+  }
+
+  /** The gun in their hands, and how far they've raised the sights (0..1) */
+  get heldGun(): GunKind {
+    return this.gunNow;
+  }
+
+  get aimAmount(): number {
+    return this.adsAmount;
+  }
+
+  get sprinting(): boolean {
+    return this.gait === 'Run';
+  }
+
+  get carryingFlag(): boolean {
+    return this.carrying;
+  }
+
+  /** Watching through their eyes: hide their body, name tag and shield bubble from us. */
+  setFirstPerson(on: boolean): void {
+    if (on === this.firstPerson) return;
+    this.firstPerson = on;
+    this.model.visible = !on;
+    if (on) this.tag.hide();
   }
 
   /** They're carrying the enemy flag (guns stowed; a "throw" is a swing of the flag). */
@@ -489,7 +549,8 @@ export class RemotePlayer {
       this.group.rotation.z = 0;
       this.model.position.y = 0;
     }
-    this.tag.update(this.alive && !this.occluded);
+    this.tag.update(this.alive && !this.occluded && !this.firstPerson);
+    if (this.firstPerson) this.shield.visible = false;
   }
 
   /** Blend the crouch / slide pose and shrink the hitbox, name tag and shield to match. */
@@ -523,10 +584,13 @@ export class RemotePlayer {
    * its fore-end. Blended over the animation; off while sprinting, sliding or dead.
    */
   private applyAim(dt: number): void {
+    const shooting = performance.now() - this.firedAt < SHOOT_HOLD_MS;
     const ready = !this.alive ? 0
       : this.carrying ? (this.throwTime >= 0 ? 1 : 0)
-        : this.aiming || (this.gait !== 'Run' && this.slideAmount < 0.5) ? 1 : 0;
-    this.readyAmount += (ready - this.readyAmount) * (1 - Math.exp(-(this.carrying ? 16 : READY_SPEED) * dt));
+        : this.aiming || shooting || (this.gait !== 'Run' && this.slideAmount < 0.5) ? 1 : 0;
+    // Snap up fast for a strike or a shot (the first bullets shouldn't leave from the hip), ease otherwise.
+    const speed = this.carrying || shooting ? 16 : READY_SPEED;
+    this.readyAmount += (ready - this.readyAmount) * (1 - Math.exp(-speed * dt));
     this.adsAmount += ((this.aiming && this.alive ? 1 : 0) - this.adsAmount) * (1 - Math.exp(-ADS_SPEED * dt));
     this.head.rotateX(-this.pitch * HEAD_PITCH);
     const w = this.readyAmount;

@@ -635,6 +635,8 @@ kbd {
 .mode-badge.tdm { background: rgba(61, 139, 255, 0.18); color: #8fbaff; }
 .mode-badge.ctf { background: rgba(255, 77, 77, 0.18); color: #ff9a9a; }
 .mode-badge.gungame { background: rgba(255, 181, 71, 0.18); color: #ffd48a; }
+.mode-badge.sniper { background: rgba(167, 139, 255, 0.18); color: #c9b8ff; }
+.mode-badge.snipertdm { background: rgba(167, 139, 255, 0.18); color: #c9b8ff; }
 .subtitle.invite strong { color: var(--accent); }
 
 /* Lobby: the header across the top, the room form on the left, the open rooms on the right */
