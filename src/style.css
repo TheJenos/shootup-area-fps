@@ -660,7 +660,17 @@ kbd {
 .leaderboard .you { color: var(--accent); font-size: 12px; }
 .leaderboard .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 12px; border: 1px dashed var(--line); border-radius: 10px; margin: 0; }
 .leaderboard .hint { font-size: 12px; margin: 8px 0 0; }
-.card.discord .leaderboard { margin-top: 18px; text-align: left; }
+.card.discord .leaderboard { margin-top: 0; text-align: left; }
+.card.discord .leaderboard h2 { margin-top: 0; }
+.card.discord .lobby-setup .subtitle { margin-top: 12px; }
+/* Discord's Activity window is often short: let the ranking scroll on its own */
+.card.discord .leaderboard table { display: block; max-height: 58vh; overflow-y: auto; }
+.card.discord .leaderboard thead, .card.discord .leaderboard tbody, .card.discord .leaderboard tfoot { display: table; width: 100%; table-layout: fixed; }
+.card.discord .leaderboard th:nth-child(2), .card.discord .leaderboard td.name { width: 45%; }
+@media (max-width: 860px) {
+  .card.discord .leaderboard { margin-top: 20px; }
+  .card.discord .leaderboard table { max-height: none; }
+}
 @media (max-width: 860px) {
   .lobby-card { grid-template-columns: 1fr; width: min(480px, 100%); }
   .lobby-card .lobby-rooms #room-list { max-height: none; overflow: visible; }

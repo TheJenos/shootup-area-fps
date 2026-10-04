@@ -86,8 +86,11 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
 
   return (
     <section id="lobby" className="screen">
-      <div className="card discord">
-        <Brand />
+      <div className="card discord lobby-card">
+        <header className="lobby-head">
+          <Brand />
+        </header>
+        <section className="lobby-setup">
         {!discord ? (
           <>
             <p className="subtitle">
@@ -128,13 +131,17 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
               {busy ? <><span className="spinner" aria-hidden="true" />{existing ? 'Joining…' : 'Starting…'}</> : existing ? 'Join match' : 'Start match'}
             </button>
             <p className="muted hint">Everyone in this voice channel plays in the same match.</p>
-            <Leaderboard limit={10} me={discordProfileId(discord.userId)} />
           </>
         )}
         <p className="error">{error}</p>
         <button type="button" className="settings-link" onClick={() => setSettingsOpen(true)}>
           ⚙ Mouse &amp; key settings
         </button>
+        </section>
+        {/* Shown straight away, even while Discord is still signing in (your row lights up once it has). */}
+        <section className="lobby-rooms">
+          <Leaderboard limit={20} me={discord ? discordProfileId(discord.userId) : ''} />
+        </section>
         <p className="legal muted"><a href="/terms.html" target="_blank" rel="noreferrer">Terms</a> · <a href="/privacy.html" target="_blank" rel="noreferrer">Privacy</a></p>
       </div>
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
