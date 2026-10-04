@@ -57,6 +57,8 @@ const RECORD_INTERVAL = 0.1;
 /** Field of view at the hip and fully aimed down the sights (degrees) */
 const HIP_FOV = 75;
 const ADS_FOV = 50;
+/** How often to check whether teammates are hidden behind cover (s) */
+const ALLY_SIGHT_INTERVAL = 0.1;
 
 export function colorFor(id: string): string {
   let h = 2166136261;
@@ -135,6 +137,8 @@ export class Game {
   private triggerHeld = false;
   /** Right mouse button: aim down sights (held, or toggled in settings) */
   private aimHeld = false;
+  private allySightTimer = 0;
+  private readonly sightRay = new THREE.Raycaster();
   private locked = false;
   private joinedAt = 0;
   private sendTimer = 0;
@@ -1505,6 +1509,7 @@ export class Game {
       r.update(dt);
       this.updateRemoteSteps(id, r, dt);
     }
+    this.updateAllySight(dt);
     this.effects.update(dt);
     this.world.sky.position.copy(this.camera.position);
     this.updateDamageIndicators();
@@ -1575,6 +1580,31 @@ export class Game {
     if (key === this.lastIndicatorKey) return;
     this.lastIndicatorKey = key;
     this.hud.update({ damageIndicators: indicators });
+  }
+
+  /**
+   * Teammates behind cover get a glowing outline (and their name tag) drawn through it.
+   * Hidden means both their chest and head are blocked from our eyes by the map.
+   */
+  private updateAllySight(dt: number): void {
+    this.allySightTimer -= dt;
+    if (this.allySightTimer > 0) return;
+    this.allySightTimer = ALLY_SIGHT_INTERVAL;
+    const eye = this.camera.getWorldPosition(new THREE.Vector3());
+    for (const r of this.remotes.values()) {
+      if (!r.isAlly || !r.alive) {
+        r.setOccluded(false);
+        continue;
+      }
+      const hidden = r.sightPoints().every((point) => {
+        const toPoint = point.clone().sub(eye);
+        const distance = toPoint.length();
+        this.sightRay.set(eye, toPoint.normalize());
+        this.sightRay.far = Math.max(0, distance - 0.1);
+        return this.sightRay.intersectObjects(this.solids, false).length > 0;
+      });
+      r.setOccluded(hidden);
+    }
   }
 
   /**

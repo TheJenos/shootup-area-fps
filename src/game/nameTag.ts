@@ -53,6 +53,12 @@ export class NameTag {
     this.pinned = pinned;
   }
 
+  /** Draw over walls (a teammate behind cover), or respect depth again. */
+  setThroughWalls(through: boolean): void {
+    this.material.depthTest = !through;
+    this.sprite.renderOrder = through ? 11 : 0;
+  }
+
   setHp(hp: number): void {
     const clamped = THREE.MathUtils.clamp(Math.round(hp), 0, 100);
     if (clamped === this.hp) return;

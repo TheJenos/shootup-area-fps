@@ -40,7 +40,9 @@ The room's creator picks the mode; the lobby shows it next to each room.
 | **CTF** — Capture the Flag | Grab the enemy flag and bring it to your own base | 12 min | 3 captures |
 
 - **Teams:** you join the smaller team. Every player's uniform takes their team colour (65%, with a faint glow
-  and a glowing visor, so teams stay readable in shadow). Teammates' names are always visible,
+  and a glowing visor, so teams stay readable in shadow). Teammates' names are always visible, and a
+  teammate hidden behind cover shows through it as a glowing team-coloured outline with their name tag
+  (`src/game/xray.ts`; enemies are never shown through walls),
   bullets and grenades pass through them, and you spawn on your own half (red owns +z, blue −z).
   The pause menu (Esc) has a **Switch team** button.
 - **Capture the Flag:** each base is a glowing pad near the back wall with the team's flag on it.
@@ -343,6 +345,7 @@ src/
     world.ts         turns a map layout into meshes, lighting, colliders, spawn points
     player.ts        first-person controller + collisions
     remotePlayer.ts  other players' avatars + interpolation
+    xray.ts          teammates' glowing outline through cover
     nameTag.ts       name + health tag revealed to the shooter
     modes.ts         game modes, score + time limits, teams, flag bases
     moments.ts       tracks our highlights (multi-kills, flag runs, ...) for MVP

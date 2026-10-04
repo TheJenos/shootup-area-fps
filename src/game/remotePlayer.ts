@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { NameTag } from './nameTag';
+import { makeXrayMaterial, makeXrayMeshes } from './xray';
 import { wornMetalTexture } from './textures';
 import { cloneCharacter, GAITS, type CharacterAsset, type Gait } from './character';
 import { TEAMS, TEAM_INFO } from './modes';
@@ -111,6 +112,11 @@ export class RemotePlayer {
   private readonly feet: THREE.Object3D[];
   private stanceNow: Stance = 'stand';
   private colorNow: string | undefined;
+  private ally = false;
+  /** Glowing outline drawn through cover, for teammates only (made on first need) */
+  private xray: THREE.SkinnedMesh[] = [];
+  private xrayMaterial: THREE.ShaderMaterial | null = null;
+  private occluded = false;
   private teamNow: Team | undefined;
   /** 0..1 blend toward the crouch and slide poses */
   private crouchAmount = 0;
@@ -285,7 +291,39 @@ export class RemotePlayer {
 
   /** Teammates always show their name and health. */
   setAlly(ally: boolean): void {
+    if (ally === this.ally) return;
+    this.ally = ally;
     this.tag.setPinned(ally);
+    if (!ally) this.setOccluded(false);
+  }
+
+  get isAlly(): boolean {
+    return this.ally;
+  }
+
+  /**
+   * A teammate is behind cover: show their outline (and name tag) through it.
+   * Only for allies; enemies behind walls stay hidden.
+   */
+  setOccluded(occluded: boolean): void {
+    const show = occluded && this.ally && this.alive;
+    if (show === this.occluded) return;
+    this.occluded = show;
+    if (show && !this.xray.length) {
+      this.xrayMaterial = makeXrayMaterial(this.colorNow ?? '#ffffff');
+      this.xray = makeXrayMeshes(this.model, this.xrayMaterial);
+    }
+    for (const mesh of this.xray) mesh.visible = show;
+    this.tag.setThroughWalls(show);
+  }
+
+  /** Points to test for line of sight: chest and head, in world space. */
+  sightPoints(): THREE.Vector3[] {
+    const p = this.group.position;
+    return [
+      new THREE.Vector3(p.x, p.y + this.chestHeight, p.z),
+      this.headHit.getWorldPosition(new THREE.Vector3()),
+    ];
   }
 
   get hitboxes(): THREE.Mesh[] {
@@ -378,6 +416,7 @@ export class RemotePlayer {
     if (color === this.colorNow && team === this.teamNow) return;
     this.colorNow = color;
     this.teamNow = team;
+    this.xrayMaterial?.uniforms.color?.value.set(color);
     const onTeam = !!(team ?? teamOfColor(color));
     const tint = new THREE.Color(color);
     for (const mat of this.materials) {
@@ -397,6 +436,7 @@ export class RemotePlayer {
     this.mixer.uncacheRoot(this.model);
     this.scene.remove(this.group);
     for (const mat of this.materials) mat.dispose();
+    this.xrayMaterial?.dispose();
     this.tag.dispose();
   }
 }
