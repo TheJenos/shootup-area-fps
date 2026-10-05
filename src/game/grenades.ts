@@ -122,19 +122,21 @@ export class GrenadeFx {
     this.flights.delete(id);
   }
 
-  explode(id: string, at: THREE.Vector3, radius: number): void {
+  /** @param color the fireball (white for a flashbang) */
+  explode(id: string, at: THREE.Vector3, radius: number, color = 0xffa040): void {
     const flight = this.flights.get(id);
     if (flight) {
       this.scene.remove(flight.mesh);
       this.flights.delete(id);
     }
     const mesh = new THREE.Mesh(blastGeo, new THREE.MeshBasicMaterial({
-      color: 0xffa040, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false,
+      color, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false,
     }));
     mesh.position.copy(at);
     // Reuse the oldest light in the pool.
     const light = this.lights[this.nextLight++ % this.lights.length]!;
     light.distance = radius * 4;
+    light.color.set(color === 0xffa040 ? 0xff8a3a : color);
     light.position.copy(at).y += 0.5;
     this.scene.add(mesh);
     this.blasts.push({ mesh, light, startedAt: performance.now(), radius });

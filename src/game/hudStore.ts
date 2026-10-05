@@ -158,7 +158,11 @@ export interface HudState {
   /** The three ability slots */
   slots: (SlotView | null)[];
   /** Active timed effects; seconds / points left, rounded for display */
-  buffs: { speed: number | null; shield: number | null };
+  buffs: { speed: number | null; shield: number | null; cloak: number | null; lifesteal: number | null; scan: number | null };
+  /** Flashbang white-out: how strong (0..1) and how long it lasts (s); `n` restarts the fade */
+  flash: { n: number; strength: number; seconds: number } | null;
+  /** We're cloaked (the screen edges get a cool tint) */
+  cloaked: boolean;
   /** Short message near the slots, e.g. "Slots full"; `n` restarts the animation */
   toast: { n: number; text: string } | null;
   inventoryOpen: boolean;
@@ -216,7 +220,9 @@ const initialState: HudState = {
   slotDenied: null,
   gunPrompt: null,
   slots: [null, null, null],
-  buffs: { speed: null, shield: null },
+  buffs: { speed: null, shield: null, cloak: null, lifesteal: null, scan: null },
+  flash: null,
+  cloaked: false,
   toast: null,
   inventoryOpen: false,
   match: null,

@@ -20,6 +20,13 @@ export const ABILITIES: Record<AbilityType, AbilityDef> = {
   grenade: { name: 'Grenade', icon: '💣', uses: 3, cooldown: 6, color: 0xff6a3d, description: 'Area damage, walls block it' },
   smoke: { name: 'Smoke', icon: '🌫️', uses: 2, cooldown: 10, color: 0xc9d1dc, description: 'Thick cloud for 12s, blocks sight' },
   wall: { name: 'Barrier', icon: '🧱', uses: 2, cooldown: 14, color: 0x6fa8ff, description: 'Deployable cover for 20s' },
+  cloak: { name: 'Cloak', icon: '👻', uses: 2, cooldown: 18, color: 0xb48cff, description: 'Nearly invisible for 6s; shooting ends it' },
+  scan: { name: 'Scan Pulse', icon: '📡', uses: 2, cooldown: 15, color: 0x3fe0c8, description: 'Shows enemies within 32 m through walls for 3.5s' },
+  molotov: { name: 'Molotov', icon: '🔥', uses: 2, cooldown: 12, color: 0xff8a2a, description: 'A patch of fire for 6s that burns enemies in it' },
+  flash: { name: 'Flashbang', icon: '🔆', uses: 2, cooldown: 12, color: 0xfff3b0, description: 'Blinds everyone looking at it, you too' },
+  turret: { name: 'Turret', icon: '🤖', uses: 1, cooldown: 25, color: 0x9aa6b8, description: 'Shoots the nearest enemy in sight for 15s' },
+  mine: { name: 'Land Mine', icon: '💥', uses: 2, cooldown: 12, color: 0x8a7a4a, description: 'Blows up when an enemy steps near it' },
+  lifesteal: { name: 'Lifesteal', icon: '🩸', uses: 2, cooldown: 20, color: 0xd03a4a, description: 'Your bullets heal you 30% of their damage for 8s' },
 };
 
 export const ABILITY_TYPES = Object.keys(ABILITIES) as AbilityType[];
@@ -32,6 +39,30 @@ export const SHIELD_DURATION = 8;
 export const SPEED_MULTIPLIER = 1.6;
 export const SPEED_DURATION = 5;
 export const DASH_SPEED = 20;
+export const CLOAK_DURATION = 6;
+export const SCAN_RADIUS = 32;
+export const SCAN_DURATION = 3.5;
+export const FIRE_RADIUS = 3.2;
+export const FIRE_DURATION = 6;
+/** Damage per tick to anyone standing in enemy fire, and seconds between ticks */
+export const FIRE_DAMAGE = 8;
+export const FIRE_TICK = 0.5;
+/** How far a flashbang can blind you, and the longest it lasts (s) */
+export const FLASH_RANGE = 24;
+export const FLASH_MAX = 3.2;
+export const TURRET_DURATION = 15;
+export const TURRET_RANGE = 24;
+export const TURRET_DAMAGE = 8;
+export const TURRET_INTERVAL = 0.4;
+export const LIFESTEAL_DURATION = 8;
+export const LIFESTEAL_FRACTION = 0.3;
+export const MINE_ARM = 1.5;
+export const MINE_DURATION = 90;
+export const MINE_TRIGGER = 1.6;
+export const MINE_DAMAGE = 120;
+export const MINE_RADIUS = 4;
+/** Most of each player's mines out at once; placing another clears the oldest */
+export const MINE_MAX = 2;
 export const GRENADE_DAMAGE = 90;
 export const GRENADE_RADIUS = 5;
 

@@ -168,6 +168,12 @@ export class RemotePlayer {
   private fallRoll = 0;
   /** Carrying the enemy flag: no gun in hand, arms swing free except when they strike */
   private carrying = false;
+  /** Cloak ability on (as last reported), and how far the fade has got (0..1) */
+  private cloak = false;
+  private cloakAmount = 0;
+  private lastCloakLook = -1;
+  /** Cloaked enough that an enemy loses the gun and name tag */
+  private cloakHidden = false;
   /** When they last fired (performance.now ms): shooting holds the aim pose even at a sprint */
   private firedAt = -Infinity;
   /** A shot not yet shown as a muzzle flash in the first-person view of this player */
@@ -200,6 +206,10 @@ export class RemotePlayer {
   /** Flat silhouette drawn over the walls while a teammate is behind cover (made on first need) */
   private xray: THREE.Mesh[] = [];
   private xrayMaterial: THREE.ShaderMaterial | null = null;
+  /** Red outline from our scan pulse */
+  private scanned = false;
+  private scanXray: THREE.Mesh[] = [];
+  private scanMaterial: THREE.ShaderMaterial | null = null;
   private occluded = false;
   private teamNow: Team | undefined;
   /** 0..1 blend toward the crouch and slide poses */
@@ -323,6 +333,7 @@ export class RemotePlayer {
     if (data.color || data.team) this.setColor(data.color ?? this.colorNow, data.team ?? this.teamNow);
     if (data.name) this.tag.setName(data.name);
     this.shield.visible = !!data.shield && this.alive;
+    if (data.cloak !== undefined) this.cloak = data.cloak;
     if (data.gun && data.gun !== this.gunNow) {
       this.setGun(data.gun);
       if (this.alive) this.switchTime = 0;
@@ -464,6 +475,18 @@ export class RemotePlayer {
    * over the walls. Their name tag is hidden meanwhile; it comes back once they're in sight.
    * Only for allies; enemies behind walls stay hidden.
    */
+  /** Shown through walls in red by an enemy's scan pulse (only while it lasts). */
+  setScanned(on: boolean): void {
+    const show = on && this.alive;
+    if (show === this.scanned) return;
+    this.scanned = show;
+    if (show && !this.scanXray.length) {
+      this.scanMaterial = makeXrayMaterial('#ff3b3b');
+      this.scanXray = makeXrayMeshes(this.model, this.scanMaterial);
+    }
+    for (const mesh of this.scanXray) mesh.visible = show;
+  }
+
   setOccluded(occluded: boolean): void {
     const show = occluded && this.ally && this.alive;
     if (show === this.occluded) return;
@@ -567,8 +590,38 @@ export class RemotePlayer {
     return this.alive ? [this.bodyHit, this.headHit] : [];
   }
 
+  /** Cloaked as far as we know (for their footsteps) */
+  get cloaked(): boolean {
+    return this.cloak && this.alive;
+  }
+
+  /**
+   * Fade toward a faint shimmer while cloaked: enemies see ~6% of them, teammates a ghost at ~45%.
+   * Their gun, name tag and shadow go too (the gun's material is shared, so it's hidden, not faded).
+   */
+  private updateCloak(dt: number): void {
+    const on = this.cloaked;
+    this.cloakAmount += ((on ? 1 : 0) - this.cloakAmount) * (1 - Math.exp(-8 * dt));
+    if (!on && this.cloakAmount < 0.01) this.cloakAmount = 0;
+    const amount = Math.round(this.cloakAmount * 50) / 50;
+    this.cloakHidden = amount > 0.5 && !this.ally;
+    this.gunHolder.visible = !this.carrying && !this.cloakHidden;
+    const look = amount + (this.ally ? 10 : 0);
+    if (look === this.lastCloakLook) return;
+    this.lastCloakLook = look;
+    const opacity = 1 - amount * (1 - (this.ally ? 0.45 : 0.06));
+    const faded = amount > 0;
+    for (const mat of this.materials) {
+      mat.transparent = faded;
+      mat.opacity = opacity;
+      mat.depthWrite = !faded;
+    }
+    this.model.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = !faded; });
+  }
+
   update(dt: number): void {
     const t = 1 - Math.exp(-14 * dt);
+    this.updateCloak(dt);
     this.group.position.lerp(this.target, t);
     this.group.rotation.y = angleLerp(this.group.rotation.y, this.targetYaw, t);
     this.pitch = THREE.MathUtils.lerp(this.pitch, this.targetPitch, t);
@@ -623,7 +676,7 @@ export class RemotePlayer {
       this.model.position.y = 0;
     }
     }
-    this.tag.update(this.alive && !this.occluded && !this.firstPerson);
+    this.tag.update(this.alive && !this.occluded && !this.firstPerson && !this.cloakHidden);
     if (this.firstPerson) this.shield.visible = false;
   }
 
@@ -821,6 +874,7 @@ export class RemotePlayer {
     this.scene.remove(this.group);
     for (const mat of this.materials) mat.dispose();
     this.xrayMaterial?.dispose();
+    this.scanMaterial?.dispose();
     this.tag.dispose();
   }
 }

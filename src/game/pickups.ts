@@ -58,6 +58,63 @@ function iconMesh(type: AbilityType, mat: THREE.Material): THREE.Object3D {
       }
       return g;
     }
+    case 'cloak': {
+      // A hooded ghost: a capsule body with two dark eyes
+      const g = new THREE.Group();
+      g.add(new THREE.Mesh(new THREE.CapsuleGeometry(0.16, 0.2, 4, 12), mat));
+      const dark = new THREE.MeshStandardMaterial({ color: 0x1a1030 });
+      for (const x of [-0.06, 0.06]) {
+        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 6), dark);
+        eye.position.set(x, 0.1, 0.14);
+        g.add(eye);
+      }
+      return g;
+    }
+    case 'scan': {
+      // A radar dish: a flat ring around a small core
+      const g = new THREE.Group();
+      g.add(new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.035, 8, 24).rotateX(Math.PI / 2), mat));
+      g.add(new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.03, 8, 20).rotateX(Math.PI / 2), mat));
+      g.add(new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), mat));
+      return g;
+    }
+    case 'molotov': {
+      // A bottle with a rag in the neck
+      const g = new THREE.Group();
+      g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.12, 0.3, 12), mat));
+      g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.06, 0.14, 8).translate(0, 0.22, 0), mat));
+      g.add(new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.12, 6).translate(0, 0.34, 0), new THREE.MeshBasicMaterial({ color: 0xffd060 })));
+      return g;
+    }
+    case 'flash': {
+      // A stubby canister with a pin ring
+      const g = new THREE.Group();
+      g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.32, 12), mat));
+      g.add(new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.015, 6, 12).translate(0.09, 0.2, 0), mat));
+      return g;
+    }
+    case 'turret': {
+      // A small gun head on a post
+      const g = new THREE.Group();
+      g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 0.3, 8).translate(0, -0.12, 0), mat));
+      g.add(new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.16, 0.3).translate(0, 0.08, 0), mat));
+      g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.26, 8).rotateX(Math.PI / 2).translate(0, 0.08, -0.26), mat));
+      return g;
+    }
+    case 'mine': {
+      // A flat disc with a pressure plate on top
+      const g = new THREE.Group();
+      g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.24, 0.1, 16), mat));
+      g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.06, 12).translate(0, 0.07, 0), mat));
+      return g;
+    }
+    case 'lifesteal': {
+      // A drop: a sphere with a cone on top
+      const g = new THREE.Group();
+      g.add(new THREE.Mesh(new THREE.SphereGeometry(0.17, 14, 10), mat));
+      g.add(new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.24, 14).translate(0, 0.2, 0), mat));
+      return g;
+    }
     case 'wall': {
       // A folded barrier: two slabs in a shallow V
       const g = new THREE.Group();

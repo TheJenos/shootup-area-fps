@@ -165,6 +165,20 @@ export function playReload(volume = 1, gun: GunSound = 'rifle'): void {
 /** Pulling the trigger on an empty magazine. */
 export const playEmpty = () => { play('empty', { volume: 0.5, rate: 1.4 }); };
 
+/** A molotov bursting: glass and a whoomph of fire. */
+export function playMolotov(volume = 1): void {
+  const far = Math.max(0, Math.min(1, 1 - volume));
+  play('hit_head', { volume: 0.8 * volume, rate: 0.7 * vary(0.05), lowpass: 16000 - far * 13000 });
+  play('explosion', { volume: 0.55 * volume, rate: 1.6 * vary(0.05), lowpass: 4000 - far * 2500, delay: 0.05 });
+}
+
+/** A flashbang: a sharp bang and a ringing tone. */
+export function playFlashbang(volume = 1): void {
+  const far = Math.max(0, Math.min(1, 1 - volume));
+  play('explosion_crunch', { volume, rate: 1.7 * vary(0.04), lowpass: 18000 - far * 14000 });
+  play('hit_head', { volume: 0.5 * volume, rate: 0.5, delay: 0.08 });
+}
+
 export function playExplosion(volume = 1): void {
   const far = Math.max(0, Math.min(1, 1 - volume));
   play('explosion', { volume, rate: vary(0.04), lowpass: 16000 - far * 13000 });

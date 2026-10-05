@@ -15,6 +15,8 @@ export interface PlayerState {
   deaths: number;
   /** Shield ability active (shown as a bubble to others) */
   shield?: boolean;
+  /** Cloak ability active: others see only a faint shimmer (teammates a ghost) */
+  cloak?: boolean;
   /** Crouching or sliding; missing means standing */
   stance?: Stance;
   /** The gun in hand (others see it); missing means the rifle */
@@ -105,13 +107,15 @@ export interface ShotEvent {
   ends?: Vec3Tuple[];
   /** Shotgun: total damage dealt to each player hit, replacing hit/dmg */
   hits?: Record<string, number>;
+  /** Fired by the sender's turret with this id (the turret aims at `e`; damage counts as the turret's) */
+  tur?: string;
 }
 
 /** Guns a player can hold. The rifle is always carried; the others are picked up on the map. */
 export type GunKind = 'rifle' | 'shotgun' | 'sniper' | 'deagle';
 
 /** What can kill: a gun, a grenade, or the enemy flag swung as a club (CTF carriers) */
-export type WeaponKind = GunKind | 'grenade' | 'flag';
+export type WeaponKind = GunKind | 'grenade' | 'flag' | 'molotov' | 'turret' | 'mine';
 
 export interface KillEvent {
   type: 'kill';
@@ -166,9 +170,51 @@ export interface BlastEvent {
   id: string;
   p: Vec3Tuple;
   hits?: Record<string, number>;
+  /** Set when a land mine (with this id) went off instead of a grenade */
+  mine?: boolean;
 }
 
-export type OutgoingEvent = ShotEvent | KillEvent | GrenadeEvent | BlastEvent | SmokeEvent | WallEvent | MeleeEvent;
+/** A molotov or flashbang was thrown; every client simulates the arc and sets it off where it lands. */
+export interface ThrownEvent {
+  type: 'molotov' | 'flash';
+  id: string;
+  o: Vec3Tuple;
+  v: Vec3Tuple;
+}
+
+/** A turret was deployed at (x, y, z) until server ms `until`. Its owner's client aims and fires it. */
+export interface TurretEvent {
+  type: 'turret';
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  /** Which way it starts facing */
+  yaw: number;
+  until: number;
+  /** Owner's colour */
+  c: string;
+}
+
+/** A land mine was put down at (x, y, z); it's live until server ms `until`. Its owner's client sets it off. */
+export interface MineEvent {
+  type: 'mine';
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  until: number;
+}
+
+/** A scan pulse went out from `p` with radius `r`: enemies inside it are shown through walls. */
+export interface ScanEvent {
+  type: 'scan';
+  p: Vec3Tuple;
+  r: number;
+}
+
+export type OutgoingEvent =
+  | ShotEvent | KillEvent | GrenadeEvent | BlastEvent | SmokeEvent | WallEvent | MeleeEvent | ThrownEvent | TurretEvent | ScanEvent | MineEvent;
 
 /** An event as stored in the database, stamped by the sender. */
 export type GameEvent = OutgoingEvent & { from: string; t: number };
@@ -233,7 +279,9 @@ export interface GameRecord {
 /** A GameRecord with the parts Firebase may leave out filled in. */
 export type GameState = GameRecord & Required<Pick<GameRecord, 'score' | 'flags'>>;
 
-export type AbilityType = 'medkit' | 'shield' | 'speed' | 'dash' | 'grenade' | 'smoke' | 'wall';
+export type AbilityType =
+  | 'medkit' | 'shield' | 'speed' | 'dash' | 'grenade' | 'smoke' | 'wall' | 'cloak'
+  | 'scan' | 'molotov' | 'flash' | 'turret' | 'lifesteal' | 'mine';
 
 /** Things lying on the map: abilities, guns and ammo boxes */
 export type PickupType = AbilityType | Exclude<GunKind, 'rifle'> | 'ammo';

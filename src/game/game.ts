@@ -11,9 +11,12 @@ import {
   HudStore, type DamageIndicator, type HudState, type MatchEnd, type MyMatch, type ScoreRow,
 } from './hudStore';
 import {
-  ABILITIES, ABILITY_TYPES, Inventory, DASH_SPEED, GRENADE_DAMAGE, GRENADE_RADIUS, MEDKIT_HEAL,
-  SHIELD_AMOUNT, SHIELD_DURATION, SPEED_DURATION, SPEED_MULTIPLIER,
+  ABILITIES, ABILITY_TYPES, Inventory, CLOAK_DURATION, DASH_SPEED, FIRE_DAMAGE, FIRE_DURATION, FIRE_TICK, FLASH_MAX,
+  FLASH_RANGE, GRENADE_DAMAGE, GRENADE_RADIUS, LIFESTEAL_DURATION, LIFESTEAL_FRACTION, MEDKIT_HEAL, SCAN_DURATION,
+  MINE_DAMAGE, MINE_DURATION, MINE_MAX, MINE_RADIUS, MINE_TRIGGER, SCAN_RADIUS, SHIELD_AMOUNT, SHIELD_DURATION, SPEED_DURATION, SPEED_MULTIPLIER, TURRET_DAMAGE, TURRET_DURATION,
+  TURRET_INTERVAL, TURRET_RANGE,
 } from './abilities';
+import { FireField, MineField, ScanPulses, TurretField, type Mine, type Turret } from './fieldfx';
 import { MAX_AMMO_PICKUPS, MAX_GUN_PICKUPS, MAX_PICKUPS, PickupField, kindOf, type PickupKind } from './pickups';
 import { SmokeField, WALL_DISTANCE, WALL_DURATION, WallField, type WallAxis } from './deployables';
 import { GUNS, PICKUP_GUNS, isPickupGun, loadGunModels, maxShotDamage, shotDamage } from './guns';
@@ -45,7 +48,8 @@ const SEND_INTERVAL = 1 / 15;
 const HEARTBEAT = 2;
 /** Most damage one hit of each kind can deal; anything above that from another client is clamped. */
 const maxDamage = (weapon: WeaponKind) =>
-  (weapon === 'grenade' ? GRENADE_DAMAGE : weapon === 'flag' ? MELEE_HEAD_DAMAGE : maxShotDamage(weapon));
+  (weapon === 'grenade' ? GRENADE_DAMAGE : weapon === 'mine' ? MINE_DAMAGE : weapon === 'flag' ? MELEE_HEAD_DAMAGE : weapon === 'molotov' ? FIRE_DAMAGE
+    : weapon === 'turret' ? TURRET_DAMAGE : maxShotDamage(weapon));
 /** Dropped items land this far in front of the player */
 const DROP_DISTANCE = 1.6;
 const ABILITY_ACTIONS: Action[] = ['ability1', 'ability2', 'ability3'];
@@ -66,7 +70,7 @@ const RECORD_INTERVAL = 0.1;
 /** Fraction of full health a kill gives back */
 const KILL_HEAL = 0.5;
 /** How hard a killing hit shoves the body, per weapon (m/s at the chest) */
-const KNOCKBACK: Partial<Record<WeaponKind, number>> = { rifle: 3, deagle: 4, shotgun: 6, sniper: 6, grenade: 7, flag: 4.5 };
+const KNOCKBACK: Partial<Record<WeaponKind, number>> = { rifle: 3, deagle: 4, shotgun: 6, sniper: 6, grenade: 7, mine: 8, flag: 4.5 };
 
 /** Fraction of full health at or below which the screen darkens at the edges and the heart pounds */
 export const LOW_HEALTH = 0.3;
@@ -181,6 +185,20 @@ export class Game {
   private readonly walls: WallField;
   /** Smoke canisters in the air (ours), waiting to land */
   private pendingSmokes: { id: string; at: number; p: THREE.Vector3 }[] = [];
+  /** Molotovs and flashbangs in the air: they go off where they land (everyone simulates the same arc) */
+  private pendingThrown: { id: string; kind: 'molotov' | 'flash'; owner: string; at: number; p: THREE.Vector3 }[] = [];
+  private readonly fires: FireField;
+  private readonly turrets: TurretField;
+  private readonly mines: MineField;
+  private readonly scanFx: ScanPulses;
+  /** Our scan pulse: when it ends (0 when off) and where it went out from */
+  private scanUntil = 0;
+  private readonly scanOrigin = new THREE.Vector3();
+  /** Lifesteal rounds run until this time (0 when off) */
+  private lifestealUntil = 0;
+  /** Seconds until standing in enemy fire hurts again */
+  private fireTick = 0;
+  private readonly turretRay = new THREE.Raycaster();
   private dryToastAt = 0;
   /** How many things we've thrown this session (others animate the throw when it changes) */
   private throws = 0;
@@ -190,6 +208,8 @@ export class Game {
   private spawnTimer = 1;
   private shieldHp = 0;
   private shieldUntil = 0;
+  /** When our cloak wears off (0 when not cloaked) */
+  private cloakUntil = 0;
   private speedUntil = 0;
   private pendingBlasts: { id: string; at: number; p: THREE.Vector3 }[] = [];
   private lastSlotsKey = '';
@@ -311,6 +331,10 @@ export class Game {
     this.grenades = new GrenadeFx(this.scene);
     this.smoke = new SmokeField(this.scene);
     this.walls = new WallField(this.scene, this.colliders, this.solids);
+    this.fires = new FireField(this.scene);
+    this.turrets = new TurretField(this.scene, this.colliders, this.solids);
+    this.mines = new MineField(this.scene);
+    this.scanFx = new ScanPulses(this.scene);
     this.hud.update({ ammo: this.weapon.ammo, magSize: this.weapon.magSize });
 
     this.net = new RoomConnection(roomCode, playerId, {
@@ -332,6 +356,11 @@ export class Game {
     const map = generateMap(seed);
     this.world?.dispose();
     this.walls?.clear();
+    // Fires, turrets and mines belong to the old map (the collider list is rebuilt for the new one).
+    this.fires?.clear();
+    this.turrets?.clear();
+    this.mines?.clear();
+    this.pendingThrown = [];
     this.world = buildWorld(this.scene, map, {
       colliders: this.colliders, solids: this.solids, ramps: this.ramps, obstacles: this.obstacles,
     });
@@ -829,6 +858,9 @@ export class Game {
   private onPlayerRemoved(id: string): void {
     if (id === this.playerId) return; // presence is re-registered when the connection recovers
     const remote = this.remotes.get(id);
+    // Their turrets and mines go with them.
+    this.turrets.removeOwnedBy(id);
+    this.mines.removeOwnedBy(id);
     if (remote) {
       this.hud.pushInfo(`${this.players[id]?.name || 'Someone'} left`);
       remote.dispose();
@@ -858,9 +890,17 @@ export class Game {
 
     if (evt.type === 'shot') {
       if (evt.from === this.playerId || !evt.o || !evt.e) return;
-      this.remotes.get(evt.from)?.noteShot();
+      // A turret's shot swings its head; a player's raises their gun.
+      const turret = evt.tur ? this.turrets.get(evt.tur) : undefined;
+      if (turret) {
+        this.turrets.aimAt(turret, fromArr(evt.e));
+        this.turrets.fired(turret);
+      } else if (!evt.tur) {
+        this.remotes.get(evt.from)?.noteShot();
+      }
       const origin = fromArr(evt.o);
       const gun = evt.w && evt.w in GUNS ? evt.w : 'rifle';
+      const weapon: WeaponKind = evt.tur ? 'turret' : gun;
       for (const e of [evt.e, ...(evt.ends ?? [])]) {
         const end = fromArr(e);
         this.effects.tracer(origin, end, 0xffa27a);
@@ -870,8 +910,8 @@ export class Game {
       sfx.playShot(1 / (1 + dist / 10), gun);
       // Shotguns send damage per player hit; everything else a single hit.
       const pellets = evt.hits?.[this.playerId];
-      if (pellets) this.takeDamage(pellets, evt.from, false, gun, origin);
-      else if (evt.hit === this.playerId) this.takeDamage(evt.dmg, evt.from, !!evt.head, gun, origin);
+      if (pellets) this.takeDamage(pellets, evt.from, false, weapon, origin);
+      else if (evt.hit === this.playerId) this.takeDamage(evt.dmg, evt.from, !!evt.head, weapon, origin);
     } else if (evt.type === 'grenade') {
       if (evt.from === this.playerId) return;
       this.grenades.launch(evt.id, simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders));
@@ -889,6 +929,28 @@ export class Game {
       const arc = simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders);
       this.grenades.launch(evt.id, arc);
       this.pendingSmokes.push({ id: evt.id, at: performance.now() + arc.duration * 1000, p: arc.end });
+    } else if (evt.type === 'molotov' || evt.type === 'flash') {
+      if (evt.from === this.playerId || !evt.o || !evt.v) return;
+      const arc = simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders);
+      this.grenades.launch(evt.id, arc);
+      this.pendingThrown.push({ id: evt.id, kind: evt.type, owner: evt.from, at: performance.now() + arc.duration * 1000, p: arc.end });
+    } else if (evt.type === 'turret') {
+      if (evt.from === this.playerId) return;
+      const color = new THREE.Color(this.players[evt.from]?.color ?? evt.c ?? '#9aa6b8').getHex();
+      this.turrets.place(evt.id, evt.from, evt.x, evt.y, evt.z, evt.yaw, evt.until, color);
+      sfx.playAbility();
+    } else if (evt.type === 'mine') {
+      // Quietly: enemies only find out by seeing it.
+      if (evt.from === this.playerId) return;
+      this.addMine(evt.id, evt.from, evt.x, evt.y, evt.z, evt.until);
+    } else if (evt.type === 'scan') {
+      if (evt.from === this.playerId || !evt.p) return;
+      const at = fromArr(evt.p);
+      this.scanFx.emit(at, evt.r);
+      if (this.alive && !this.isAlly(evt.from) && this.player.position.distanceTo(at) <= evt.r) {
+        this.hud.toast("You've been scanned — they can see you through walls");
+        sfx.playDenied();
+      }
     } else if (evt.type === 'wall') {
       if (evt.from === this.playerId) return;
       const color = new THREE.Color(this.players[evt.from]?.color ?? evt.c ?? '#6fa8ff').getHex();
@@ -897,11 +959,12 @@ export class Game {
     } else if (evt.type === 'blast') {
       if (evt.from === this.playerId) return;
       const at = fromArr(evt.p);
+      if (evt.mine) this.mines.remove(evt.id);
       this.grenades.explode(evt.id, at, GRENADE_RADIUS);
       this.liftBodies(at);
       sfx.playExplosion(1 / (1 + at.distanceTo(this.camera.position) / 12));
       const dmg = evt.hits?.[this.playerId];
-      if (dmg) this.takeDamage(dmg, evt.from, false, 'grenade', at);
+      if (dmg) this.takeDamage(dmg, evt.from, false, evt.mine ? 'mine' : 'grenade', at);
     } else if (evt.type === 'kill') {
       this.shoveBody(evt.victim, evt.killer, evt.head, evt.weapon ?? 'rifle');
       const victim = this.players[evt.victim] ?? UNKNOWN_PLAYER;
@@ -962,7 +1025,7 @@ export class Game {
     if (!body) return;
     const from = killerId === this.playerId ? this.player.position : this.remotes.get(killerId)?.position;
     if (!from || killerId === victimId) return;
-    body.knockback(from, KNOCKBACK[weapon] ?? 3, head, weapon === 'grenade');
+    body.knockback(from, KNOCKBACK[weapon] ?? 3, head, weapon === 'grenade' || weapon === 'mine');
   }
 
   /** Connection dropped or came back: tell the player, and hold pose updates while offline. */
@@ -979,6 +1042,16 @@ export class Game {
   }
 
   /** Every kill gives back half of full health (never above full), as a reward for winning the fight. */
+  /** Heal up to full health, with the green "+N" on the HUD. */
+  private heal(amount: number): void {
+    if (!this.alive || this.roundOver) return;
+    const gain = Math.min(amount, this.rules.health - this.hp);
+    if (gain <= 0) return;
+    this.hp += gain;
+    this.hud.update({ hp: this.hp, heal: { n: (this.hud.get().heal?.n ?? 0) + 1, amount: gain } });
+    void this.net.sendState({ hp: this.hp });
+  }
+
   private healForKill(): void {
     if (!this.alive || this.roundOver) return;
     const max = this.rules.health;
@@ -1139,7 +1212,9 @@ export class Game {
     this.clearAbilities();
     this.hud.update({ myMatch: this.myMatch });
     this.respawn();
-    void this.net.sendState({ kills: 0, deaths: 0, shield: false, moment: null, ...this.stats });
+    this.cloakUntil = 0;
+    this.hud.update({ cloaked: false });
+    void this.net.sendState({ kills: 0, deaths: 0, shield: false, cloak: false, moment: null, ...this.stats });
     const map = this.hud.get().map;
     this.hud.toast(`Round ${this.game.round + 1}${map ? ` · ${map.name}` : ''} — fight!`);
     sfx.playRoundStart();
@@ -1650,6 +1725,7 @@ export class Game {
   }
 
   private die(killerId: string, head: boolean, weapon: WeaponKind): void {
+    this.endCloak();
     this.setGunPrompt(null);
     this.alive = false;
     this.hp = 0;
@@ -1711,6 +1787,8 @@ export class Game {
     if (this.inventoryOpen) this.closeInventory(false);
     this.shieldHp = 0;
     this.speedUntil = 0;
+    this.lifestealUntil = 0;
+    this.endScan();
     this.player.speedMultiplier = 1;
   }
 
@@ -1743,6 +1821,7 @@ export class Game {
   }
 
   private shoot(): void {
+    this.endCloak();
     const gun = this.weapon.gun;
     const def = GUNS[gun];
     const origin = this.camera.getWorldPosition(new THREE.Vector3());
@@ -1786,13 +1865,17 @@ export class Game {
     if (damageTo.size) {
       this.stats.hits++;
       if (anyHead) this.stats.headshots++;
+      let dealt = 0;
       for (const [id, dmg] of damageTo) {
         const target = this.remotes.get(id);
         if (target) {
-          this.stats.damage += Math.min(dmg, target.displayedHp);
+          const real = Math.min(dmg, target.displayedHp);
+          this.stats.damage += real;
+          dealt += real;
           target.reveal(dmg);
         }
       }
+      if (this.lifestealUntil > performance.now()) this.heal(Math.round(dealt * LIFESTEAL_FRACTION));
       this.hud.hitmarker(anyHead);
       sfx.playHit(anyHead);
     }
@@ -1822,6 +1905,7 @@ export class Game {
    * find the nearest enemy within reach. Walls in the way block it. Shown to others as a throw.
    */
   private swingFlag(): void {
+    this.endCloak();
     this.throws++;
     const origin = this.camera.getWorldPosition(new THREE.Vector3());
     const forward = this.camera.getWorldDirection(new THREE.Vector3());
@@ -1911,6 +1995,40 @@ export class Game {
         break;
       case 'dash':
         this.player.dash(DASH_SPEED);
+        break;
+      case 'scan':
+        this.startScan(now);
+        break;
+      case 'molotov':
+      case 'flash':
+        if (this.weapon.meleeMode) {
+          this.hud.toast("Hands full — you can't throw while carrying the flag");
+          sfx.playDenied();
+          return;
+        }
+        this.throwThrown(type);
+        break;
+      case 'turret':
+        if (!this.placeTurret()) {
+          this.hud.toast('No room for a turret here');
+          sfx.playDenied();
+          return;
+        }
+        break;
+      case 'mine':
+        if (!this.placeMine()) {
+          this.hud.toast("Can't put a mine down here");
+          sfx.playDenied();
+          return;
+        }
+        break;
+      case 'lifesteal':
+        this.lifestealUntil = now + LIFESTEAL_DURATION * 1000;
+        break;
+      case 'cloak':
+        this.cloakUntil = now + CLOAK_DURATION * 1000;
+        this.hud.update({ cloaked: true });
+        void this.net.sendState({ cloak: true });
         break;
       case 'grenade':
         if (this.weapon.meleeMode) {
@@ -2007,12 +2125,21 @@ export class Game {
     this.hud.update({ myMatch: this.myMatch });
   }
 
+  /** Drop the cloak (it ran out, we attacked, died, or the round ended). */
+  private endCloak(): void {
+    if (!this.cloakUntil) return;
+    this.cloakUntil = 0;
+    this.hud.update({ cloaked: false });
+    void this.net.sendState({ cloak: false });
+  }
+
   private endShield(): void {
     this.shieldHp = 0;
     void this.net.sendState({ shield: false });
   }
 
   private throwGrenade(): void {
+    this.endCloak();
     this.throws++;
     const dir = this.camera.getWorldDirection(new THREE.Vector3());
     const start = this.camera.getWorldPosition(new THREE.Vector3()).addScaledVector(dir, 0.6);
@@ -2030,6 +2157,7 @@ export class Game {
 
   /** A smoke canister flies like a grenade and bursts where it lands. */
   private throwSmoke(): void {
+    this.endCloak();
     this.throws++;
     const dir = this.camera.getWorldDirection(new THREE.Vector3());
     const start = this.camera.getWorldPosition(new THREE.Vector3()).addScaledVector(dir, 0.6);
@@ -2042,6 +2170,196 @@ export class Game {
     this.net.sendEvent({ type: 'smoke', id, o, v });
     this.recorder.event({ t: this.net.serverNow(), kind: 'smoke', id, o, v });
     this.pendingSmokes.push({ id, at: performance.now() + arc.duration * 1000, p: arc.end });
+  }
+
+  /** A molotov or flashbang: thrown like a grenade, it goes off where it lands. */
+  private throwThrown(kind: 'molotov' | 'flash'): void {
+    this.endCloak();
+    this.throws++;
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const start = this.camera.getWorldPosition(new THREE.Vector3()).addScaledVector(dir, 0.6);
+    const velocity = dir.multiplyScalar(THROW_SPEED).add(new THREE.Vector3(0, THROW_LIFT, 0));
+    const o = toArr(start);
+    const v = toArr(velocity);
+    const arc = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders);
+    const id = randomId(8);
+    this.grenades.launch(id, arc);
+    this.net.sendEvent({ type: kind, id, o, v });
+    this.pendingThrown.push({ id, kind, owner: this.playerId, at: performance.now() + arc.duration * 1000, p: arc.end });
+  }
+
+  /** A molotov landed: fire for a few seconds. A flashbang: everyone looking at it is blinded. */
+  private setOff(b: { id: string; kind: 'molotov' | 'flash'; owner: string; p: THREE.Vector3 }): void {
+    this.grenades.land(b.id);
+    const heard = 1 / (1 + b.p.distanceTo(this.camera.position) / 12);
+    if (b.kind === 'molotov') {
+      this.fires.ignite(b.id, b.owner, b.p, this.net.serverNow() + FIRE_DURATION * 1000);
+      sfx.playMolotov(heard);
+      return;
+    }
+    this.grenades.explode(b.id, b.p, 2.5, 0xffffff);
+    sfx.playFlashbang(heard);
+    // Everyone works out their own blindness: distance, line of sight and which way they face.
+    const eye = this.camera.getWorldPosition(new THREE.Vector3());
+    const dist = eye.distanceTo(b.p);
+    if (dist > FLASH_RANGE) return;
+    const from = b.p.clone().setY(b.p.y + 0.25);
+    this.losRay.set(from, eye.clone().sub(from).normalize());
+    this.losRay.far = Math.max(0.01, from.distanceTo(eye) - 0.3);
+    if (this.losRay.intersectObjects(this.world.solids, false).length > 0) return;
+    const facing = this.camera.getWorldDirection(new THREE.Vector3()).dot(b.p.clone().sub(eye).normalize());
+    const near = Math.pow(1 - dist / FLASH_RANGE, 0.6);
+    const strength = near * (facing > 0.2 ? 0.55 + 0.45 * facing : 0.25);
+    if (strength < 0.1) return;
+    this.hud.update({ flash: { n: (this.hud.get().flash?.n ?? 0) + 1, strength: Math.min(1, 0.45 + strength), seconds: 0.5 + FLASH_MAX * strength } });
+  }
+
+  /** Scan pulse: enemies near us show through walls for a few seconds, and they're warned. */
+  private startScan(now: number): void {
+    this.scanUntil = now + SCAN_DURATION * 1000;
+    this.scanOrigin.copy(this.player.position);
+    this.scanFx.emit(this.scanOrigin, SCAN_RADIUS);
+    this.net.sendEvent({ type: 'scan', p: toArr(this.scanOrigin), r: SCAN_RADIUS });
+  }
+
+  private endScan(): void {
+    this.scanUntil = 0;
+    for (const r of this.remotes.values()) r.setScanned(false);
+  }
+
+  /** Put a turret down in front of us. Refused (false) when there's no room. */
+  private placeTurret(): boolean {
+    const p = this.player.position;
+    const yaw = this.player.yaw;
+    const x = r2(p.x - Math.sin(yaw) * 1.6);
+    const z = r2(p.z - Math.cos(yaw) * 1.6);
+    const y = r2(this.groundBelow(new THREE.Vector3(x, p.y + 0.1, z)));
+    const box = TurretField.boxFor(x, y, z);
+    const limit = ARENA_HALF - 0.8;
+    if (Math.abs(x) > limit || Math.abs(z) > limit) return false;
+    if (this.world.colliders.some((c) => c.intersectsBox(box))) return false;
+    const padded = box.clone().expandByScalar(0.3);
+    for (const r of this.remotes.values()) {
+      if (r.alive && padded.containsPoint(r.position.clone().setY(r.position.y + 0.5))) return false;
+    }
+    if (padded.containsPoint(p.clone().setY(p.y + 0.5))) return false;
+    const id = randomId(8);
+    const until = this.net.serverNow() + TURRET_DURATION * 1000;
+    this.turrets.place(id, this.playerId, x, y, z, yaw, until, new THREE.Color(this.color).getHex());
+    this.net.sendEvent({ type: 'turret', id, x, y, z, yaw: r2(yaw), until, c: this.color });
+    return true;
+  }
+
+  /** Put a land mine down at our feet. Refused (false) in mid-air or at the arena edge. */
+  private placeMine(): boolean {
+    const p = this.player.position;
+    if (!this.player.onGround) return false;
+    const limit = ARENA_HALF - 0.6;
+    if (Math.abs(p.x) > limit || Math.abs(p.z) > limit) return false;
+    const x = r2(p.x);
+    const z = r2(p.z);
+    const y = r2(this.groundBelow(new THREE.Vector3(x, p.y + 0.1, z)));
+    const id = randomId(8);
+    const until = this.net.serverNow() + MINE_DURATION * 1000;
+    this.addMine(id, this.playerId, x, y, z, until);
+    this.net.sendEvent({ type: 'mine', id, x, y, z, until });
+    return true;
+  }
+
+  /** Place a mine; an owner's oldest goes once they have more than MINE_MAX (every client does the same). */
+  private addMine(id: string, owner: string, x: number, y: number, z: number, until: number): void {
+    this.mines.place(id, owner, x, y, z, until);
+    const owned = this.mines.ownedBy(owner);
+    for (const old of owned.slice(0, Math.max(0, owned.length - MINE_MAX))) this.mines.remove(old.id);
+  }
+
+  /** Our armed mines go off when an enemy comes within MINE_TRIGGER (cloaked or not). */
+  private runMine(m: Mine, serverNow: number): void {
+    if (serverNow < m.armedAt) return;
+    for (const [id, r] of this.remotes) {
+      if (!r.alive || this.players[id]?.spec || this.isAlly(id)) continue;
+      const dy = r.position.y - m.at.y;
+      if (dy < -0.5 || dy > 1.2) continue;
+      if (Math.hypot(r.position.x - m.at.x, r.position.z - m.at.z) > MINE_TRIGGER) continue;
+      this.mines.remove(m.id);
+      this.detonate({ id: m.id, p: m.at.clone().setY(m.at.y + 0.15) }, true);
+      return;
+    }
+  }
+
+  /** Our turrets pick the nearest enemy they can see (not cloaked) and fire at them. */
+  private runTurret(t: Turret, dt: number): void {
+    t.cooldown -= dt;
+    const head = t.head.getWorldPosition(new THREE.Vector3());
+    let best: { id: string; chest: THREE.Vector3; dist: number } | null = null;
+    for (const [id, r] of this.remotes) {
+      if (!r.alive || r.cloaked || this.players[id]?.spec || this.isAlly(id)) continue;
+      const chest = r.position.clone().setY(r.position.y + r.chestHeight);
+      const dist = chest.distanceTo(head);
+      if (dist > TURRET_RANGE || (best && dist >= best.dist)) continue;
+      // Start the sight line just outside the turret's own box.
+      const dir = chest.clone().sub(head).normalize();
+      const from = head.clone().addScaledVector(dir, 0.6);
+      this.turretRay.set(from, dir);
+      this.turretRay.far = from.distanceTo(chest);
+      if (this.turretRay.intersectObjects(this.world.solids, false).length > 0) continue;
+      best = { id, chest, dist };
+    }
+    if (!best) {
+      // Nobody in sight: slowly sweep.
+      t.targetYaw += dt * 0.7;
+      t.targetPitch = 0;
+      return;
+    }
+    this.turrets.aimAt(t, best.chest);
+    let off = t.targetYaw - t.yaw;
+    off = Math.atan2(Math.sin(off), Math.cos(off));
+    if (t.cooldown > 0 || Math.abs(off) > 0.25) return;
+    t.cooldown = TURRET_INTERVAL;
+    const muzzle = t.muzzle.getWorldPosition(new THREE.Vector3());
+    const dir = best.chest.clone().sub(muzzle).normalize().add(new THREE.Vector3().randomDirection().multiplyScalar(0.035)).normalize();
+    const targets: THREE.Object3D[] = [...this.world.solids.filter((s) => s !== t.solid)];
+    for (const [id, r] of this.remotes) if (!this.isAlly(id)) targets.push(...r.hitboxes);
+    this.turretRay.set(muzzle, dir);
+    this.turretRay.far = TURRET_RANGE + 4;
+    const hit = this.turretRay.intersectObjects(targets, false)[0];
+    const end = hit ? hit.point : muzzle.clone().addScaledVector(dir, TURRET_RANGE);
+    const hitId = (hit?.object.userData as Partial<HitboxData> | undefined)?.playerId ?? null;
+    this.effects.tracer(muzzle, end, 0xffd27a);
+    if (hit) this.effects.impact(end, hitId ? 0xff3b3b : 0xffc35c);
+    this.turrets.fired(t);
+    sfx.playShot(0.5 / (1 + muzzle.distanceTo(this.camera.position) / 10), 'rifle');
+    if (hitId) {
+      const target = this.remotes.get(hitId);
+      if (target) this.stats.damage += Math.min(TURRET_DAMAGE, target.displayedHp);
+    }
+    this.net.sendEvent({
+      type: 'shot', o: toArr(muzzle), e: toArr(end), hit: hitId, dmg: hitId ? TURRET_DAMAGE : 0, head: false, tur: t.id,
+    });
+  }
+
+  /** Per frame: thrown things landing, standing in fire, our turrets, the scan pulse. */
+  private updateNewAbilities(dt: number, now: number): void {
+    const due = this.pendingThrown.filter((b) => now >= b.at);
+    if (due.length) {
+      this.pendingThrown = this.pendingThrown.filter((b) => now < b.at);
+      due.forEach((b) => this.setOff(b));
+    }
+    // Enemy fire under us hurts every FIRE_TICK seconds (our own and our team's doesn't).
+    this.fireTick = Math.max(0, this.fireTick - dt);
+    if (this.alive && !this.roundOver && this.fireTick === 0) {
+      const fire = this.fires.burning(this.player.position).find((f) => f.owner !== this.playerId && !this.isAlly(f.owner));
+      if (fire) {
+        this.fireTick = FIRE_TICK;
+        this.takeDamage(FIRE_DAMAGE, fire.owner, false, 'molotov', fire.center);
+      }
+    }
+    for (const t of this.turrets.ownedBy(this.playerId)) this.runTurret(t, dt);
+    if (!this.roundOver) for (const m of this.mines.ownedBy(this.playerId)) this.runMine(m, this.net.serverNow());
+    if (this.scanUntil) {
+      if (now >= this.scanUntil) this.endScan();
+      else for (const [id, r] of this.remotes) r.setScanned(!this.isAlly(id) && r.position.distanceTo(this.scanOrigin) <= SCAN_RADIUS);
+    }
   }
 
   /**
@@ -2076,18 +2394,20 @@ export class Game {
   }
 
   /** Our grenade went off: work out who it hurt (walls block it) and tell everyone. */
-  private detonate(blast: { id: string; p: THREE.Vector3 }): void {
+  private detonate(blast: { id: string; p: THREE.Vector3 }, mine = false): void {
     const hits: Record<string, number> = {};
+    // A mine goes off under you: measured to the middle of the body, not the chest.
+    const radius = mine ? MINE_RADIUS : GRENADE_RADIUS;
     for (const [id, remote] of this.remotes) {
       if (!remote.alive || this.isAlly(id)) continue;
-      const chest = remote.position.clone().setY(remote.position.y + remote.chestHeight);
+      const chest = remote.position.clone().setY(remote.position.y + (mine ? 0.6 : remote.chestHeight));
       const dist = chest.distanceTo(blast.p);
-      if (dist > GRENADE_RADIUS) continue;
+      if (dist > radius) continue;
       const from = blast.p.clone().setY(blast.p.y + 0.2);
       this.losRay.set(from, chest.clone().sub(from).normalize());
       this.losRay.far = from.distanceTo(chest);
       if (this.losRay.intersectObjects(this.world.solids, false).length > 0) continue;
-      const dmg = Math.round(GRENADE_DAMAGE * (1 - dist / GRENADE_RADIUS));
+      const dmg = Math.round((mine ? MINE_DAMAGE : GRENADE_DAMAGE) * (1 - dist / radius));
       if (dmg < 5) continue;
       hits[id] = dmg;
       this.stats.damage += Math.min(dmg, remote.displayedHp);
@@ -2103,7 +2423,7 @@ export class Game {
       sfx.playHit(false);
     }
     // Firebase rejects undefined fields, so only include hits when there are some.
-    this.net.sendEvent({ type: 'blast', id: blast.id, p: toArr(blast.p), ...(hitAnyone ? { hits } : {}) });
+    this.net.sendEvent({ type: 'blast', id: blast.id, p: toArr(blast.p), ...(hitAnyone ? { hits } : {}), ...(mine ? { mine } : {}) });
     this.recorder.event({ t: this.net.serverNow(), kind: 'blast', id: blast.id, p: toArr(blast.p) });
   }
 
@@ -2111,6 +2431,7 @@ export class Game {
     const now = performance.now();
 
     if (this.shieldHp > 0 && now >= this.shieldUntil) this.endShield();
+    if (this.cloakUntil && now >= this.cloakUntil) this.endCloak();
     if (this.speedUntil && now >= this.speedUntil) {
       this.speedUntil = 0;
       this.player.speedMultiplier = 1;
@@ -2136,6 +2457,11 @@ export class Game {
     this.grenades.update();
     this.smoke.update();
     this.walls.update(this.net.serverNow());
+    this.fires.update(this.net.serverNow(), now / 1000);
+    this.turrets.update(this.net.serverNow(), dt);
+    this.mines.update(this.net.serverNow(), (owner) => owner === this.playerId || this.isAlly(owner));
+    this.scanFx.update();
+    this.updateNewAbilities(dt, now);
     if (this.joined && this.alive) this.tryPickup();
     if (this.joined) this.runSpawner(dt);
 
@@ -2143,6 +2469,9 @@ export class Game {
     const buffs = {
       speed: this.speedUntil ? Math.ceil((this.speedUntil - now) / 100) / 10 : null,
       shield: this.shieldHp > 0 ? Math.ceil(this.shieldHp) : null,
+      cloak: this.cloakUntil ? Math.ceil((this.cloakUntil - now) / 100) / 10 : null,
+      lifesteal: this.lifestealUntil > now ? Math.ceil((this.lifestealUntil - now) / 100) / 10 : null,
+      scan: this.scanUntil > now ? Math.ceil((this.scanUntil - now) / 100) / 10 : null,
     };
     const key = JSON.stringify([slots, buffs]);
     if (key !== this.lastSlotsKey) {
@@ -2233,8 +2562,8 @@ export class Game {
     if (!spot) return;
     const pick = <T,>(list: T[]) => list[Math.floor(Math.random() * list.length)];
     const type = short.kind === 'gun' ? pick(PICKUP_GUNS) ?? 'shotgun'
-      // Headshots-only modes leave grenades out: a blast can't land a headshot.
-      : short.kind === 'ammo' ? 'ammo' : pick(ABILITY_TYPES.filter((t) => !this.rules.headshotsOnly || t !== 'grenade')) ?? 'medkit';
+      // Headshots-only modes leave out what can't land a headshot: grenades, fire, turrets and mines.
+      : short.kind === 'ammo' ? 'ammo' : pick(ABILITY_TYPES.filter((t) => !this.rules.headshotsOnly || (t !== 'grenade' && t !== 'molotov' && t !== 'turret' && t !== 'mine'))) ?? 'medkit';
     const pickup: PickupRecord = { type, ...spot };
     void this.net.spawnPickup(pickup);
   }
@@ -2642,7 +2971,8 @@ export class Game {
       if (heard) sfx.playSlide(this.surfaceAt(pos), heard.volume * 1.4, heard.pan);
     }
     const step = tracker.update(dt, remote.stance === 'slide' ? 0 : remote.moveSpeed, grounded);
-    if (step && this.joined) this.playStep(step, pos, true, remote.stance === 'crouch');
+    // Cloaked players are quieter too, but still give themselves away.
+    if (step && this.joined) this.playStep(step, pos, true, remote.stance === 'crouch', remote.cloaked);
   }
 
   /** What footsteps at `at` sound like: the top of whatever you're standing on, or the map's floor. */
@@ -2661,12 +2991,13 @@ export class Game {
     return { volume: edge / (1 + distance / 5), pan };
   }
 
-  /** @param crouched crouch-walking is much quieter */
-  private playStep(step: StepEvent, at: THREE.Vector3, remote = false, crouched = false): void {
+  /** @param crouched crouch-walking is much quieter; @param cloaked so is a cloaked player */
+  private playStep(step: StepEvent, at: THREE.Vector3, remote = false, crouched = false, cloaked = false): void {
     const land = step.kind === 'land';
     // Our own steps: quiet and centered. Bigger drops land harder.
     let volume = land ? Math.min(1, 0.35 + step.airTime * 0.5) : step.running ? 0.5 : 0.38;
     if (crouched && !land) volume *= 0.4;
+    if (cloaked) volume *= 0.5;
     let pan = 0;
     if (remote) {
       const heard = this.heardFrom(at);
@@ -2765,6 +3096,9 @@ export class Game {
     this.grenades.dispose();
     this.smoke.dispose();
     this.walls.dispose();
+    this.fires.clear();
+    this.turrets.clear();
+    this.mines.clear();
     this.stopReplay();
     this.flagField?.dispose();
     this.world.dispose();

@@ -203,6 +203,32 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 }
 
 /* Low health: a red vignette that pulses with the heartbeat, deeper the closer to death */
+/* Flashbang: a white-out that holds for a moment, then fades */
+#flashbang {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: #fff;
+  opacity: 0;
+  z-index: 30;
+  animation-name: flashbang;
+  animation-timing-function: ease-in;
+  animation-fill-mode: forwards;
+}
+@keyframes flashbang {
+  0%, 35% { opacity: var(--flash); }
+  100% { opacity: 0; }
+}
+/* Our cloak: a cool shimmer round the edges of the screen */
+#cloak-tint {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(150, 120, 255, 0.22) 70%, rgba(130, 100, 255, 0.55) 100%);
+  animation: cloak-shimmer 1.6s ease-in-out infinite alternate;
+}
+@keyframes cloak-shimmer { from { opacity: 0.65; } to { opacity: 1; } }
+html.reduce-motion #cloak-tint { animation: none; }
 #low-health {
   position: absolute;
   inset: 0;
@@ -455,6 +481,9 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 }
 .buff.speed { color: #ffd23f; }
 .buff.shield { color: #7cc2ff; }
+.buff.cloak { color: #c9b0ff; }
+.buff.lifesteal { color: #ff7a8a; }
+.buff.scan { color: #6ff0dc; }
 /* Toasts: above the ability bar, on top of every overlay (so "Click again to resume" shows over the menu) */
 #gun-prompt {
   position: absolute;

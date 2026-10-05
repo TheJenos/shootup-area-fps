@@ -460,6 +460,11 @@ linearly to a fraction of it at long range, so each gun has a range it's best at
   you won't be offered it back until you step off it. **E** on the same gun adds its ammo. You can still drop
   your gun from the inventory (**I**, or 🎒). Ammo boxes and abilities are still picked up by walking over them. When a picked-up gun runs completely dry you go back to the rifle. When you die it drops next to your body
   with the ammo it had left.
+- Molotovs and flashbangs follow the same arc on every client (like grenades and smoke), so everyone sees them land in the
+  same place; each client works out for itself whether it's standing in fire or was blinded. Turrets are run by their
+  owner's client, which sends their shots like any other (`tur` names the turret, so others see its head swing).
+  Land mines too: the owner's client watches for enemies stepping near and sends an ordinary `blast` marked `mine`.
+  None of the effects add lights to the scene, so they can't cause the shader-recompile hitch grenades used to.
 - Each gun has its own 3D model (an AK rifle, a pump shotgun, a scoped bolt-action sniper and a big pistol, from
   Quaternius's CC0 [Ultimate Gun Pack](https://opengameart.org/content/low-poly-guns-pack)), iron sights or scope, aimed field of view, spread, recoil and recorded
   report. Other players see the gun you're holding, and the kill feed shows which gun got the kill.
@@ -536,6 +541,13 @@ button. Dropped abilities land in front of you with their remaining uses, and an
 | 💣 | Grenade | Thrown arc, up to 90 damage in a 5 m radius, blocked by walls | 3 | 6 s |
 | 🌫️ | Smoke | Thrown like a grenade; a thick 3.6 m cloud for 12 s that blocks sight (not bullets) | 2 | 10 s |
 | 🧱 | Barrier | A 2.6 × 1.3 m wall 1.8 m in front of you, square to the way you face, for 20 s; blocks movement and bullets. Refused if it would cut into cover or a player | 2 | 14 s |
+| 👻 | Cloak | Nearly invisible for 6 s: enemies see a faint shimmer (no gun, name tag or shadow), teammates a see-through ghost. Firing, swinging the flag or throwing ends it early; you can still be shot, and your footsteps are half as loud, not silent. Your screen edges shimmer while it lasts | 2 | 18 s |
+| 📡 | Scan Pulse | A ring sweeps out from you: for 3.5 s every enemy within 32 m of that spot shows as a red silhouette through walls. Scanned enemies are told they've been scanned | 2 | 15 s |
+| 🔥 | Molotov | Thrown like a grenade; a 3.2 m patch of fire burns for 6 s where it lands. Enemies standing in it take 8 damage every 0.5 s (yours and your team's fire doesn't hurt you) | 2 | 12 s |
+| 🔆 | Flashbang | Thrown; when it lands, everyone who can see it is whited out for up to ~3.7 s, worst close up and looking straight at it, milder facing away. It catches you too | 2 | 12 s |
+| 🤖 | Turret | Deployed 1.6 m in front of you for 15 s. It sweeps for the nearest enemy it can see within 24 m (cloaked players excepted) and fires 8 damage every 0.4 s, not perfectly accurately. Its kills are yours. It's solid cover but can't be destroyed; it goes when its owner leaves | 1 | 25 s |
+| 💥 | Land Mine | Put down at your feet. It arms after 1.5 s and lasts 90 s; the first enemy within 1.6 m sets it off for a blast of up to 120 damage within 4 m (blocked by walls; stepping right on one nearly kills). You and your team see its blinking light, enemies only a dull disc on the floor. Two out at once: a third clears your oldest | 2 | 12 s |
+| 🩸 | Lifesteal | For 8 s, your bullets heal you for 30% of the damage they deal | 2 | 20 s |
 
 All numbers live in `src/game/abilities.ts`.
 

@@ -25,7 +25,8 @@ function useHud(game: Game): HudState {
 }
 
 /** The icon the kill feed and death screen use for a weapon. */
-export const weaponIcon = (w: WeaponKind): string => (w === 'grenade' ? '💣' : w === 'flag' ? '⚑' : GUNS[w]?.icon ?? '▸');
+export const weaponIcon = (w: WeaponKind): string =>
+  (w === 'grenade' ? '💣' : w === 'flag' ? '⚑' : w === 'molotov' ? '🔥' : w === 'turret' ? '🤖' : w === 'mine' ? '💥' : GUNS[w]?.icon ?? '▸');
 
 /** Copy (or, on phones, share) the invite link for this room. */
 export function useCopyInvite(game: Game, roomCode: string): { copy(): void; copied: boolean } {
@@ -85,6 +86,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
     hud.matchEnd?.phase === 'mvp' && 'cinematic', // the MVP replay hides the crosshair, panels and abilities
     game.touch && 'touch',
     hud.paused && 'paused',
+    hud.cloaked && 'cloaked',
     intro && 'intro',
     showFps && 'fps',
   ].filter(Boolean).join(' ');
@@ -108,6 +110,15 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       )}
       {hud.damageFlash > 0 && <div key={`dmg-${hud.damageFlash}`} id="damage-overlay" aria-hidden="true" />}
       {hud.respawnFlash > 0 && <div key={`rs-${hud.respawnFlash}`} id="respawn-flash" aria-hidden="true" />}
+      {hud.cloaked && !hud.death && <div id="cloak-tint" aria-hidden="true" />}
+      {hud.flash && (
+        <div
+          key={`flash-${hud.flash.n}`}
+          id="flashbang"
+          aria-hidden="true"
+          style={{ '--flash': hud.flash.strength, animationDuration: `${hud.flash.seconds}s` } as React.CSSProperties}
+        />
+      )}
       {!hud.death && hud.hp <= hud.maxHp * LOW_HEALTH && inMatch && (
         <div id="low-health" aria-hidden="true" style={{ '--lh': 1 - Math.max(0, hud.hp) / (hud.maxHp * LOW_HEALTH) } as React.CSSProperties} />
       )}
@@ -573,6 +584,9 @@ function AbilityBar(
       <div className="buffs">
         {buffs.speed !== null && <span className="buff speed">⚡ {buffs.speed.toFixed(1)}s</span>}
         {buffs.shield !== null && <span className="buff shield">🛡️ {buffs.shield}</span>}
+        {buffs.cloak !== null && <span className="buff cloak">👻 {buffs.cloak.toFixed(1)}s</span>}
+        {buffs.lifesteal !== null && <span className="buff lifesteal">🩸 {buffs.lifesteal.toFixed(1)}s</span>}
+        {buffs.scan !== null && <span className="buff scan">📡 {buffs.scan.toFixed(1)}s</span>}
       </div>
       <div className="slots">
         {slots.map((slot, i) => (
