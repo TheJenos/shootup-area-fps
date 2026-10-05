@@ -16,7 +16,8 @@ import {
 } from './abilities';
 import { MAX_AMMO_PICKUPS, MAX_GUN_PICKUPS, MAX_PICKUPS, PickupField, kindOf, type PickupKind } from './pickups';
 import { SmokeField, WALL_DISTANCE, WALL_DURATION, WallField, type WallAxis } from './deployables';
-import { GUNS, PICKUP_GUNS, isPickupGun, maxShotDamage, shotDamage } from './guns';
+import { GUNS, PICKUP_GUNS, isPickupGun, loadGunModels, maxShotDamage, shotDamage } from './guns';
+import { loadFpArms } from './fpArms';
 import { GrenadeFx, simulateGrenade, THROW_LIFT, THROW_SPEED } from './grenades';
 import { FlagField, placementOf, type FlagPlacement } from './flags';
 import {
@@ -588,15 +589,19 @@ export class Game {
     this.hud.update({ connecting: true, paused: false });
     this.renderer.setAnimationLoop(() => this.frame());
 
-    // Remote players are built as soon as we join, so the model has to be ready first.
-    const [character, info] = await Promise.all([
+    // Remote players are built as soon as we join, so the models have to be ready first.
+    const [character, info, , arms] = await Promise.all([
       loadCharacter(),
       this.net.roomInfo().catch((err: unknown) => {
         console.warn('Could not load room info', err);
         return null;
       }),
+      loadGunModels(),
+      loadFpArms(),
     ]);
     this.character = character;
+    this.weapon.setArms(arms);
+    this.povWeapon.setArms(arms);
     if (this.disposed) return;
     this.rules = info?.rules ?? baseRules('ffa');
     this.mode = this.rules.base;

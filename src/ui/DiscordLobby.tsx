@@ -3,6 +3,8 @@ import { connectDiscord, type DiscordSession } from '../discord/discord';
 import { createRoomWithCode, getRoomSetup, randomId } from '../net/network';
 import { initAudio } from '../game/audio';
 import { loadCharacter } from '../game/character';
+import { loadGunModels } from '../game/guns';
+import { loadFpArms } from '../game/fpArms';
 import { ModePicker } from './ModePicker';
 import { PRESETS, type ModeRules } from '../game/rules';
 import { generateMap, normalizeSeed, randomSeed, SEED_MAX_LENGTH } from '../game/mapgen';
@@ -56,6 +58,8 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
   useEffect(() => {
     let cancelled = false;
     loadCharacter().catch(() => {});
+    loadGunModels().catch(() => {});
+    loadFpArms().catch(() => {});
     connectDiscord()
       .then(async (d) => {
         const setup = await getRoomSetup(roomCodeFor(d.instanceId));

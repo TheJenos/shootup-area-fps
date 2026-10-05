@@ -2,7 +2,15 @@ import * as THREE from 'three';
 import { playEmpty, playReload } from './audio';
 import { GUNS, buildGunModel, maxReserve, type GunModel } from './guns';
 import type { GunKind } from '../types';
+import { FpArms } from './fpArms';
 
+/** The weapon camera's field of view: wide enough to see the hand on the grip */
+const VIEW_FOV = 70;
+/**
+ * At the hip the gun points straight ahead, a little to the right of the eye and pitched up slightly,
+ * the way the viewmodel rig the arms come from holds it (see fpArms.ts). Both blend to zero when aiming.
+ */
+export const HIP_CANT = { yaw: 0, pitch: 0.082 };
 /** How quickly the gun moves between hip and sights (1/s) */
 const ADS_SPEED = 14;
 /** Lowering one gun and raising the other (s) */
@@ -16,6 +24,10 @@ interface Held {
   /** Spare rounds (Infinity in Gun Game) */
   reserve: number;
 }
+
+const _support = new THREE.Vector3();
+const _upper = new THREE.Vector3();
+const _lower = new THREE.Vector3();
 
 interface View extends GunModel {
   muzzleObj: THREE.Object3D;
@@ -49,11 +61,13 @@ export class Weapon {
   /** Carrying the enemy flag: guns stowed, the flag is held instead */
   private melee = false;
   private flagView: { group: THREE.Group; cloth: THREE.MeshStandardMaterial } | null = null;
+  /** Your arms holding the gun (or the flag), once the character model has loaded */
+  private arms: FpArms | null = null;
   private swingTimer = 0;
   private swingCooldown = 0;
 
   constructor(aspect: number) {
-    this.camera = new THREE.PerspectiveCamera(60, aspect, 0.01, 10);
+    this.camera = new THREE.PerspectiveCamera(VIEW_FOV, aspect, 0.01, 10);
     this.scene.add(this.camera);
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.4));
     const key = new THREE.DirectionalLight(0xffffff, 1.5);
@@ -207,6 +221,13 @@ export class Weapon {
     playReload();
   }
 
+  /** Show your arms holding the gun. */
+  setArms(asset: THREE.Object3D): void {
+    if (this.arms) return;
+    this.arms = new FpArms(asset);
+    this.camera.add(this.arms.root);
+  }
+
   /** Watching through someone's eyes: hold whatever gun they hold. */
   showGun(kind: GunKind): void {
     if (this.gun !== kind) this.setForcedGun(kind);
@@ -336,11 +357,24 @@ export class Weapon {
       THREE.MathUtils.lerp(hipY, -view.sightHeight - Math.abs(Math.sin(this.bobTime)) * 0.003 * bob, this.aim),
       THREE.MathUtils.lerp(hip.z, view.adsZ, this.aim) + this.kick * 0.04 * steady,
     );
+    const cant = 1 - this.aim;
     view.group.rotation.set(
-      this.kick * 0.05 * steady - reloadDip * 0.6 - sprintDip * 0.3 - switchDip * 0.8,
-      sprintDip * 0.5,
+      HIP_CANT.pitch * cant + this.kick * 0.05 * steady - reloadDip * 0.6 - sprintDip * 0.3 - switchDip * 0.8,
+      HIP_CANT.yaw * cant + sprintDip * 0.5,
       reloadDip * 0.4,
     );
+    this.poseArms(view, reloadDip);
+  }
+
+  /** Right hand on the grip, left on the fore-end; mid-reload the left hand drops to the magazine. */
+  private poseArms(view: View, reloadDip: number): void {
+    if (!this.arms) return;
+    this.arms.visible = view.group.visible;
+    if (!view.group.visible) return;
+    view.group.updateMatrixWorld(true);
+    _support.copy(view.support);
+    if (reloadDip > 0) _support.lerp(view.mag, reloadDip);
+    this.arms.holdGun(view.group, view.grip, _support, this.aim, this.gun === 'deagle');
   }
 
   /**
@@ -365,6 +399,12 @@ export class Weapon {
     );
     // Pole leaning forward and out to the right, cloth trailing; the sweep swings it across.
     g.rotation.set(-0.7 - Math.abs(sweep) * 0.3, 0.25 + sweep * 0.9, -0.45 + sweep * 0.9);
+    if (this.arms) {
+      // Both hands on the pole (its radius is about 0.02 before the group's scale), the right one higher.
+      this.arms.visible = true;
+      g.updateMatrixWorld(true);
+      this.arms.holdPole(g, _upper.set(0, 0.55, 0), _lower.set(0, 0.2, 0));
+    }
   }
 
   private flag(): { group: THREE.Group; cloth: THREE.MeshStandardMaterial } {
@@ -409,6 +449,8 @@ export class Weapon {
       flash.visible = false;
       muzzleObj.add(flash);
       model.group.position.copy(model.hip);
+      model.group.scale.setScalar(model.fpScale);
+      model.sightHeight *= model.fpScale;
       this.camera.add(model.group);
       view = { ...model, muzzleObj, flash };
       this.views.set(this.gun, view);

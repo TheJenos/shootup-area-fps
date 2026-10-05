@@ -5,6 +5,8 @@ import { generateMap, normalizeSeed, randomSeed, SEED_MAX_LENGTH } from '../game
 import { MapPreview } from './MapPreview';
 import { initAudio } from '../game/audio';
 import { loadCharacter } from '../game/character';
+import { loadGunModels } from '../game/guns';
+import { loadFpArms } from '../game/fpArms';
 import { ModePicker } from './ModePicker';
 import { PRESETS, type ModeRules } from '../game/rules';
 import type { Session } from './App';
@@ -61,8 +63,12 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { rooms, failed: roomsFailed, retry: retryRooms } = useRooms();
   const [profileId] = useState(browserProfileId);
-  // Start downloading the player model while the user is still in the lobby.
-  useEffect(() => { loadCharacter().catch(() => {}); }, []);
+  // Start downloading the player and gun models while the user is still in the lobby.
+  useEffect(() => {
+    loadCharacter().catch(() => {});
+    loadGunModels().catch(() => {});
+    loadFpArms().catch(() => {});
+  }, []);
   // Opened from an invite link: once there's a name, a short countdown then straight in.
   const [invite, setInvite] = useState<Invite>(() => (initialCode && isConfigured && !initialError ? 'auto' : null));
   const hasName = name.length > 0;

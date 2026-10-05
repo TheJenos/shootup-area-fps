@@ -420,7 +420,8 @@ stocked separately from abilities) and go into a second slot when you walk over 
 - You carry one picked-up gun at a time. A different gun stays on the floor until you drop yours from the
   inventory (**I**, or the 🎒 button on touch screens); walking over the same gun just adds ammo. When a picked-up gun runs completely dry you go back to the rifle. When you die it drops next to your body
   with the ammo it had left.
-- Each gun has its own model, iron sights or scope, aimed field of view, spread, recoil and recorded
+- Each gun has its own 3D model (an AK rifle, a pump shotgun, a scoped bolt-action sniper and a big pistol, from
+  Quaternius's CC0 [Ultimate Gun Pack](https://opengameart.org/content/low-poly-guns-pack)), iron sights or scope, aimed field of view, spread, recoil and recorded
   report. Other players see the gun you're holding, and the kill feed shows which gun got the kill.
 - Shotgun shots are sent as one event carrying every pellet's end point and the damage per player hit;
   each client still caps incoming damage at what that gun can deal in one shot.
@@ -584,7 +585,8 @@ src/
     replay.ts        records the round and replays the MVP's highlight
     flags.ts         CTF bases and flags (waving, carried, dropped)
     settings.ts      mouse sensitivity + key bindings (saved in localStorage)
-    guns.ts          gun stats, damage falloff and first-person models
+    guns.ts          gun stats, damage falloff, and loading / laying out the gun models
+    fpArms.ts        your arms in the first-person view (a viewmodel rig's arms, posed with IK)
     abilities.ts     ability definitions, tuning numbers, 3-slot inventory
     pickups.ts       ability pickups on the map
     grenades.ts      deterministic grenade arcs + explosion effects
@@ -606,6 +608,26 @@ src/
 The logo lives in `public/brand/`: `logo.svg` (source), PNG exports (`icon-512.png`, `icon-1024.png`), and
 `og-image.png` (1200×630 link preview). `public/favicon.svg` is a simplified version for tiny sizes, with
 `favicon-32.png` and `apple-touch-icon.png` rendered from it and the logo.
+
+`public/models/guns.glb` holds the four guns from Quaternius's
+[Ultimate Gun Pack](https://opengameart.org/content/low-poly-guns-pack) (CC0): AssaultRifle_2 (rifle), Shotgun_2,
+SniperRifle_3 and Pistol_1 (Deagle). They were converted from OBJ into one GLB, one mesh per gun named after its
+`GunKind`, already in metres with the barrel along -Z (about 4,800 triangles, 240 KB). `GUN_LAYOUT` in
+`src/game/guns.ts` sets each gun's length, muzzle, sight height and hip / aim positions. The same models are used in
+first person, on pickups, and (85 % size) in other players' hands, where the teammate X-ray outline includes them.
+The game waits for the file (and the lobby starts downloading it) before joining.
+
+**Your arms in first person** (`src/game/fpArms.ts`, `public/models/fpArms.glb`) are the arms of J-Toastie's "FPS Rig
+AKM" viewmodel with its gun removed (3 skinned meshes, 2.4k triangles, flat colours like the guns). The rig's idle
+hold of its AKM is what every gun is posed from: with the rig placed as its author's demo places it, each wrist's
+offset from the barrel axis and each hand's orientation relative to the barrel were measured, plus the shoulder
+positions, elbow directions and the forearm roll. Every frame two-bone IK (`src/game/ik.ts`) brings each wrist to
+that offset from a point on the held gun's barrel axis (`grip`, `support` and `mag` in `GUN_LAYOUT`: the grip, the
+fore-end or pump, the magazine) and turns the hand to the measured orientation, so the hands grip our guns exactly as
+the rig's grip its AKM; the whole arrangement is scaled to life size (×0.625), which keeps the same picture. The
+pistol is held one-handed (the left arm is hidden); mid-reload the left hand goes to the magazine; with the flag both hands hold
+the pole; spectating in first person shows them too. The weapon camera is 70° like the rig's demo, and at the hip
+the gun points straight ahead a little right of the eye and pitched up slightly (`HIP_CANT`), as the rig holds it.
 
 `public/models/Soldier.glb` is the soldier from the [three.js examples](https://github.com/mrdoob/three.js/tree/r186/examples/models/gltf)
 (originally a [Mixamo](https://www.mixamo.com) character), with Idle / Walk / Run animations.
@@ -641,4 +663,8 @@ The game's credits page is `public/credits.html` (linked from both lobbies as **
   [Interface Sounds](https://kenney.nl/assets/interface-sounds), [Sci-fi Sounds](https://kenney.nl/assets/sci-fi-sounds)
   and [Music Jingles](https://kenney.nl/assets/music-jingles), CC0.
 - **Heartbeat:** [Heartbeat Sounds](https://opengameart.org/content/heartbeat-sounds) by bart, CC0.
+- **Gun models:** [Ultimate Gun Pack](https://opengameart.org/content/low-poly-guns-pack) by Quaternius, CC0.
+- **First-person arms:** "FPS Rig AKM" by J-Toastie, CC-BY, via Poly Pizza (found through the MIT-licensed
+  [ThreeJS_FPS_2.0](https://github.com/Footprintarts/ThreeJS_FPS_2.0) template, whose demo placement the hold was
+  measured in). Keep this credit if you keep `public/models/fpArms.glb`.
 - **Soldier model:** three.js examples / Mixamo (see [Assets](#assets)).

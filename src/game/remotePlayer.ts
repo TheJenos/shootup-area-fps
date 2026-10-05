@@ -1,8 +1,7 @@
 import * as THREE from 'three';
 import { NameTag } from './nameTag';
 import { makeXrayMaterial, makeXrayMeshes } from './xray';
-import { GUNS, REMOTE_GUN_SIZE } from './guns';
-import { wornMetalTexture } from './textures';
+import { GUNS, buildRemoteGun, remoteGunLength } from './guns';
 import { reach, setWorldQuaternion } from './ik';
 import { Ragdoll, type RagdollBones } from './ragdoll';
 import { cloneCharacter, GAITS, type CharacterAsset, type Gait } from './character';
@@ -100,17 +99,10 @@ const teamOfColor = (color: string | undefined): Team | undefined =>
 const hitboxMat = new THREE.MeshBasicMaterial({ visible: false });
 const bodyHitGeo = new THREE.CapsuleGeometry(0.3, 0.9, 2, 8);
 const headHitGeo = new THREE.SphereGeometry(0.16, 8, 6);
-const gunGeo = new THREE.BoxGeometry(0.06, 0.09, 0.55);
 const shieldGeo = new THREE.SphereGeometry(1, 24, 16);
 const shieldMat = new THREE.MeshBasicMaterial({
   color: 0x4aa8ff, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false,
 });
-let gunMat: THREE.MeshStandardMaterial | null = null;
-/** Shared by every remote rifle; made on first use so the texture isn't drawn while in the lobby. */
-function rifleMaterial(): THREE.MeshStandardMaterial {
-  gunMat ??= new THREE.MeshStandardMaterial({ map: wornMetalTexture(), color: 0xb0b4ba, roughness: 0.5, metalness: 0.5 });
-  return gunMat;
-}
 
 // World forward / up expressed in the right-hand bone's local space, measured in the Idle pose.
 // Aligning the rifle with them makes it point ahead instead of along the fingers.
@@ -198,7 +190,11 @@ export class RemotePlayer {
   private readonly armAnim: THREE.Quaternion[] = Array.from({ length: 6 }, () => new THREE.Quaternion());
   private stanceNow: Stance = 'stand';
   private colorNow: string | undefined;
-  private gunMesh!: THREE.Mesh;
+  /** In the right hand: one model per gun they've held, only the current one shown */
+  private gunHolder = new THREE.Group();
+  private gunModels = new Map<GunKind, THREE.Group>();
+  /** X-ray copies of the gun in hand (rebuilt when they switch) */
+  private gunXray: THREE.Mesh[] = [];
   private gunNow: GunKind = 'rifle';
   private ally = false;
   /** Flat silhouette drawn over the walls while a teammate is behind cover (made on first need) */
@@ -277,10 +273,8 @@ export class RemotePlayer {
     this.aiming = !!data.aim;
     this.stanceNow = data.stance ?? 'stand';
 
-    const gun = new THREE.Mesh(gunGeo, rifleMaterial());
-    this.gunMesh = gun;
-    if (data.gun) this.setGun(data.gun);
-    gun.castShadow = true;
+    const gun = this.gunHolder;
+    this.setGun(data.gun ?? 'rifle');
     gun.scale.setScalar(BONE_SCALE);
     gun.position.copy(GUN_OFFSET);
     gun.quaternion.copy(GUN_IN_HAND);
@@ -414,12 +408,34 @@ export class RemotePlayer {
     return 1 - 0.35 * this.crouchAmount - 0.55 * this.slideAmount;
   }
 
-  /** Show the gun they're holding: a box of that gun's size (the rifle is the base box). */
+  /** Show the gun they're holding. */
   private setGun(kind: GunKind): void {
-    const size = REMOTE_GUN_SIZE[kind] ?? REMOTE_GUN_SIZE.rifle;
-    const base = REMOTE_GUN_SIZE.rifle;
     this.gunNow = kind;
-    this.gunMesh.scale.set((size[0] / base[0]) * BONE_SCALE, (size[1] / base[1]) * BONE_SCALE, (size[2] / base[2]) * BONE_SCALE);
+    let model = this.gunModels.get(kind);
+    if (!model) {
+      model = buildRemoteGun(kind);
+      this.gunModels.set(kind, model);
+      this.gunHolder.add(model);
+    }
+    for (const [k, m] of this.gunModels) m.visible = k === kind;
+    if (this.xrayMaterial) this.buildGunXray();
+  }
+
+  /** X-ray copies of the gun in hand, so it's part of a teammate's silhouette behind walls. */
+  private buildGunXray(): void {
+    for (const copy of this.gunXray) copy.removeFromParent();
+    this.gunXray = [];
+    const material = this.xrayMaterial;
+    if (!material) return;
+    const sources: THREE.Mesh[] = [];
+    this.gunModels.get(this.gunNow)?.traverse((o) => { if ((o as THREE.Mesh).isMesh) sources.push(o as THREE.Mesh); });
+    for (const mesh of sources) {
+      const copy = new THREE.Mesh(mesh.geometry, material);
+      copy.renderOrder = 10;
+      copy.visible = this.occluded;
+      mesh.add(copy);
+      this.gunXray.push(copy);
+    }
   }
 
   /** Hide the avatar (e.g. while the MVP replay is on). */
@@ -455,13 +471,11 @@ export class RemotePlayer {
     if (show && !this.xray.length) {
       this.xrayMaterial = makeXrayMaterial(this.colorNow ?? '#ffffff');
       this.xray = makeXrayMeshes(this.model, this.xrayMaterial);
-      // The gun they're holding is part of the silhouette too (it follows gun swaps, being its child).
-      const gunCopy = new THREE.Mesh(this.gunMesh.geometry, this.xrayMaterial);
-      gunCopy.renderOrder = 10;
-      this.gunMesh.add(gunCopy);
-      this.xray.push(gunCopy);
+      // The gun they're holding is part of the silhouette too (rebuilt when they switch).
+      this.buildGunXray();
     }
     for (const mesh of this.xray) mesh.visible = show;
+    for (const mesh of this.gunXray) mesh.visible = show;
   }
 
   /** They just fired: bring the gun up (and keep it up for a moment) whatever they're doing. */
@@ -516,7 +530,7 @@ export class RemotePlayer {
   setCarrying(carrying: boolean): void {
     if (carrying === this.carrying) return;
     this.carrying = carrying;
-    this.gunMesh.visible = !carrying;
+    this.gunHolder.visible = !carrying;
   }
 
   /**
@@ -685,7 +699,7 @@ export class RemotePlayer {
     _handQuat.copy(_gunQuat).multiply(GUN_IN_HAND_INV);
 
     const pistol = this.gunNow === 'deagle';
-    const length = (REMOTE_GUN_SIZE[this.gunNow] ?? REMOTE_GUN_SIZE.rifle)[2];
+    const length = remoteGunLength(this.gunNow);
     const a = this.adsAmount;
     const low = pistol ? PISTOL_READY : READY_STOCK;
     const high = pistol ? PISTOL_ADS : ADS_STOCK;
