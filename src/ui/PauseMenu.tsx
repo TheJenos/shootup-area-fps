@@ -23,6 +23,7 @@ export function controls(b: Bindings): [key: string, action: string][] {
     [k(b.crouch), 'crouch · while sprinting: slide'],
     [k(b.reload), 'reload'],
     [`${k(b.swap)} / wheel`, 'switch gun'],
+    [k(b.interact), 'pick up / swap gun'],
     [k(b.ability1, b.ability2, b.ability3), 'abilities'],
     [k(b.inventory), 'inventory'],
     [k(b.scoreboard), 'match summary (hold)'],

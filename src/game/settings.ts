@@ -2,7 +2,7 @@
 
 export type Action =
   | 'forward' | 'back' | 'left' | 'right' | 'jump' | 'sprint' | 'crouch' | 'reload' | 'swap'
-  | 'ability1' | 'ability2' | 'ability3' | 'inventory' | 'scoreboard';
+  | 'interact' | 'ability1' | 'ability2' | 'ability3' | 'inventory' | 'scoreboard';
 
 export const ACTIONS: { action: Action; label: string }[] = [
   { action: 'forward', label: 'Move forward' },
@@ -14,6 +14,7 @@ export const ACTIONS: { action: Action; label: string }[] = [
   { action: 'crouch', label: 'Crouch (slide while sprinting)' },
   { action: 'reload', label: 'Reload' },
   { action: 'swap', label: 'Switch gun' },
+  { action: 'interact', label: 'Pick up / swap gun' },
   { action: 'ability1', label: 'Ability slot 1' },
   { action: 'ability2', label: 'Ability slot 2' },
   { action: 'ability3', label: 'Ability slot 3' },
@@ -94,6 +95,7 @@ export const DEFAULT_BINDINGS: Bindings = {
   crouch: 'ControlLeft',
   reload: 'KeyR',
   swap: 'KeyQ',
+  interact: 'KeyE',
   ability1: 'Digit1',
   ability2: 'Digit2',
   ability3: 'Digit3',

@@ -456,6 +456,26 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 .buff.speed { color: #ffd23f; }
 .buff.shield { color: #7cc2ff; }
 /* Toasts: above the ability bar, on top of every overlay (so "Click again to resume" shows over the menu) */
+#gun-prompt {
+  position: absolute;
+  left: 50%;
+  bottom: 190px;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+}
+#gun-prompt kbd { font-size: 13px; padding: 2px 7px; }
+#gun-prompt.touch { pointer-events: auto; border: 1px solid var(--accent); font: inherit; font-weight: 700; min-height: 44px; bottom: 196px; }
 #toasts {
   position: absolute;
   left: 50%;

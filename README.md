@@ -219,7 +219,10 @@ its clip has loaded is skipped, and every sound runs through a limiter so stacke
   The low end is boosted so steps have weight, and landings play slower, deeper and louder.
 - Other players' steps fade with distance (silent beyond 35 m) and are panned left/right toward where they are,
   so you can hear someone coming.
-- Reloads, gun switches, hit markers (head and body differ), getting hit, melee, slides, pickups, abilities and
+- **Reloads:** each gun has its own, laid out to finish inside its reload time: the rifle's magazine out, in and
+  charging handle; the pistol's magazine drop, insert and slide; three shells into the shotgun then the pump; the
+  sniper's bolt, a clip and rounds, then the bolt again. Other players' reloads match the gun they hold.
+- Gun switches, hit markers (head and body differ), getting hit, melee, slides, pickups, abilities and
   the low-health heartbeat are recordings too.
 
 To swap a sound, replace its file in `public/sounds/` (same name) or change the name in `audio.ts`. Where every
@@ -406,7 +409,7 @@ On a touch device the game switches to on-screen controls and plays in landscape
 ## Guns
 
 You always carry the **rifle**. Three more guns lie around the map as glowing pickups (up to 3 at a time,
-stocked separately from abilities) and go into a second slot when you walk over them:
+stocked separately from abilities) and go into a second slot when you stand on one and press **E**:
 
 | | Gun | Fire | Damage body / head | Magazine + spare | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -417,8 +420,11 @@ stocked separately from abilities) and go into a second slot when you walk over 
 
 - Switch with **Q** or the mouse wheel (or the ⇄ button on touch screens). The ammo panel shows both slots,
   the magazine and the spare rounds.
-- You carry one picked-up gun at a time. A different gun stays on the floor until you drop yours from the
-  inventory (**I**, or the 🎒 button on touch screens); walking over the same gun just adds ammo. When a picked-up gun runs completely dry you go back to the rifle. When you die it drops next to your body
+- Guns are never picked up just by walking over them: standing on one shows a prompt, and **E** (rebindable as
+  "Pick up / swap gun"; on touch screens the prompt is the button) takes it. You carry one picked-up gun at a
+  time, so **E** on a different gun swaps them: yours goes down on that spot with the rounds it had left, and
+  you won't be offered it back until you step off it. **E** on the same gun adds its ammo. You can still drop
+  your gun from the inventory (**I**, or 🎒). Ammo boxes and abilities are still picked up by walking over them. When a picked-up gun runs completely dry you go back to the rifle. When you die it drops next to your body
   with the ammo it had left.
 - Each gun has its own 3D model (an AK rifle, a pump shotgun, a scoped bolt-action sniper and a big pistol, from
   Quaternius's CC0 [Ultimate Gun Pack](https://opengameart.org/content/low-poly-guns-pack)), iron sights or scope, aimed field of view, spread, recoil and recorded
@@ -659,6 +665,10 @@ The game's credits page is `public/credits.html` (linked from both lobbies as **
   keep the file (`public/sounds/tension_loop.mp3`).
 - **Gunshots:** [The Free Firearm Sound Library](https://opengameart.org/content/the-free-firearm-sound-library)
   by Ben Jaszczak, Brian Nelson, Kevin Heras and Matthew Nanney, CC0.
+- **Reloads:** [Gun Reload Sounds](https://opengameart.org/content/gun-reload-sounds) by SpringySpringo,
+  [Handgun Reload](https://opengameart.org/content/handgun-reload-sound-effect) and
+  [Shotgun Reload Sound Effects](https://opengameart.org/content/shotgun-reload-sound-effects) by zer0_sol, and
+  [Gun Reload Sound Effects](https://opengameart.org/content/gun-reload-sound-effects) by BMacZero, all CC0.
 - **Effects, footsteps and jingles:** Kenney's [Impact Sounds](https://kenney.nl/assets/impact-sounds),
   [Interface Sounds](https://kenney.nl/assets/interface-sounds), [Sci-fi Sounds](https://kenney.nl/assets/sci-fi-sounds)
   and [Music Jingles](https://kenney.nl/assets/music-jingles), CC0.

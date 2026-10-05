@@ -562,6 +562,7 @@ export class Game {
       }
       if (action === 'reload' && this.alive && this.locked) this.weapon.reload();
       if (action === 'swap' && !e.repeat && this.locked) this.switchGun();
+      if (action === 'interact' && !e.repeat && this.locked) this.interact();
       const slot = action ? ABILITY_ACTIONS.indexOf(action) : -1;
       if (slot >= 0 && !e.repeat && this.alive && this.locked) this.useAbility(slot);
       if (action === 'inventory' && !e.repeat) {
@@ -1658,6 +1659,7 @@ export class Game {
   }
 
   private die(killerId: string, head: boolean, weapon: WeaponKind): void {
+    this.setGunPrompt(null);
     this.alive = false;
     this.hp = 0;
     this.deaths++;
@@ -2165,11 +2167,13 @@ export class Game {
     const id = this.pickups.touching(p);
     if (!id || id === this.ignorePickup?.id) {
       this.fullToastFor = null;
+      this.setGunPrompt(null);
       return;
     }
     if (this.claimingPickup) return; // one claim at a time, so two can't race for the last slot
     const touchingType = this.pickups.typeOf(id);
     const kind = touchingType ? kindOf(touchingType) : null;
+    if (kind !== 'gun') this.setGunPrompt(null);
     if (kind === 'ammo' && !this.weapon.needsAmmo) {
       if (this.fullToastFor !== id) this.hud.toast('Ammo full');
       this.fullToastFor = id;
@@ -2183,14 +2187,11 @@ export class Game {
       this.fullToastFor = id;
       return;
     }
-    // One picked-up gun at a time: a different one stays on the floor until ours is dropped.
-    const carried = this.weapon.special;
-    if (touchingType && isPickupGun(touchingType) && carried && carried !== touchingType) {
-      if (this.fullToastFor !== id) {
-        const how = this.touch ? 'the 🎒 button' : `${keyLabel(settings.get().bindings.inventory)} → Inventory`;
-        this.hud.toast(`Drop your ${GUNS[carried].name} first (${how})`);
-      }
-      this.fullToastFor = id;
+    // Guns wait for the interact key (see interact()): standing on one just says what it would do.
+    if (touchingType && isPickupGun(touchingType)) {
+      const carried = this.weapon.special;
+      const name = GUNS[touchingType].name;
+      this.setGunPrompt(!carried ? `Pick up ${name}` : carried === touchingType ? `Take ${name} ammo` : `Swap ${GUNS[carried].name} for ${name}`);
       return;
     }
     this.claimingPickup = id;
@@ -2247,8 +2248,43 @@ export class Game {
     void this.net.spawnPickup(pickup);
   }
 
-  /** Walked over a gun: it goes in the empty second slot, or adds ammo to the same gun. */
-  private takeGun(kind: Exclude<GunKind, 'rifle'>, rounds: number | undefined): void {
+  private setGunPrompt(text: string | null): void {
+    if (this.hud.get().gunPrompt !== text) this.hud.update({ gunPrompt: text });
+  }
+
+  /**
+   * The interact key (E, or the on-screen button): take the gun we're standing on. With a different gun
+   * already in the second slot it's a swap: ours goes down here with its rounds left, theirs comes up.
+   */
+  interact(): void {
+    if (!this.joined || !this.alive || this.claimingPickup) return;
+    const id = this.pickups.touching(this.player.position);
+    if (!id || id === this.ignorePickup?.id) return;
+    const type = this.pickups.typeOf(id);
+    if (!type || !isPickupGun(type)) return;
+    this.claimingPickup = id;
+    this.net.claimPickup(id)
+      .then((pickup) => {
+        if (!pickup || !this.alive || !isPickupGun(pickup.type)) return;
+        const carried = this.weapon.special;
+        if (carried && carried !== pickup.type) {
+          const old = this.weapon.takeSpecial();
+          if (old && isPickupGun(old.kind) && old.rounds > 0) {
+            const spot = { x: this.player.position.x, z: this.player.position.z };
+            const dropped = this.net.spawnPickup({ type: old.kind, uses: old.rounds, ...spot });
+            // Don't offer the gun we just put down until we step off it.
+            if (dropped) this.ignorePickup = { id: dropped, ...spot };
+          }
+        }
+        this.takeGun(pickup.type, pickup.uses, carried && carried !== pickup.type ? carried : null);
+        this.setGunPrompt(null);
+      })
+      .catch((err: unknown) => console.warn('Pickup claim failed', err))
+      .finally(() => { this.claimingPickup = null; });
+  }
+
+  /** Took a gun: it goes in the second slot, or adds ammo to the same gun. `swapped`: the gun it replaced. */
+  private takeGun(kind: Exclude<GunKind, 'rifle'>, rounds: number | undefined, swapped: GunKind | null = null): void {
     const def = GUNS[kind];
     const had = this.weapon.special;
     const total = rounds ?? def.mag + def.reserve;
@@ -2260,7 +2296,7 @@ export class Game {
       return;
     }
     this.aimHeld = false;
-    this.hud.toast(had === kind ? `+${def.name} ammo` : `Picked up ${def.name}`);
+    this.hud.toast(had === kind ? `+${def.name} ammo` : swapped ? `Swapped ${GUNS[swapped].name} for ${def.name}` : `Picked up ${def.name}`);
     if (had !== kind) this.hint('gun-swap', () => (this.touch ? '⇄ switches guns' : `${keyLabel(keyFor('swap'))} / wheel to switch guns`));
     this.bumpMyMatch('pickups');
     sfx.playSwitch();
@@ -2375,7 +2411,7 @@ export class Game {
       this.updateRemoteSteps(id, r, dt);
       if (r.consumeReloadStart()) {
         const heard = this.heardFrom(r.position);
-        if (heard) sfx.playReload(heard.volume * 1.5);
+        if (heard) sfx.playReload(heard.volume * 1.5, r.heldGun);
       }
     }
     this.updateAllySight(dt);

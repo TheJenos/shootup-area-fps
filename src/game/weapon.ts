@@ -218,7 +218,7 @@ export class Weapon {
     if (this.melee) return;
     if (this.reloading || this.switching || held.mag === GUNS[held.kind].mag || held.reserve <= 0) return;
     this.reloadTimer = GUNS[held.kind].reloadTime;
-    playReload();
+    playReload(1, held.kind);
   }
 
   /** Show your arms holding the gun. */

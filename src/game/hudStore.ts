@@ -184,6 +184,8 @@ export interface HudState {
   playerCount: number;
   /** The connection to the server dropped; it reconnects by itself */
   offline: boolean;
+  /** Standing on a gun: what the interact key would do with it ("Pick up Shotgun", "Swap Deagle for Shotgun") */
+  gunPrompt: string | null;
 }
 
 const initialState: HudState = {
@@ -212,6 +214,7 @@ const initialState: HudState = {
   respawnFlash: 0,
   heal: null,
   slotDenied: null,
+  gunPrompt: null,
   slots: [null, null, null],
   buffs: { speed: null, shield: null },
   toast: null,

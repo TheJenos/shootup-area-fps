@@ -118,6 +118,9 @@ export function Hud({ game, roomCode, onLeave }: Props) {
         </div>
       )}
       {/* Always mounted, so toasts show while spectating and during the MVP replay too. */}
+      {hud.gunPrompt && !hud.death && !hud.spectate && (
+        <GunPrompt text={hud.gunPrompt} touch={game.touch} onTap={() => game.interact()} />
+      )}
       <div id="toasts" aria-hidden="true">
         {hud.toast && <div key={`toast-${hud.toast.n}`} className="toast">{hud.toast.text}</div>}
       </div>
@@ -514,6 +517,24 @@ function FpsCounter() {
     return () => cancelAnimationFrame(raf);
   }, []);
   return <div id="fps" ref={ref} aria-hidden="true">— FPS</div>;
+}
+
+/** Standing on a gun: the key that takes it (on touch screens the prompt itself is the button). */
+function GunPrompt({ text, touch, onTap }: { text: string; touch: boolean; onTap(): void }) {
+  const { bindings } = useSettings();
+  if (touch) {
+    return (
+      <button
+        type="button"
+        id="gun-prompt"
+        className="touch"
+        onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); onTap(); }}
+      >
+        ✋ {text}
+      </button>
+    );
+  }
+  return <div id="gun-prompt" role="status"><kbd>{keyLabel(bindings.interact)}</kbd> {text}</div>;
 }
 
 function KillFeed({ entries }: { entries: FeedEntry[] }) {

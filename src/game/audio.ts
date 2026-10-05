@@ -15,7 +15,7 @@ const STEP_VARIANTS = 5;
 /** Every clip the game uses (file names in public/sounds/, without .mp3). */
 const CLIPS = [
   'shot_rifle', 'shot_shotgun', 'shot_sniper', 'shot_deagle',
-  'reload_out', 'reload_in', 'empty', 'switch',
+  'reload_rifle', 'reload_deagle', 'reload_shell', 'reload_pump', 'reload_clip', 'reload_round', 'reload_bolt', 'empty', 'switch',
   'explosion', 'explosion_crunch',
   'hit_body', 'hit_head', 'hurt', 'kill', 'melee_hit', 'swing',
   'pickup', 'ability', 'denied', 'slide',
@@ -143,11 +143,24 @@ export function playShot(volume = 1, gun: GunSound = 'rifle'): void {
 /** Switching guns: a metallic clack. */
 export const playSwitch = () => { play('switch', { volume: 0.55, rate: vary() }); };
 
-/** A reload: the magazine out, then a new one in. */
-export const playReload = (volume = 1) => {
-  play('reload_out', { volume: 0.6 * volume, rate: vary() });
-  play('reload_in', { volume: 0.7 * volume, rate: vary(), delay: 0.85 });
+/**
+ * Each gun's reload as [clip, seconds from the start], laid out to finish inside its reload time (guns.ts):
+ * the rifle's mag out / in / charging handle and the pistol's mag drop / insert / slide are one recording
+ * each; the shotgun loads shells then racks the pump; the bolt-action loads rounds then works the bolt.
+ */
+const RELOADS: Record<GunSound, { rate?: number; steps: [string, number][] }> = {
+  rifle: { rate: 1.12, steps: [['reload_rifle', 0]] }, // 1.56 s recording into the 1.4 s reload
+  deagle: { steps: [['reload_deagle', 0]] }, // 1.59 s, the reload is 1.6 s
+  shotgun: { steps: [['reload_shell', 0.05], ['reload_shell', 0.5], ['reload_shell', 0.95], ['reload_pump', 1.3]] }, // 2 s
+  sniper: { steps: [['reload_bolt', 0], ['reload_clip', 0.6], ['reload_round', 1.05], ['reload_round', 1.4], ['reload_bolt', 1.85]] }, // 2.4 s
 };
+
+/** A reload, matched to the gun: magazine, shells or rounds, then the bolt, pump or slide. */
+export function playReload(volume = 1, gun: GunSound = 'rifle'): void {
+  const { rate = 1, steps } = RELOADS[gun];
+  const pitch = rate * vary(0.03);
+  for (const [clip, at] of steps) play(clip, { volume: 0.8 * volume, rate: pitch, delay: at });
+}
 
 /** Pulling the trigger on an empty magazine. */
 export const playEmpty = () => { play('empty', { volume: 0.5, rate: 1.4 }); };

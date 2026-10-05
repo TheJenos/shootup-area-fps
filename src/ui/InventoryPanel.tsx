@@ -39,7 +39,7 @@ export function InventoryPanel({ game, slots, gun, gunRounds }: Props) {
               </div>
             </>
           ) : (
-            <p className="muted">No picked-up gun — walk over one on the map to take it.</p>
+            <p className="muted">No picked-up gun — stand on one on the map and press the pick-up key (E) to take it.</p>
           )}
           <button className="danger" disabled={!gun} onClick={() => game.dropGun()}>Drop</button>
         </div>
