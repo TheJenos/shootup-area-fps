@@ -216,6 +216,7 @@ its clip has loaded is skipped, and every sound runs through a limiter so stacke
   explosions are quieter and muffled (low-passed), the way far-off gunfire loses its crack.
 - **Footsteps:** five takes per surface, picked at random with a little pitch variation so they don't repeat.
   Hard floor, sand (Dust Bowl), snow (Frostbite) or hollow wood on top of a crate each have their own takes.
+  Snow uses Kenney's carpet steps, low-passed and a little quieter: soft packed snow rather than a crunch.
   The low end is boosted so steps have weight, and landings play slower, deeper and louder.
 - Other players' steps fade with distance (silent beyond 35 m) and are panned left/right toward where they are,
   so you can hear someone coming.
