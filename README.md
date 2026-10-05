@@ -202,23 +202,28 @@ heavier the closer to death you are.
 
 Multi-kills (two kills within 4 s of each other) put a **DOUBLE / TRIPLE / QUAD KILL / RAMPAGE** banner on
 screen with a stinger that gets bigger up the ladder; every fifth kill of a streak calls out the streak. Rounds
-start and end with short stingers (a win resolves upward, a loss falls, a draw hangs). In the last 30 seconds
-of a round a low synthesized bed comes in, with a kick pulse that quickens as the clock runs out. Effects and
-music have separate volume sliders in Settings.
+start and end with short jingles (separate ones for a win, a loss and a draw). In the last 30 seconds of a round
+a dark ambient loop fades in, speeding up slightly and getting louder as the clock runs out. Effects and music
+have separate volume sliders in Settings.
 
 ## Sound
 
-All sound is synthesized with Web Audio (no audio files), including footsteps:
+All sound is recorded audio: 54 short clips in `public/sounds/` (about 1.1 MB, mono MP3 except the music loop),
+loaded once when you first join and played through Web Audio by `src/game/audio.ts`. A sound asked for before
+its clip has loaded is skipped, and every sound runs through a limiter so stacked sounds don't distort.
 
-- One step per stride while moving on the ground (faster and louder when sprinting), plus a thud when you land
-  from a jump or a drop.
+- **Guns:** a real recording per gun (rifle, shotgun, sniper, pistol), cut to its first shot. Distant shots and
+  explosions are quieter and muffled (low-passed), the way far-off gunfire loses its crack.
+- **Footsteps:** five takes per surface, picked at random with a little pitch variation so they don't repeat.
+  Hard floor, sand (Dust Bowl), snow (Frostbite) or hollow wood on top of a crate each have their own takes.
+  The low end is boosted so steps have weight, and landings play slower, deeper and louder.
 - Other players' steps fade with distance (silent beyond 35 m) and are panned left/right toward where they are,
   so you can hear someone coming.
-- Each step layers a scuff, a heel click and a deep thud: a falling 55–75 Hz sine with a quiet octave above it
-  (so laptop speakers still carry it) plus low, muffled noise. Landings go deeper and longer. All game sound
-  runs through a limiter so stacked sounds don't distort.
-- The sound depends on what's underfoot: hard floor, sand (Dust Bowl), snow (Frostbite), or hollow wood on top
-  of a crate.
+- Reloads, gun switches, hit markers (head and body differ), getting hit, melee, slides, pickups, abilities and
+  the low-health heartbeat are recordings too.
+
+To swap a sound, replace its file in `public/sounds/` (same name) or change the name in `audio.ts`. Where every
+sound comes from and its license is listed under [Credits](#credits).
 
 ## Discord Activity
 
@@ -291,11 +296,24 @@ Discord, with no website to visit.
 The ⚙ panel (lobby or pause menu) is split into tabs: **Controls** (mouse / look and key bindings), **Video**
 (display and crosshair), **Audio** and **Accessibility**; it reopens on the last tab you used. Altogether it has mouse sensitivity, aim sensitivity and aim toggle, invert Y, fullscreen,
 **field of view** (60–110°), **graphics quality** (Low: no shadows and a 1× resolution cap; Medium: soft
-shadows at native resolution; High: sharp shadows, up to 2×; phones default to Low), **crosshair colour and
+shadows at native resolution; High: sharp shadows, up to 2×; phones default to Low), an **FPS counter** in the
+top-right corner (on by default; green at 50+, yellow at 30+, red below), **V-Sync** and **Max FPS** (30 / 60 /
+120 / 144 / 165 / 240 / Unlimited; see below), **crosshair colour and
 size** (with a live preview), sound effects and music volume, screen shake, **reduce motion** (System / On /
 Off: no pulsing, zooming or camera shake; "System" follows the OS setting), **HUD size** (80–140 %; panels grow
 from the corner they're pinned to), a button to show the one-time tips again, and every key binding (hidden on
 touch screens, where the mouse section becomes "Look"). Settings are saved in the browser.
+
+**Frame rate** (`src/game/frameLoop.ts`). Browsers always put frames on screen at the display's refresh rate,
+so V-Sync here decides when the game runs its update + render, not what the monitor shows:
+
+- **V-Sync on:** one frame per screen refresh (`requestAnimationFrame`), or fewer if Max FPS is lower.
+- **V-Sync off** (the default on computers): the next frame starts as soon as the last one is done, using a
+  `MessageChannel` task (not clamped to 4 ms like `setTimeout`), up to Max FPS. Input is read and the world
+  updated more often, so what's on screen at each refresh is fresher; it uses more power.
+- **Max FPS** defaults to Unlimited. Phones default to V-Sync on so they don't run hot.
+- A hidden tab always falls back to `requestAnimationFrame`, which the browser pauses, so an uncapped game
+  doesn't burn the CPU in the background. The FPS counter counts the game's own frames.
 
 ### Global leaderboard
 
@@ -318,8 +336,8 @@ with medals for the top three and your own row highlighted (or shown underneath 
 Esc opens the menu. The left side shows what's going on: the mode and its goal, the round clock and score, a
 status line ("You're alive — the match is still running", "Dead — respawning in 2", "Round over — next map in
 5", "Spectating"), a thumbnail of the current map with its seed and the player count, and the room code with a
-**Copy invite link** button. The right side has Resume, Spectate, Switch team, Settings, Leave room (with a
-confirm step) and the key list with your own bindings. Clicking the dimmed backdrop resumes; clicking the card
+**Copy invite link** button. The right side has Resume, Spectate, Switch team, Settings, Leave room (leaves
+straight away) and the key list with your own bindings. Clicking the dimmed backdrop resumes; clicking the card
 doesn't. The match keeps running while the menu is open. Round results and the MVP replay stay visible
 (dimmed) behind it, so a late joiner sees what's happening.
 
@@ -402,7 +420,7 @@ stocked separately from abilities) and go into a second slot when you walk over 
 - You carry one picked-up gun at a time. A different gun stays on the floor until you drop yours from the
   inventory (**I**, or the 🎒 button on touch screens); walking over the same gun just adds ammo. When a picked-up gun runs completely dry you go back to the rifle. When you die it drops next to your body
   with the ammo it had left.
-- Each gun has its own model, iron sights or scope, aimed field of view, spread, recoil and synthesized
+- Each gun has its own model, iron sights or scope, aimed field of view, spread, recoil and recorded
   report. Other players see the gun you're holding, and the kill feed shows which gun got the kill.
 - Shotgun shots are sent as one event carrying every pellet's end point and the damage per player hit;
   each client still caps incoming damage at what that gun can deal in one shot.
@@ -571,8 +589,9 @@ src/
     pickups.ts       ability pickups on the map
     grenades.ts      deterministic grenade arcs + explosion effects
     weapon.ts        viewmodel, ammo/reload/recoil, tracers & impacts
-    audio.ts         synthesized sound effects (Web Audio), including footsteps per surface
+    audio.ts         sound: plays the recorded clips in public/sounds/ (Web Audio)
     footsteps.ts     turns movement into footfalls and landings
+    frameLoop.ts     runs each frame per the V-Sync / Max FPS settings
     canvas.ts        helper for procedural textures
   discord/
     patch.ts         inside Discord: route traffic through Discord's proxy (imported first)
@@ -607,3 +626,19 @@ from the killer (harder for the shotgun, sniper and grenades; headshots snap the
 bodies lying nearby, and MVP replays ragdoll their victims too. A body settles within a couple of seconds and
 stops simulating. To swap in another Mixamo-rigged model, keep the clip names and the `mixamorigSpine2` /
 `mixamorigHead` / arm (`…Arm`, `…ForeArm`, `…Hand`, both sides) bones.
+
+## Credits
+
+The game's credits page is `public/credits.html` (linked from both lobbies as **Credits**).
+
+- **Music:** “Dark Ambience Loop” by Iwan Gabovitch ([qubodup.net](https://qubodup.net)),
+  [OpenGameArt](https://opengameart.org/content/dark-ambience-loop),
+  [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). Trimmed and converted to MP3. Keep this credit if you
+  keep the file (`public/sounds/tension_loop.mp3`).
+- **Gunshots:** [The Free Firearm Sound Library](https://opengameart.org/content/the-free-firearm-sound-library)
+  by Ben Jaszczak, Brian Nelson, Kevin Heras and Matthew Nanney, CC0.
+- **Effects, footsteps and jingles:** Kenney's [Impact Sounds](https://kenney.nl/assets/impact-sounds),
+  [Interface Sounds](https://kenney.nl/assets/interface-sounds), [Sci-fi Sounds](https://kenney.nl/assets/sci-fi-sounds)
+  and [Music Jingles](https://kenney.nl/assets/music-jingles), CC0.
+- **Heartbeat:** [Heartbeat Sounds](https://opengameart.org/content/heartbeat-sounds) by bart, CC0.
+- **Soldier model:** three.js examples / Mixamo (see [Assets](#assets)).

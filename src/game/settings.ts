@@ -52,6 +52,8 @@ export interface Settings {
   reduceMotion: MotionPref;
   /** Size multiplier for the HUD panels */
   hudScale: number;
+  /** Frames-per-second counter in the top-right corner */
+  showFps: boolean;
   /** 0..1 */
   sfxVolume: number;
   musicVolume: number;
@@ -107,7 +109,7 @@ const DEFAULTS: Settings = {
   fov: FOV_DEFAULT, crosshairColor: '#ffffff', crosshairSize: 1,
   // Phones start low; they can turn it up.
   quality: COARSE ? 'low' : 'high', screenShake: !MOTION_QUERY?.matches, sfxVolume: 1, musicVolume: 0.7,
-  reduceMotion: 'system', hudScale: 1,
+  reduceMotion: 'system', hudScale: 1, showFps: true,
   bindings: DEFAULT_BINDINGS,
 };
 
@@ -150,6 +152,7 @@ function load(): Settings {
       screenShake: typeof saved.screenShake === 'boolean' ? saved.screenShake : DEFAULTS.screenShake,
       reduceMotion: MOTION_OPTIONS.some((o) => o.value === saved.reduceMotion) ? (saved.reduceMotion as MotionPref) : DEFAULTS.reduceMotion,
       hudScale: num(saved.hudScale, HUD_SCALE_MIN, HUD_SCALE_MAX, DEFAULTS.hudScale),
+      showFps: typeof saved.showFps === 'boolean' ? saved.showFps : DEFAULTS.showFps,
       sfxVolume: num(saved.sfxVolume, 0, 1, DEFAULTS.sfxVolume),
       musicVolume: num(saved.musicVolume, 0, 1, DEFAULTS.musicVolume),
       // Start from the defaults so actions added later still get a key.

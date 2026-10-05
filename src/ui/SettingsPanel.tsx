@@ -215,6 +215,14 @@ export function SettingsPanel({ onClose }: Props) {
             </div>
           </div>
           <p className="muted hint">{QUALITIES.find((q) => q.value === current.quality)?.hint}</p>
+          <label className="setting check">
+            <input
+              type="checkbox"
+              checked={current.showFps}
+              onChange={(e) => settings.update({ showFps: e.target.checked })}
+            />
+            <span>Show FPS counter</span>
+          </label>
         </section>
         <section>
           <h4>Crosshair</h4>

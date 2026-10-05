@@ -274,6 +274,25 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
   gap: 6px;
   justify-items: end;
 }
+#fps {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.45);
+  padding: 5px 8px;
+  border-radius: 6px;
+  pointer-events: none;
+  transform-origin: top right;
+  transform: scale(var(--hud-scale));
+}
+#fps.good { color: #7ddc8a; }
+#fps.ok { color: #ffd166; }
+#fps.bad { color: #ff6b6b; }
+#hud.fps #killfeed { top: calc(16px + 30px * var(--hud-scale)); }
+#hud.cinematic #fps { display: none; }
 #killfeed li {
   background: rgba(0, 0, 0, 0.5);
   padding: 6px 10px;
@@ -604,8 +623,6 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 .pause-card .actions button { margin: 0; padding: 10px 14px; white-space: nowrap; }
 .pause-card .actions .primary { min-width: 120px; }
 .pause-card .actions .spacer { flex: 1; }
-.pause-card .confirm { display: flex; gap: 6px; align-items: center; font-size: 13px; }
-.pause-card .confirm button { padding: 8px 12px; font-size: 13px; }
 .pause-card .keys { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; font-size: 12px; color: var(--muted); }
 .pause-card .keys li { display: flex; gap: 8px; align-items: baseline; }
 .pause-card .keys kbd { min-width: 54px; text-align: center; white-space: nowrap; }
@@ -1101,8 +1118,8 @@ kbd {
 #crosshair.ads { width: 4px; height: 4px; border-radius: 50%; background: var(--ch); box-shadow: 0 0 2px #000; }
 #crosshair.ads::before, #crosshair.ads::after { display: none; }
 #settings .number-readout { width: 76px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
-#settings .choices { display: flex; gap: 6px; flex: 1; }
-#settings .choice { flex: 1; padding: 7px 8px; font-size: 13px; }
+#settings .choices { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
+#settings .choice { flex: 1 1 0; min-width: max-content; padding: 7px 8px; font-size: 13px; }
 #settings .choice.selected { border-color: var(--accent); color: var(--accent); background: rgba(255, 181, 71, 0.1); }
 #settings .crosshair-row { display: flex; gap: 16px; align-items: center; margin-bottom: 10px; }
 #settings .crosshair-preview {
@@ -1176,6 +1193,7 @@ kbd {
 #hud.touch #health { left: 50%; transform: translateX(-50%) scale(calc(0.75 * var(--hud-scale))); transform-origin: bottom center; bottom: 98px; padding: 6px 12px; }
 #hud.touch #ammo { right: calc(env(safe-area-inset-right) + 12px); top: 52px; bottom: auto; font-size: 22px; padding: 4px 10px; transform-origin: top right; }
 #hud.touch #killfeed { top: 120px; }
+#hud.touch #fps { top: 14px; right: calc(env(safe-area-inset-right) + 12px); }
 /* Centre column, bottom-anchored rungs: slots, buffs, health, toasts. Above the look / stick zones so slots take taps. */
 #hud.touch #abilities { bottom: 8px; gap: 6px; z-index: 1; }
 #abilities .buffs:empty { display: none; }

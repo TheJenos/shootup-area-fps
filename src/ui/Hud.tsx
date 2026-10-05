@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { LOW_HEALTH, type Game } from '../game/game';
 import type { FeedEntry, FlagStatus, HudState, MatchEnd } from '../game/hudStore';
 import { ABILITIES, type SlotView } from '../game/abilities';
@@ -65,7 +65,7 @@ interface Props {
 
 export function Hud({ game, roomCode, onLeave }: Props) {
   const hud = useHud(game);
-  const { hudScale } = useSettings();
+  const { hudScale, showFps } = useSettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Phones: the controls guide, once.
   const [intro, setIntro] = useState(() => game.touch && !readFlag(TOUCH_INTRO_KEY));
@@ -86,6 +86,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
     game.touch && 'touch',
     hud.paused && 'paused',
     intro && 'intro',
+    showFps && 'fps',
   ].filter(Boolean).join(' ');
   const inMatch = !hud.connecting && !hud.spectate;
   const waitingAlone = hud.playerCount === 1 && inMatch && !hud.paused && !hud.matchEnd && !hud.offline;
@@ -124,6 +125,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
 
       <div id="room-tag">Room <strong>{roomCode}</strong></div>
       <ScoreBar hud={hud} />
+      {showFps && <FpsCounter />}
       <KillFeed entries={hud.feed} />
       {hud.offline && !hud.connecting && (
         <div id="offline-banner" className="hud-banner danger" role="status">
@@ -483,6 +485,35 @@ function ScopeOverlay() {
       </div>
     </div>
   );
+}
+
+/** How often the FPS readout refreshes (ms) */
+const FPS_SAMPLE_MS = 500;
+
+/**
+ * Frames per second, top right. Counts animation frames itself (the game renders once per frame)
+ * and writes straight to the DOM twice a second, so it never re-renders the HUD.
+ */
+function FpsCounter() {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let frames = 0;
+    let since = performance.now();
+    let raf = requestAnimationFrame(function tick(now) {
+      frames++;
+      const elapsed = now - since;
+      if (elapsed >= FPS_SAMPLE_MS && ref.current) {
+        const fps = Math.round((frames * 1000) / elapsed);
+        ref.current.textContent = `${fps} FPS`;
+        ref.current.className = fps >= 50 ? 'good' : fps >= 30 ? 'ok' : 'bad';
+        frames = 0;
+        since = now;
+      }
+      raf = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  return <div id="fps" ref={ref} aria-hidden="true">— FPS</div>;
 }
 
 function KillFeed({ entries }: { entries: FeedEntry[] }) {

@@ -1,4 +1,4 @@
-import { useMemo, useState, type MouseEvent } from 'react';
+import { useMemo, type MouseEvent } from 'react';
 import type { Game } from '../game/game';
 import type { HudState } from '../game/hudStore';
 import { TEAM_INFO, otherTeam } from '../game/modes';
@@ -48,7 +48,6 @@ interface Props {
 export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onIntro }: Props) {
   const { bindings } = useSettings();
   const { copy, copied } = useCopyInvite(game, roomCode);
-  const [confirmLeave, setConfirmLeave] = useState(false);
   const layout = useMemo(() => (hud.map ? generateMap(hud.map.seed) : null), [hud.map?.seed]);
   const { rules } = hud;
   const team = hud.team;
@@ -146,15 +145,7 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onIntro }:
 
         {/* One row along the bottom: leaving on the left, everything else, then Resume on the right. */}
         <footer className="actions">
-          {confirmLeave ? (
-            <div className="confirm">
-              <span>Leave?</span>
-              <button type="button" className="danger" onClick={onLeave}>Leave</button>
-              <button type="button" onClick={() => setConfirmLeave(false)}>Stay</button>
-            </div>
-          ) : (
-            <button type="button" className="danger" onClick={() => setConfirmLeave(true)}>Leave room</button>
-          )}
+          <button type="button" className="danger" onClick={onLeave}>Leave room</button>
           <span className="spacer" />
           <button type="button" onClick={onSettings}>Settings</button>
           <button type="button" onClick={() => (game.isSpectating ? game.stopSpectating() : game.startSpectating())}>
