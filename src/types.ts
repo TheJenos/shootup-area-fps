@@ -109,6 +109,8 @@ export interface ShotEvent {
   hits?: Record<string, number>;
   /** Fired by the sender's turret with this id (the turret aims at `e`; damage counts as the turret's) */
   tur?: string;
+  /** Damage done to barriers and turrets, by their id */
+  dep?: Record<string, number>;
 }
 
 /** Guns a player can hold. The rifle is always carried; the others are picked up on the map. */
@@ -172,6 +174,8 @@ export interface BlastEvent {
   hits?: Record<string, number>;
   /** Set when a land mine (with this id) went off instead of a grenade */
   mine?: boolean;
+  /** Damage done to barriers and turrets, by their id */
+  dep?: Record<string, number>;
 }
 
 /** A molotov or flashbang was thrown; every client simulates the arc and sets it off where it lands. */

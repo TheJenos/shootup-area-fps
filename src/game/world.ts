@@ -43,6 +43,10 @@ export interface World extends WorldLists {
   dispose(): void;
 }
 
+/** The invisible boundary around the map: how high it goes and how thick it is (m) */
+const BOUNDARY_HEIGHT = 200;
+const BOUNDARY_THICKNESS = 4;
+
 const SHADOW_SIZE: Record<Quality, number> = { low: 512, medium: 1024, high: 2048 };
 
 /** Footsteps on a box's top, from its texture unless the layout says otherwise. */
@@ -215,6 +219,17 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
   const W = ARENA_HALF;
   const wall = (x: number, z: number, w: number, d: number): MapBox => ({ x, z, w, h: 6, d, y: 0, color: theme.wall, surface: 'perimeter' });
   for (const b of [wall(0, -W, W * 2 + 1, 1), wall(0, W, W * 2 + 1, 1), wall(-W, 0, 1, W * 2 + 1), wall(W, 0, 1, W * 2 + 1)]) addBox(b);
+
+  // Invisible boundary: tall walls over the perimeter so nobody gets out of the map, however high
+  // they get (a jump off a roof edge, a dash, a ragdoll, a grenade). Movement only: bullets still fly
+  // out into the sky, and pickups don't treat them as floor space.
+  const T = BOUNDARY_THICKNESS;
+  for (const [x0, z0, x1, z1] of [
+    [-W - T, -W - T, W + T, -W + 0.5], [-W - T, W - 0.5, W + T, W + T],
+    [-W - T, -W - T, -W + 0.5, W + T], [W - 0.5, -W - T, W + T, W + T],
+  ] as const) {
+    colliders.push(new THREE.Box3(new THREE.Vector3(x0, -10, z0), new THREE.Vector3(x1, BOUNDARY_HEIGHT, z1)));
+  }
 
   for (const b of layout.boxes) {
     if (b.ramp) addRamp(b);

@@ -179,6 +179,13 @@ export function playFlashbang(volume = 1): void {
   play('hit_head', { volume: 0.5 * volume, rate: 0.5, delay: 0.08 });
 }
 
+/** A barrier breaking: a crunch and a clatter. */
+export function playBreak(volume = 1): void {
+  const far = Math.max(0, Math.min(1, 1 - volume));
+  play('explosion_crunch', { volume: 0.7 * volume, rate: 1.5 * vary(0.05), lowpass: 16000 - far * 12000 });
+  play('hit_body', { volume: 0.6 * volume, rate: 0.6 * vary(0.05), delay: 0.04 });
+}
+
 export function playExplosion(volume = 1): void {
   const far = Math.max(0, Math.min(1, 1 - volume));
   play('explosion', { volume, rate: vary(0.04), lowpass: 16000 - far * 13000 });

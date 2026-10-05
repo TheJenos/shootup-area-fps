@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { FIRE_DURATION, FIRE_RADIUS, MINE_ARM, MINE_DURATION } from './abilities';
+import { FIRE_DURATION, FIRE_RADIUS, MINE_ARM, MINE_DURATION, TURRET_HP } from './abilities';
+import type { DeployableData, DeployableHit } from './deployables';
 
 /*
  * World effects for the newer abilities: molotov fire patches, deployed turrets, land mines and
@@ -152,6 +153,11 @@ export interface Turret {
   cooldown: number;
   flash: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   flashLeft: number;
+  hp: number;
+  /** The head's body, in the owner's colour: darkened as it takes damage, flashes when hit */
+  bodyMat: THREE.MeshStandardMaterial;
+  color: THREE.Color;
+  hitFlash: number;
 }
 
 const TURRET_SIZE = { w: 0.7, h: 1.25, d: 0.7 };
@@ -195,7 +201,8 @@ export class TurretField {
     group.add(post);
     const head = new THREE.Group();
     head.position.y = 0.95;
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.28, 0.5), new THREE.MeshStandardMaterial({ color, metalness: 0.3, roughness: 0.5 }));
+    const bodyMat = new THREE.MeshStandardMaterial({ color, metalness: 0.3, roughness: 0.5, emissive: 0xffffff, emissiveIntensity: 0 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.28, 0.5), bodyMat);
     const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.55, 8).rotateX(Math.PI / 2), dark);
     barrel.position.set(0, 0.02, -0.45);
     const light = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 6), eye);
@@ -218,13 +225,31 @@ export class TurretField {
     // Bullets stop on it like cover; it can't be destroyed.
     const solid = new THREE.Mesh(new THREE.BoxGeometry(TURRET_SIZE.w, TURRET_SIZE.h, TURRET_SIZE.d), new THREE.MeshBasicMaterial());
     solid.visible = false;
+    solid.userData = { deployable: id } satisfies DeployableData;
     solid.position.set(x, y + TURRET_SIZE.h / 2, z);
     solid.updateMatrixWorld();
     this.colliders.push(box);
     this.solids.push(solid);
     this.turrets.set(id, {
       id, owner, until, group, head, muzzle, box, solid, yaw, targetYaw: yaw, pitch: 0, targetPitch: 0, cooldown: 0.6, flash, flashLeft: 0,
+      hp: TURRET_HP, bodyMat, color: new THREE.Color(color), hitFlash: 0,
     });
+  }
+
+  /** Every standing turret, for blasts to find */
+  list(): Turret[] {
+    return [...this.turrets.values()];
+  }
+
+  /** Take `amount` off a turret; at 0 it's destroyed (and removed). Null if there's no such turret. */
+  damage(id: string, amount: number): DeployableHit | null {
+    const t = this.turrets.get(id);
+    if (!t) return null;
+    t.hp -= amount;
+    t.hitFlash = 0.09;
+    const at = t.box.getCenter(new THREE.Vector3());
+    if (t.hp <= 0) this.remove(id);
+    return { destroyed: t.hp <= 0, at };
   }
 
   get(id: string): Turret | undefined {
@@ -263,6 +288,9 @@ export class TurretField {
       t.head.rotation.set(t.pitch, t.yaw, 0, 'YXZ');
       t.flashLeft -= dt;
       t.flash.visible = t.flashLeft > 0;
+      t.hitFlash -= dt;
+      t.bodyMat.emissiveIntensity = t.hitFlash > 0 ? 0.8 : 0;
+      t.bodyMat.color.copy(t.color).multiplyScalar(0.35 + 0.65 * Math.max(0, t.hp) / TURRET_HP);
     }
   }
 

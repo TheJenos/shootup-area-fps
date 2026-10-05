@@ -235,6 +235,8 @@ turf. Streets, sidewalks, lawns, concrete pads and hazard stripes are flat patch
 
 - Crates are wooden, with planks and a brace.
 - The outer wall is concrete panels with grime at the bottom.
+- Above the outer wall, an invisible boundary (200 m tall) keeps players, bodies and grenades inside the map;
+  bullets still fly out. If anything still puts you outside, you're moved back to the edge.
 - The sky is a dome with a gradient and clouds.
 - Spawn points have painted floor markers, and CTF bases have hazard stripes.
 - The gun is worn metal and wood, grenades have a segmented shell, and pickups sit on metal pedestals.
@@ -499,6 +501,9 @@ linearly to a fraction of it at long range, so each gun has a range it's best at
   same place; each client works out for itself whether it's standing in fire or was blinded. Turrets are run by their
   owner's client, which sends their shots like any other (`tur` names the turret, so others see its head swing).
   Land mines too: the owner's client watches for enemies stepping near and sends an ordinary `blast` marked `mine`.
+  Barriers and turrets have health. The shot or blast that hits one carries the damage (`dep`, by id), and every
+  client applies it, so they darken, flash and break at the same moment everywhere. Only enemies of the owner
+  can damage them (not the owner, not teammates); each client caps the damage at what that shot or blast could do.
   None of the effects add lights to the scene, so they can't cause the shader-recompile hitch grenades used to.
 - Each gun has its own 3D model (an AK rifle, a pump shotgun, a scoped bolt-action sniper and a big pistol, from
   Quaternius's CC0 [Ultimate Gun Pack](https://opengameart.org/content/low-poly-guns-pack)), iron sights or scope, aimed field of view, spread, recoil and recorded
@@ -546,7 +551,9 @@ Browsers normally don't let a page catch the close-tab shortcut, so the game use
 - **Keyboard Lock (Chrome, Edge, Opera):** "Click to play" also goes fullscreen and asks the browser for every
   bound key, plus W, T, N, Q, Tab and 1–9 (`navigator.keyboard.lock`). The game then receives Ctrl+W, Ctrl+T,
   Ctrl+1 (switch tab), Ctrl+Tab and Cmd+W itself and ignores them, so crouching never closes or switches the
-  tab. Esc isn't locked, so it still releases the mouse and leaves fullscreen as usual. Turn off
+  tab. While you play, Esc isn't locked, so it releases the mouse and opens the menu as usual. While the
+  mouse is free (menu, inventory, settings) Esc is locked too, so it closes the panel (and Esc in the menu
+  resumes) instead of leaving fullscreen; hold Esc to leave fullscreen. Turn off
   **Fullscreen while playing** in Settings to play windowed (and lose this protection).
 - **Ctrl shortcuts a page can block** (Ctrl+S save, Ctrl+D bookmark, Ctrl+A, Ctrl+R, Ctrl+F...) are blocked
   while the mouse is captured, in every browser.
@@ -575,12 +582,12 @@ button. Dropped abilities land in front of you with their remaining uses, and an
 | 💨 | Dash | Burst forward where you look | 4 | 3 s |
 | 💣 | Grenade | Thrown arc, up to 90 damage in a 5 m radius, blocked by walls | 3 | 6 s |
 | 🌫️ | Smoke | Thrown like a grenade; a thick 3.6 m cloud for 12 s that blocks sight (not bullets) | 2 | 10 s |
-| 🧱 | Barrier | A 2.6 × 1.3 m wall 1.8 m in front of you, square to the way you face, for 20 s; blocks movement and bullets. Refused if it would cut into cover or a player | 2 | 14 s |
+| 🧱 | Barrier | A 3.6 × 2.2 m wall (full cover, too tall to jump over) 1.8 m in front of you, square to the way you face, for 20 s; blocks movement and bullets. Enemies can break it: 300 damage (about 15 rifle hits; grenades and mines count). Refused if it would cut into cover or a player | 2 | 14 s |
 | 👻 | Cloak | Nearly invisible for 6 s: enemies see a faint grey shimmer (no team colour, gun, name tag or shadow), teammates a see-through ghost. Firing, swinging the flag or throwing ends it early; you can still be shot, and your footsteps are half as loud, not silent. Your screen edges shimmer while it lasts | 2 | 18 s |
 | 📡 | Scan Pulse | A ring sweeps out from you: for 3.5 s every enemy within 32 m of that spot shows as a red silhouette through walls. Scanned enemies are told they've been scanned | 2 | 15 s |
 | 🔥 | Molotov | Thrown like a grenade; a 3.2 m patch of fire burns for 6 s where it lands. Enemies standing in it take 8 damage every 0.5 s (yours and your team's fire doesn't hurt you) | 2 | 12 s |
 | 🔆 | Flashbang | Thrown; when it lands, everyone who can see it is whited out for up to ~3.7 s, worst close up and looking straight at it, milder facing away. It catches you too | 2 | 12 s |
-| 🤖 | Turret | Deployed 1.6 m in front of you for 15 s. It sweeps for the nearest enemy it can see within 24 m (cloaked players excepted) and fires 8 damage every 0.4 s, not perfectly accurately. Its kills are yours. It's solid cover but can't be destroyed; it goes when its owner leaves | 1 | 25 s |
+| 🤖 | Turret | Deployed 1.6 m in front of you for 15 s. It sweeps for the nearest enemy it can see within 24 m (cloaked players excepted) and fires 8 damage every 0.4 s, not perfectly accurately. Its kills are yours. It's solid cover; enemies can destroy it with 150 damage (about 8 rifle hits; grenades and mines count). It goes when its owner leaves | 1 | 25 s |
 | 💥 | Land Mine | Put down at your feet. It arms after 1.5 s and lasts 90 s; the first enemy within 1.6 m sets it off for a blast of up to 120 damage within 4 m (blocked by walls; stepping right on one nearly kills). You and your team see its blinking light, enemies only a dull disc on the floor. Two out at once: a third clears your oldest | 2 | 12 s |
 | 🩸 | Lifesteal | For 8 s, your bullets heal you for 30% of the damage they deal | 2 | 20 s |
 

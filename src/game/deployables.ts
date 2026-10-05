@@ -14,8 +14,10 @@ const SMOKE_BLOOM = 1.2;
 const SMOKE_FADE = 2.5;
 const PUFFS = 11;
 
-export const WALL_SIZE = { w: 2.6, h: 1.3, d: 0.3 };
+export const WALL_SIZE = { w: 3.6, h: 2.2, d: 0.35 };
 export const WALL_DURATION = 20;
+/** Damage a barrier takes before it breaks (about 15 rifle hits) */
+export const WALL_HP = 300;
 /** The wall is placed this far in front of the player */
 export const WALL_DISTANCE = 1.8;
 
@@ -123,6 +125,24 @@ interface Wall {
   /** Server ms when it disappears */
   until: number;
   material: THREE.MeshStandardMaterial;
+  owner: string;
+  hp: number;
+  /** Its owner's colour, darkened as it takes damage */
+  color: THREE.Color;
+  /** performance.now() until which it flashes from a hit */
+  flashUntil: number;
+}
+
+/** What hitting a barrier or turret did */
+export interface DeployableHit {
+  destroyed: boolean;
+  /** Its centre */
+  at: THREE.Vector3;
+}
+
+/** Put on the mesh bullets hit, so a hit can be traced back to the barrier or turret */
+export interface DeployableData {
+  deployable: string;
 }
 
 /**
@@ -151,7 +171,7 @@ export class WallField {
     return new THREE.Box3(center.clone().sub(half), center.clone().add(half));
   }
 
-  place(id: string, x: number, y: number, z: number, axis: WallAxis, until: number, color: number): void {
+  place(id: string, owner: string, x: number, y: number, z: number, axis: WallAxis, until: number, color: number): void {
     if (this.walls.has(id)) return;
     const box = WallField.boxFor(x, y, z, axis);
     const size = box.getSize(new THREE.Vector3());
@@ -163,11 +183,32 @@ export class WallField {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(size.x, size.y, size.z), material);
     box.getCenter(mesh.position);
     mesh.castShadow = mesh.receiveShadow = true;
+    mesh.userData = { deployable: id } satisfies DeployableData;
     mesh.updateMatrixWorld();
     this.scene.add(mesh);
     this.colliders.push(box);
     this.solids.push(mesh);
-    this.walls.set(id, { mesh, box, until, material });
+    this.walls.set(id, { mesh, box, until, material, owner, hp: WALL_HP, color: new THREE.Color(color), flashUntil: 0 });
+  }
+
+  ownerOf(id: string): string | undefined {
+    return this.walls.get(id)?.owner;
+  }
+
+  /** Every standing barrier, for blasts to find */
+  list(): { id: string; owner: string; box: THREE.Box3 }[] {
+    return [...this.walls].map(([id, w]) => ({ id, owner: w.owner, box: w.box }));
+  }
+
+  /** Take `amount` off a barrier; at 0 it breaks (and is removed). Null if there's no such barrier. */
+  damage(id: string, amount: number): DeployableHit | null {
+    const w = this.walls.get(id);
+    if (!w) return null;
+    w.hp -= amount;
+    w.flashUntil = performance.now() + 90;
+    const at = w.box.getCenter(new THREE.Vector3());
+    if (w.hp <= 0) this.remove(id);
+    return { destroyed: w.hp <= 0, at };
   }
 
   /** @param serverNow the shared clock, so walls fall at the same moment for everyone */
@@ -184,6 +225,9 @@ export class WallField {
       w.mesh.scale.y = rise;
       w.mesh.position.y = w.box.min.y + (w.box.max.y - w.box.min.y) * rise / 2;
       w.material.opacity = left < 2 ? 0.55 + 0.45 * Math.abs(Math.sin(left * 9)) : 1;
+      // Darker as it's worn down, with a bright flash on each hit.
+      w.material.color.copy(w.color).multiplyScalar(0.35 + 0.65 * Math.max(0, w.hp) / WALL_HP);
+      w.material.emissiveIntensity = performance.now() < w.flashUntil ? 0.9 : 0.12;
     }
   }
 

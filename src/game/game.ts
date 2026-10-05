@@ -18,7 +18,7 @@ import {
 } from './abilities';
 import { FireField, MineField, ScanPulses, TurretField, type Mine, type Turret } from './fieldfx';
 import { MAX_AMMO_PICKUPS, MAX_GUN_PICKUPS, MAX_PICKUPS, PickupField, kindOf, type PickupKind } from './pickups';
-import { SmokeField, WALL_DISTANCE, WALL_DURATION, WallField, type WallAxis } from './deployables';
+import { SmokeField, WALL_DISTANCE, WALL_DURATION, WallField, type DeployableData, type WallAxis } from './deployables';
 import { GUNS, PICKUP_GUNS, isPickupGun, loadGunModels, maxShotDamage, shotDamage } from './guns';
 import { loadFpArms } from './fpArms';
 import { loadPropModels } from './props';
@@ -102,14 +102,17 @@ const keyboardLock = (): KeyboardLock | undefined => (navigator as Navigator & {
 
 /**
  * Keys to take from the browser while playing fullscreen: every bound key (crouch is Ctrl, and
- * Ctrl+1 / Ctrl+Tab would switch tabs), plus the letters of tab / window shortcuts. Esc is left
- * alone so it still releases the mouse and leaves fullscreen.
+ * Ctrl+1 / Ctrl+Tab would switch tabs), plus the letters of tab / window shortcuts.
+ * @param escape take Esc too. Only while the mouse is free (menu, inventory): there the browser's Esc
+ *   would leave fullscreen, while the game uses it to close the panel. While playing it's left to the
+ *   browser so it releases the mouse. (Holding Esc always leaves fullscreen.)
  */
-function keysToLock(): string[] {
+function keysToLock(escape: boolean): string[] {
   const keys = new Set<string>(Object.values(settings.get().bindings));
   for (const code of ['KeyW', 'KeyT', 'KeyN', 'KeyQ', 'Tab']) keys.add(code);
   for (let d = 1; d <= 9; d++) keys.add(`Digit${d}`);
-  keys.delete('Escape');
+  if (escape) keys.add('Escape');
+  else keys.delete('Escape');
   return [...keys];
 }
 
@@ -483,6 +486,8 @@ export class Game {
    * the game; look follows mouse movement, though it stops at the edge of the window). Esc pauses.
    */
   private freeMouse = false;
+  /** When the mouse was last released (Esc), so the same press doesn't also close the menu */
+  private unlockedAt = 0;
   private enterFreeMouse(): void {
     if (this.freeMouse || this.locked || !this.joined) return;
     this.freeMouse = true;
@@ -526,9 +531,15 @@ export class Game {
         }
         // Entering fullscreen can cancel a pointer lock that was requested in the same click.
         this.lockPointer();
-        return keyboardLock()?.lock(keysToLock());
+        this.syncKeyboardLock();
       })
       .catch(() => { /* refused or unsupported: play windowed */ });
+  }
+
+  /** Re-take the keys for fullscreen: Esc too while the mouse is free (see keysToLock). */
+  private syncKeyboardLock(): void {
+    if (!document.fullscreenElement) return;
+    keyboardLock()?.lock(keysToLock(!this.locked)).catch(() => {});
   }
 
   private bindInput(signal: AbortSignal): void {
@@ -549,7 +560,9 @@ export class Game {
         this.aimHeld = false;
       }
       if (this.locked && this.inventoryOpen) this.closeInventory(false);
+      if (!this.locked) this.unlockedAt = performance.now();
       this.hud.update({ paused: !this.locked && this.joined && !this.inventoryOpen });
+      this.syncKeyboardLock();
     }, { signal });
     canvas.addEventListener('click', () => { if (!this.locked) this.requestPointerLock(); }, { signal });
 
@@ -573,9 +586,7 @@ export class Game {
       lastWheel = now;
     }, { signal, passive: true });
     // Rebinding keys mid-game: lock the new set.
-    signal.addEventListener('abort', settings.subscribe(() => {
-      if (document.fullscreenElement) keyboardLock()?.lock(keysToLock()).catch(() => {});
-    }), { once: true });
+    signal.addEventListener('abort', settings.subscribe(() => this.syncKeyboardLock()), { once: true });
     window.addEventListener('mouseup', (e) => {
       if (e.button === 2 && !e.ctrlKey && !settings.get().aimToggle) this.aimHeld = false;
       if (isFire(e)) {
@@ -606,7 +617,11 @@ export class Game {
         else this.openInventory();
       }
       if (e.code === 'Escape' && this.inventoryOpen) this.closeInventory(false);
-      else if (e.code === 'Escape') this.exitFreeMouse();
+      else if (e.code === 'Escape' && this.freeMouse) this.exitFreeMouse();
+      else if (e.code === 'Escape' && !e.repeat && !this.locked && this.joined && performance.now() - this.unlockedAt > 400) {
+        // Esc in the menu goes back to the game (not straight after the Esc that opened it).
+        this.requestPointerLock();
+      }
     }, { signal });
     window.addEventListener('keyup', (e) => {
       if (actionFor(e.code) === 'scoreboard') this.hud.update({ scoreboardOpen: false });
@@ -914,6 +929,8 @@ export class Game {
       }
       const dist = origin.distanceTo(this.camera.position);
       sfx.playShot(1 / (1 + dist / 10), gun);
+      // Turret shots never carry this; a player's can (at most a full shotgun blast per barrier or turret).
+      if (evt.dep && !evt.tur) this.damageDeployables(evt.dep, evt.from, maxShotDamage(gun) * GUNS[gun].pellets);
       // Shotguns send damage per player hit; everything else a single hit.
       const pellets = evt.hits?.[this.playerId];
       if (pellets) this.takeDamage(pellets, evt.from, false, weapon, origin);
@@ -960,12 +977,13 @@ export class Game {
     } else if (evt.type === 'wall') {
       if (evt.from === this.playerId) return;
       const color = new THREE.Color(this.players[evt.from]?.color ?? evt.c ?? '#6fa8ff').getHex();
-      this.walls.place(evt.id, evt.x, evt.y, evt.z, evt.axis, evt.until, color);
+      this.walls.place(evt.id, evt.from, evt.x, evt.y, evt.z, evt.axis, evt.until, color);
       sfx.playAbility();
     } else if (evt.type === 'blast') {
       if (evt.from === this.playerId) return;
       const at = fromArr(evt.p);
       if (evt.mine) this.mines.remove(evt.id);
+      if (evt.dep) this.damageDeployables(evt.dep, evt.from, evt.mine ? MINE_DAMAGE : GRENADE_DAMAGE);
       this.grenades.explode(evt.id, at, GRENADE_RADIUS);
       this.liftBodies(at);
       sfx.playExplosion(1 / (1 + at.distanceTo(this.camera.position) / 12));
@@ -1872,6 +1890,8 @@ export class Game {
     // One ray per pellet (the shotgun fires nine); damage adds up per player hit.
     const ends: THREE.Vector3[] = [];
     const damageTo = new Map<string, number>();
+    /** Damage to enemy barriers and turrets, by id */
+    const depDamage = new Map<string, number>();
     let anyHead = false;
     for (let p = 0; p < def.pellets; p++) {
       const dir = forward.clone().add(new THREE.Vector3().randomDirection().multiplyScalar(spread)).normalize();
@@ -1882,6 +1902,10 @@ export class Game {
       const hitbox = hit?.object.userData as Partial<HitboxData> | undefined;
       const id = hitbox?.playerId;
       if (hit) this.effects.impact(end, id ? 0xff3b3b : 0xffc35c);
+      const dep = hit && !id ? this.deployableOf(hit.object) : null;
+      if (dep && this.canBreak(dep.owner, this.playerId)) {
+        depDamage.set(dep.id, (depDamage.get(dep.id) ?? 0) + shotDamage(gun, false, hit!.distance));
+      }
       if (!id || !hit) continue;
       const head = !!hitbox?.head;
       // Headhunter rules: a body shot does nothing.
@@ -1907,7 +1931,11 @@ export class Game {
       if (this.lifestealUntil > performance.now()) this.heal(Math.round(dealt * LIFESTEAL_FRACTION));
       this.hud.hitmarker(anyHead);
       sfx.playHit(anyHead);
+    } else if (depDamage.size) {
+      this.hud.hitmarker(false);
     }
+    const dep = Object.fromEntries([...depDamage].map(([id, d]) => [id, Math.round(d)]));
+    if (depDamage.size) this.damageDeployables(dep, this.playerId, Infinity);
 
     const muzzle = this.camera.localToWorld(this.weapon.muzzleOffset());
     for (const end of ends) this.effects.tracer(muzzle, end);
@@ -1917,7 +1945,7 @@ export class Game {
 
     const [first, ...rest] = ends.map(toArr);
     const shot = { o: toArr(muzzle), e: first ?? toArr(origin) };
-    const extra = { ...(gun !== 'rifle' ? { w: gun } : {}), ...(rest.length ? { ends: rest } : {}) };
+    const extra = { ...(gun !== 'rifle' ? { w: gun } : {}), ...(rest.length ? { ends: rest } : {}), ...(depDamage.size ? { dep } : {}) };
     if (def.pellets > 1) {
       // Firebase rejects undefined, so hits only goes in when something was hit.
       const hits = Object.fromEntries([...damageTo].map(([id, d]) => [id, Math.round(d)]));
@@ -2279,6 +2307,50 @@ export class Game {
     return true;
   }
 
+  /** The barrier or turret a bullet hit, if that's what it hit */
+  private deployableOf(o: THREE.Object3D): { id: string; owner: string } | null {
+    const id = (o.userData as Partial<DeployableData>).deployable;
+    if (!id) return null;
+    const owner = this.walls.ownerOf(id) ?? this.turrets.get(id)?.owner;
+    return owner ? { id, owner } : null;
+  }
+
+  /** Can `attacker` damage `owner`'s barrier or turret? Not their own, nor (in team modes) a teammate's. */
+  private canBreak(owner: string, attacker: string): boolean {
+    if (owner === attacker) return false;
+    if (!this.team) return true;
+    const teamOf = (id: string) => (id === this.playerId ? this.team : this.players[id]?.team);
+    return teamOf(owner) !== teamOf(attacker);
+  }
+
+  /**
+   * `from` damaged barriers and turrets (every client applies the same damage, so they break for
+   * everyone at once). Each amount is capped at `max`, what one shot or blast could really do.
+   */
+  private damageDeployables(dep: Record<string, number>, from: string, max: number): void {
+    for (const [id, raw] of Object.entries(dep)) {
+      const amount = Math.min(max, Math.max(0, Number(raw) || 0));
+      const owner = this.walls.ownerOf(id) ?? this.turrets.get(id)?.owner;
+      if (!amount || !owner || !this.canBreak(owner, from)) continue;
+      const turret = !this.walls.ownerOf(id);
+      const hit = turret ? this.turrets.damage(id, amount) : this.walls.damage(id, amount);
+      if (!hit?.destroyed) continue;
+      const volume = 1 / (1 + hit.at.distanceTo(this.camera.position) / 12);
+      if (turret) {
+        // A small pop, without the grenade's damage.
+        this.grenades.explode(`${id}:boom`, hit.at, 1.6);
+        sfx.playExplosion(volume * 0.6);
+      } else {
+        for (let i = 0; i < 8; i++) {
+          this.effects.impact(hit.at.clone().add(new THREE.Vector3((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 0.6)));
+        }
+        sfx.playBreak(volume);
+      }
+      if (owner === this.playerId) this.hud.toast(turret ? 'Your turret was destroyed' : 'Your barrier was destroyed');
+      else if (from === this.playerId) this.hud.toast(turret ? 'Turret destroyed' : 'Barrier destroyed');
+    }
+  }
+
   /** Put a land mine down at our feet. Refused (false) in mid-air or at the arena edge. */
   private placeMine(): boolean {
     const p = this.player.position;
@@ -2417,7 +2489,7 @@ export class Game {
     if (padded.containsPoint(p.clone().setY(p.y + 0.5))) return false;
     const id = randomId(8);
     const until = this.net.serverNow() + WALL_DURATION * 1000;
-    this.walls.place(id, x, y, z, axis, until, new THREE.Color(this.color).getHex());
+    this.walls.place(id, this.playerId, x, y, z, axis, until, new THREE.Color(this.color).getHex());
     this.net.sendEvent({ type: 'wall', id, x, y, z, axis, until, c: this.color });
     return true;
   }
@@ -2425,6 +2497,16 @@ export class Game {
   /** Our grenade went off: work out who it hurt (walls block it) and tell everyone. */
   private detonate(blast: { id: string; p: THREE.Vector3 }, mine = false): void {
     const hits: Record<string, number> = {};
+    // Enemy barriers and turrets in range take damage too (measured to their nearest side).
+    const dep: Record<string, number> = {};
+    const blastRadius = mine ? MINE_RADIUS : GRENADE_RADIUS;
+    for (const d of [...this.walls.list(), ...this.turrets.list()]) {
+      if (!this.canBreak(d.owner, this.playerId)) continue;
+      const dist = d.box.distanceToPoint(blast.p);
+      const dmg = Math.round((mine ? MINE_DAMAGE : GRENADE_DAMAGE) * (1 - dist / blastRadius));
+      if (dmg >= 5) dep[d.id] = dmg;
+    }
+    if (Object.keys(dep).length) this.damageDeployables(dep, this.playerId, Infinity);
     // A mine goes off under you: measured to the middle of the body, not the chest.
     const radius = mine ? MINE_RADIUS : GRENADE_RADIUS;
     for (const [id, remote] of this.remotes) {
@@ -2452,7 +2534,10 @@ export class Game {
       sfx.playHit(false);
     }
     // Firebase rejects undefined fields, so only include hits when there are some.
-    this.net.sendEvent({ type: 'blast', id: blast.id, p: toArr(blast.p), ...(hitAnyone ? { hits } : {}), ...(mine ? { mine } : {}) });
+    this.net.sendEvent({
+      type: 'blast', id: blast.id, p: toArr(blast.p),
+      ...(hitAnyone ? { hits } : {}), ...(mine ? { mine } : {}), ...(Object.keys(dep).length ? { dep } : {}),
+    });
     this.recorder.event({ t: this.net.serverNow(), kind: 'blast', id: blast.id, p: toArr(blast.p) });
   }
 
@@ -2712,6 +2797,13 @@ export class Game {
     }
     // Nobody moves between rounds.
     this.player.update(dt, this.alive && !this.roundOver);
+    // Backstop for the invisible boundary (world.ts): if anything still put us outside, step back in.
+    const edge = ARENA_HALF - 0.9;
+    const pos = this.player.position;
+    if (Math.abs(pos.x) > edge + 0.5 || Math.abs(pos.z) > edge + 0.5) {
+      pos.x = THREE.MathUtils.clamp(pos.x, -edge, edge);
+      pos.z = THREE.MathUtils.clamp(pos.z, -edge, edge);
+    }
     if (this.spectating && !this.replay) this.updateSpectator(dt);
     this.applyShake(dt);
     this.updateHeartbeat(dt);

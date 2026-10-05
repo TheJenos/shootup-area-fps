@@ -54,6 +54,8 @@ export const TURRET_DURATION = 15;
 export const TURRET_RANGE = 24;
 export const TURRET_DAMAGE = 8;
 export const TURRET_INTERVAL = 0.4;
+/** Damage a turret takes before it's destroyed (about 8 rifle hits) */
+export const TURRET_HP = 150;
 export const LIFESTEAL_DURATION = 8;
 export const LIFESTEAL_FRACTION = 0.3;
 export const MINE_ARM = 1.5;
