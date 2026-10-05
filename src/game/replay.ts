@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { RemotePlayer } from './remotePlayer';
 import { simulateGrenade, type GrenadeFx } from './grenades';
 import type { Effects } from './weapon';
-import type { FlagField, FlagPlacement } from './flags';
+import type { FlagCarrier, FlagField, FlagPlacement } from './flags';
 import type { SmokeField } from './deployables';
 import type { CharacterAsset } from './character';
 import { GRENADE_RADIUS } from './abilities';
@@ -184,9 +184,9 @@ export class ReplayDirector {
   }
 
   /** Where a carried flag should be drawn during the replay */
-  carrier(id: string): { position: THREE.Vector3; yaw: number } | null {
+  carrier(id: string): FlagCarrier | null {
     const ghost = this.ghosts.get(id);
-    return ghost?.alive ? { position: ghost.position, yaw: ghost.yaw } : null;
+    return ghost?.alive ? { position: ghost.position, yaw: ghost.yaw, hand: ghost.handPosition(new THREE.Vector3()), swing: ghost.flagSwing } : null;
   }
 
   update(dt: number): void {

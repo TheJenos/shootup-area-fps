@@ -129,11 +129,12 @@ export function Hud({ game, roomCode, onLeave }: Props) {
         </div>
       )}
       {/* Always mounted, so toasts show while spectating and during the MVP replay too. */}
-      {hud.gunPrompt && !hud.death && !hud.spectate && (
+      {hud.gunPrompt && !hud.death && !hud.spectate && !hud.paused && (
         <GunPrompt text={hud.gunPrompt} touch={game.touch} onTap={() => game.interact()} />
       )}
       <div id="toasts" aria-hidden="true">
-        {hud.toast && <div key={`toast-${hud.toast.n}`} className="toast">{hud.toast.text}</div>}
+        {/* While the menu is open its card shows the toast instead (nothing draws over the menu). */}
+        {hud.toast && !(hud.paused && !intro) && <div key={`toast-${hud.toast.n}`} className="toast">{hud.toast.text}</div>}
       </div>
       {hud.damageIndicators.length > 0 && !hud.death && <DamageDirections indicators={hud.damageIndicators} />}
 

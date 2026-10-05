@@ -6,9 +6,26 @@ import type { FlagRecord, Team } from '../types';
 const POLE_HEIGHT = 2.4;
 const CLOTH_W = 1.1;
 const CLOTH_H = 0.7;
-/** Carried flags ride on the carrier's back, smaller and behind them */
-const CARRIED_SCALE = 0.6;
-const CARRIED_LIFT = 0.9;
+/** Carried flags are held upright in the carrier's right hand, a bit smaller */
+const CARRIED_SCALE = 0.75;
+/** How far up the (scaled) pole the hand grips it */
+const CARRIED_GRIP = POLE_HEIGHT * CARRIED_SCALE * 0.32;
+/** Forward lean of a carried flag (radians), so it reads as held out in front */
+const CARRIED_LEAN = 0.18;
+/** Fallback when the hand isn't known: held at about hand height beside them */
+const CARRIED_HAND_HEIGHT = 1.0;
+
+/** Who is carrying a flag, as FlagField needs to draw it */
+export interface FlagCarrier {
+  position: THREE.Vector3;
+  yaw: number;
+  /** Their right hand in world space, if known */
+  hand?: THREE.Vector3;
+  /** Extra forward tip while they swing it (radians) */
+  swing?: number;
+}
+
+const _grip = new THREE.Vector3();
 
 const poleGeo = new THREE.CylinderGeometry(0.04, 0.04, POLE_HEIGHT, 8).translate(0, POLE_HEIGHT / 2, 0);
 const padGeo = new THREE.CylinderGeometry(1.5, 1.6, 0.08, 32);
@@ -104,7 +121,7 @@ export class FlagField {
    * @param carrierPosition where a remote carrier is drawn; null for ourselves
    *   (our own flag would only block the view) or unknown players
    */
-  update(time: number, carrierPosition: (id: string) => { position: THREE.Vector3; yaw: number } | null): void {
+  update(time: number, carrierPosition: (id: string) => FlagCarrier | null): void {
     for (const team of TEAMS) {
       const view = this.views[team];
       const { placement } = view;
@@ -112,11 +129,17 @@ export class FlagField {
         const carrier = carrierPosition(placement.carrier);
         view.flag.visible = !!carrier;
         if (carrier) {
-          // Behind the shoulders, leaning back a little.
-          const back = new THREE.Vector3(Math.sin(carrier.yaw), 0, Math.cos(carrier.yaw)).multiplyScalar(0.25);
-          view.flag.position.copy(carrier.position).add(back).setY(carrier.position.y + CARRIED_LIFT);
-          // Cloth trails behind them (it extends along the group's +x).
-          view.flag.rotation.set(0, carrier.yaw - Math.PI / 2, -0.25, 'YXZ');
+          // Gripped in the right hand a third of the way up the pole, leaning forward a little.
+          if (carrier.hand) _grip.copy(carrier.hand);
+          else {
+            // No hand to go by (shouldn't happen): beside them on the right, at hand height.
+            _grip.set(Math.cos(carrier.yaw) * 0.3, CARRIED_HAND_HEIGHT, -Math.sin(carrier.yaw) * 0.3).add(carrier.position);
+          }
+          // Cloth trails behind them (it extends along the group's +x); z tilts the top forward.
+          view.flag.rotation.set(0, carrier.yaw - Math.PI / 2, CARRIED_LEAN + (carrier.swing ?? 0), 'YXZ');
+          // Slide the flag down its own (leaning) axis so the grip point lands in the hand.
+          const up = new THREE.Vector3(0, 1, 0).applyQuaternion(view.flag.quaternion);
+          view.flag.position.copy(_grip).addScaledVector(up, -CARRIED_GRIP);
         }
       }
       this.wave(view, time + (team === 'red' ? 0 : 1.7));

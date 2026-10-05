@@ -204,6 +204,8 @@ export class Game {
   private dryToastAt = 0;
   /** How many things we've thrown this session (others animate the throw when it changes) */
   private throws = 0;
+  /** Where we put the enemy flag down with E: not picked back up until we step away */
+  private flagLeftAt: { x: number; z: number } | null = null;
   private readonly losRay = new THREE.Raycaster();
   private claimingPickup: string | null = null;
   private fullToastFor: string | null = null;
@@ -1175,7 +1177,7 @@ export class Game {
       this.hud.pushInfo(`${who(is.carrier)} took the ${flag}`);
       if (is.carrier === this.playerId) {
         sfx.playPickup();
-        this.hud.announce('FLAG TAKEN', 'Guns stowed — swing the flag to fight · run it home');
+        this.hud.announce('FLAG TAKEN', `Guns stowed — swing the flag to fight · run it home · ${this.touch ? '✋' : keyLabel(keyFor('interact'))} to drop it`);
       } else if (ours) {
         sfx.playDenied();
         this.hud.announce('YOUR FLAG IS GONE', `${who(is.carrier)} has it`);
@@ -1603,7 +1605,10 @@ export class Game {
     const guard = (g: GameState) => g.round === round && !g.ended;
 
     const theirs = this.flagSpot(enemy);
-    if (theirs && near(theirs)) {
+    // The flag we just put down with E stays down until we step away from it.
+    const left = this.flagLeftAt;
+    if (left && (!theirs || Math.hypot(me.x - left.x, me.z - left.z) > FLAG_RADIUS + 0.5)) this.flagLeftAt = null;
+    if (theirs && near(theirs) && !this.flagLeftAt) {
       this.flagTransaction((g) => {
         if (!guard(g) || g.flags[enemy]?.by) return false;
         g.flags[enemy] = { by: this.playerId };
@@ -1667,6 +1672,26 @@ export class Game {
       g.flags[enemy] = spot;
       return true;
     }).catch((err: unknown) => console.warn('Could not drop the flag', err));
+  }
+
+  /**
+   * E while carrying: set the flag down just in front of us (at our feet when facing a wall).
+   * We don't pick it straight back up; a teammate can, or we can once we've stepped away.
+   */
+  private putFlagDown(): void {
+    if (!this.team || this.flagBusy || !this.carryingFlag()) return;
+    const enemy = otherTeam(this.team);
+    const { x, z } = this.dropSpot();
+    const spot = { x, y: r2(this.groundBelow(new THREE.Vector3(x, this.player.position.y + 0.1, z))), z };
+    this.flagLeftAt = { x, z };
+    this.flagTransaction((g) => {
+      if (g.flags[enemy]?.by !== this.playerId) return false;
+      g.flags[enemy] = spot;
+      return true;
+    }, () => {
+      this.carry = null;
+      this.setGunPrompt(null);
+    });
   }
 
   /** Height of whatever is under `p`, so a flag dropped mid-jump lands on the floor or a crate. */
@@ -2573,6 +2598,8 @@ export class Game {
   }
 
   private setGunPrompt(text: string | null): void {
+    // While we carry the flag, the interact key drops it (guns can't be picked up anyway).
+    if (this.alive && this.carryingFlag()) text = 'Drop flag';
     if (this.hud.get().gunPrompt !== text) this.hud.update({ gunPrompt: text });
   }
 
@@ -2581,7 +2608,13 @@ export class Game {
    * already in the second slot it's a swap: ours goes down here with its rounds left, theirs comes up.
    */
   interact(): void {
-    if (!this.joined || !this.alive || this.claimingPickup) return;
+    if (!this.joined || !this.alive) return;
+    // Carrying the flag, E puts it down (to pass it to a teammate, or to get our guns back).
+    if (this.carryingFlag()) {
+      this.putFlagDown();
+      return;
+    }
+    if (this.claimingPickup) return;
     const id = this.pickups.touching(this.player.position);
     if (!id || id === this.ignorePickup?.id) return;
     const type = this.pickups.typeOf(id);
@@ -3018,7 +3051,7 @@ export class Game {
         // During the replay, carried flags ride on the replay's stand-ins (including ours).
         if (this.replay) return this.replay.carrier(id);
         const r = id === this.playerId ? undefined : this.remotes.get(id);
-        return r?.alive ? { position: r.position, yaw: r.yaw } : null;
+        return r?.alive ? { position: r.position, yaw: r.yaw, hand: r.handPosition(new THREE.Vector3()), swing: r.flagSwing } : null;
       });
     }
     if (!this.joined) return;

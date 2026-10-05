@@ -59,6 +59,9 @@ const _tmp = new THREE.Vector3();
 /** Lengths of the switch dip and the throw swing (s) */
 const SWITCH_LEN = 0.4;
 const THROW_LEN = 0.55;
+/** A carried flag's swing: tipped back this far over the shoulder, then through this far forward (radians) */
+const FLAG_WIND = 0.9;
+const FLAG_STRIKE = 1.7;
 const _handQuat = new THREE.Quaternion();
 const _basis = new THREE.Matrix4();
 const _scale = new THREE.Vector3();
@@ -90,6 +93,8 @@ const FFA_TINT = 0.45;
 const TEAM_TINT = 0.65;
 const TEAM_GLOW = 0.1;
 const TEAM_VISOR_GLOW = 0.7;
+/** What a cloaked enemy fades to instead of their colour: a pale glassy grey */
+const CLOAK_COLOR = new THREE.Color(0xd8dee4);
 
 /** The team a colour belongs to (replay stand-ins only know the colour). */
 const teamOfColor = (color: string | undefined): Team | undefined =>
@@ -161,6 +166,7 @@ export class RemotePlayer {
   private reloadStarted = false;
   /** Throw animation: seconds since it started, or -1 */
   private throwTime = -1;
+  private flagSwingNow = 0;
   private throwsSeen: number | undefined;
   /** Gun switch: the gun dips for a moment */
   private switchTime = -1;
@@ -254,6 +260,9 @@ export class RemotePlayer {
       // Animated bounds don't match the bind pose, so never cull.
       mesh.frustumCulled = false;
       const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
+      // Always on the transparent path (drawn solid at opacity 1): three.js compiles opaque
+      // materials to ignore opacity, so switching for the cloak would need a shader recompile.
+      mat.transparent = true;
       mesh.material = mat;
       this.materials.push(mat);
     });
@@ -537,6 +546,16 @@ export class RemotePlayer {
     return this.gait === 'Run';
   }
 
+  /** How far a carried flag is tipped by their swing (radians, + forward); 0 when not swinging */
+  get flagSwing(): number {
+    return this.flagSwingNow;
+  }
+
+  /** Where their right hand is (world space): a carried flag is held there. */
+  handPosition(out: THREE.Vector3): THREE.Vector3 {
+    return this.rightArm[2].getWorldPosition(out);
+  }
+
   get carryingFlag(): boolean {
     return this.carrying;
   }
@@ -599,6 +618,9 @@ export class RemotePlayer {
    * Fade toward a faint shimmer while cloaked: enemies see ~6% of them, teammates a ghost at ~45%.
    * Their gun, name tag and shadow go too (the gun's material is shared, so it's hidden, not faded).
    */
+  /** The colours setColor gave each material, which the cloak fades from and back to */
+  private readonly baseLook = new Map<THREE.MeshStandardMaterial, { color: THREE.Color; emissive: THREE.Color }>();
+
   private updateCloak(dt: number): void {
     const on = this.cloaked;
     this.cloakAmount += ((on ? 1 : 0) - this.cloakAmount) * (1 - Math.exp(-8 * dt));
@@ -611,10 +633,16 @@ export class RemotePlayer {
     this.lastCloakLook = look;
     const opacity = 1 - amount * (1 - (this.ally ? 0.45 : 0.06));
     const faded = amount > 0;
+    // Enemies lose the team colour and glow too, leaving a faint neutral shimmer; teammates keep it.
+    const neutral = this.ally ? 0 : amount;
     for (const mat of this.materials) {
-      mat.transparent = faded;
       mat.opacity = opacity;
       mat.depthWrite = !faded;
+      const base = this.baseLook.get(mat);
+      if (base) {
+        mat.color.copy(base.color).lerp(CLOAK_COLOR, neutral);
+        mat.emissive.copy(base.emissive).multiplyScalar(1 - neutral);
+      }
     }
     this.model.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = !faded; });
   }
@@ -720,6 +748,7 @@ export class RemotePlayer {
     this.readyAmount += (ready - this.readyAmount) * (1 - Math.exp(-speed * dt));
     this.adsAmount += ((this.aiming && this.alive ? 1 : 0) - this.adsAmount) * (1 - Math.exp(-ADS_SPEED * dt));
     this.head.rotateX(-this.pitch * HEAD_PITCH);
+    this.flagSwingNow = 0;
     const w = this.readyAmount;
     if (w < 0.01) return;
 
@@ -745,6 +774,13 @@ export class RemotePlayer {
     _dir.set(-Math.sin(yaw) * cp, Math.sin(this.pitch), -Math.cos(yaw) * cp);
     _right.set(Math.cos(yaw), 0, -Math.sin(yaw));
     _up.crossVectors(_right, _dir).normalize();
+
+    if (this.carrying) {
+      // The flag is in the right hand: that arm swings it, the left keeps its animation.
+      this.swingFlag(throwPhase, w);
+      bones.forEach((b, i) => { if (i < 3 && w < 0.999) b.quaternion.slerpQuaternions(this.armAnim[i]!, b.quaternion, w); });
+      return;
+    }
 
     // The gun lies along the look direction, upright (x = up × forward, i.e. to their left).
     _basis.makeBasis(_offset.crossVectors(_up, _dir), _up, _dir);
@@ -810,6 +846,27 @@ export class RemotePlayer {
     if (w < 0.999) bones.forEach((b, i) => b.quaternion.slerpQuaternions(this.armAnim[i]!, b.quaternion, w));
   }
 
+  /**
+   * Flag swing: the right hand winds up over the shoulder (flag tipped back), then chops forward
+   * and down (flag swung through to past level), like a club.
+   */
+  private swingFlag(phase: number, w: number): void {
+    // After the strike (phase < 0) the arm eases back from the follow-through as `w` fades.
+    if (phase < 0) phase = 1;
+    const wind = Math.min(1, phase / 0.35);
+    const release = Math.max(0, (phase - 0.35) / 0.65);
+    const strike = 1 - (1 - release) ** 2;
+    this.head.getWorldPosition(_tmp);
+    const back = _tmp.clone().addScaledVector(_dir, -0.15).addScaledVector(WORLD_UP, 0.3).addScaledVector(_right, 0.3);
+    const fwd = _tmp.clone().addScaledVector(_dir, 0.65).addScaledVector(WORLD_UP, -0.45).addScaledVector(_right, 0.12);
+    const hand = this.rightArm[2];
+    const rest = hand.getWorldPosition(new THREE.Vector3());
+    const target = release > 0 ? back.lerp(fwd, strike) : rest.lerp(back, wind);
+    _pole.copy(_right).multiplyScalar(0.8).addScaledVector(WORLD_UP, -1);
+    reach(this.rightArm[0], this.rightArm[1], hand, target, _pole);
+    this.flagSwingNow = (release > 0 ? THREE.MathUtils.lerp(-FLAG_WIND, FLAG_STRIKE, strike) : -FLAG_WIND * wind) * w;
+  }
+
   /** Lower the hips so the lowest foot is back at standing height after the legs were bent. */
   private plantFeet(): void {
     this.model.updateMatrixWorld(true);
@@ -865,7 +922,10 @@ export class RemotePlayer {
         mat.color.setRGB(1, 1, 1).lerp(tint, onTeam ? TEAM_TINT : FFA_TINT);
         mat.emissive.copy(tint).multiplyScalar(onTeam ? TEAM_GLOW : 0);
       }
+      this.baseLook.set(mat, { color: mat.color.clone(), emissive: mat.emissive.clone() });
     }
+    // Re-apply the cloak over the new colours.
+    this.lastCloakLook = -1;
   }
 
   dispose(): void {

@@ -129,7 +129,10 @@ names map to the matching prebuilt mode).
   **While you carry the flag your guns and grenades are stowed: the flag is your only weapon.** Click (or ●)
   to swing it: 55 damage, 80 to the head, 2.4 m reach, one swing every 0.7 s, so two hits take most people down.
   Swings are forgiving to aim (a fan of short rays across your view) but walls block them. Other players see
-  the carrier's gun disappear and the swing as an arm strike, and the kill feed shows ⚑ for flag kills.
+  the carrier holding the flag upright in their right hand (gun gone) and the swing as an arm strike, and the kill feed shows ⚑ for flag kills.
+  The flag is swung with the right arm, so others see it tip back over the carrier's shoulder and chop forward.
+  **E** (or the ✋ Drop flag button on touch screens) puts the flag down just in front of you: pass it to a
+  teammate, or get your guns back. You won't pick it straight back up until you step away from it.
   A carrier who dies (or switches team, or leaves) drops the flag where they stood. Touch your own dropped flag
   to send it home; otherwise it returns by itself after 20 s. The score bar shows where both flags are.
 - **Rounds:** the score bar shows the round clock, which turns red in the last 30 s. When the time runs out,
@@ -487,7 +490,7 @@ linearly to a fraction of it at long range, so each gun has a range it's best at
 - Switch with **Q** or the mouse wheel (or the ⇄ button on touch screens). The ammo panel shows both slots,
   the magazine and the spare rounds.
 - Guns are never picked up just by walking over them: standing on one shows a prompt, and **E** (rebindable as
-  "Pick up / swap gun"; on touch screens the prompt is the button) takes it. You carry one picked-up gun at a
+  "Pick up / swap gun, drop flag"; on touch screens the prompt is the button) takes it. You carry one picked-up gun at a
   time, so **E** on a different gun swaps them: yours goes down on that spot with the rounds it had left, and
   you won't be offered it back until you step off it. **E** on the same gun adds its ammo. You can still drop
   your gun from the inventory (**I**, or 🎒). Ammo boxes and abilities are still picked up by walking over them. When a picked-up gun runs completely dry you go back to the rifle. When you die it drops next to your body
@@ -573,7 +576,7 @@ button. Dropped abilities land in front of you with their remaining uses, and an
 | 💣 | Grenade | Thrown arc, up to 90 damage in a 5 m radius, blocked by walls | 3 | 6 s |
 | 🌫️ | Smoke | Thrown like a grenade; a thick 3.6 m cloud for 12 s that blocks sight (not bullets) | 2 | 10 s |
 | 🧱 | Barrier | A 2.6 × 1.3 m wall 1.8 m in front of you, square to the way you face, for 20 s; blocks movement and bullets. Refused if it would cut into cover or a player | 2 | 14 s |
-| 👻 | Cloak | Nearly invisible for 6 s: enemies see a faint shimmer (no gun, name tag or shadow), teammates a see-through ghost. Firing, swinging the flag or throwing ends it early; you can still be shot, and your footsteps are half as loud, not silent. Your screen edges shimmer while it lasts | 2 | 18 s |
+| 👻 | Cloak | Nearly invisible for 6 s: enemies see a faint grey shimmer (no team colour, gun, name tag or shadow), teammates a see-through ghost. Firing, swinging the flag or throwing ends it early; you can still be shot, and your footsteps are half as loud, not silent. Your screen edges shimmer while it lasts | 2 | 18 s |
 | 📡 | Scan Pulse | A ring sweeps out from you: for 3.5 s every enemy within 32 m of that spot shows as a red silhouette through walls. Scanned enemies are told they've been scanned | 2 | 15 s |
 | 🔥 | Molotov | Thrown like a grenade; a 3.2 m patch of fire burns for 6 s where it lands. Enemies standing in it take 8 damage every 0.5 s (yours and your team's fire doesn't hurt you) | 2 | 12 s |
 | 🔆 | Flashbang | Thrown; when it lands, everyone who can see it is whited out for up to ~3.7 s, worst close up and looking straight at it, milder facing away. It catches you too | 2 | 12 s |

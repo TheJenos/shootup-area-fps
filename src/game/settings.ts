@@ -14,7 +14,7 @@ export const ACTIONS: { action: Action; label: string }[] = [
   { action: 'crouch', label: 'Crouch (slide while sprinting)' },
   { action: 'reload', label: 'Reload' },
   { action: 'swap', label: 'Switch gun' },
-  { action: 'interact', label: 'Pick up / swap gun' },
+  { action: 'interact', label: 'Pick up / swap gun, drop flag' },
   { action: 'ability1', label: 'Ability slot 1' },
   { action: 'ability2', label: 'Ability slot 2' },
   { action: 'ability3', label: 'Ability slot 3' },

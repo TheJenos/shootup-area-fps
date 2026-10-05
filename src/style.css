@@ -484,7 +484,7 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 .buff.cloak { color: #c9b0ff; }
 .buff.lifesteal { color: #ff7a8a; }
 .buff.scan { color: #6ff0dc; }
-/* Toasts: above the ability bar, on top of every overlay (so "Click again to resume" shows over the menu) */
+/* Prompts and toasts: above the ability bar and the screen effects, but under the menus */
 #gun-prompt {
   position: absolute;
   left: 50%;
@@ -632,6 +632,8 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 #death-overlay { background: rgba(120, 0, 0, 0.35); }
 
 #pause-overlay, #connecting-overlay {
+  /* Menus sit over everything in the HUD (prompts, toasts, flash and cloak effects) */
+  z-index: 40;
   background: rgba(8, 10, 14, 0.75);
   pointer-events: auto;
   cursor: pointer;
@@ -660,6 +662,7 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 .pause-card .row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 15px; }
 .pause-card .row .clock { font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .pause-card .score .flag { margin-left: 4px; font-size: 12px; }
+.pause-card .menu-toast { margin: 0; font-size: 14px; padding: 6px 10px; border-radius: 8px; background: rgba(255, 181, 71, 0.12); color: var(--accent); }
 .pause-card .state { margin: 0; font-weight: 600; padding: 8px 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.05); border-left: 3px solid var(--accent); }
 .pause-card .map { display: flex; gap: 12px; align-items: center; }
 .pause-card .map > div { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
@@ -987,7 +990,7 @@ kbd {
 
 /* ---------- Settings ---------- */
 
-#settings { background: rgba(8, 10, 14, 0.75); pointer-events: auto; z-index: 10; }
+#settings { background: rgba(8, 10, 14, 0.75); pointer-events: auto; z-index: 40; }
 #settings .panel-box {
   width: min(560px, 100%);
   max-height: calc(100% - 16px);

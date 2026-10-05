@@ -34,6 +34,12 @@ const SHOULDER = {
   right: { hip: new THREE.Vector3(0.2, -0.084, 0.198), ads: new THREE.Vector3(0.12, -0.12, 0.15) },
   left: { hip: new THREE.Vector3(-0.136, -0.125, -0.008), ads: new THREE.Vector3(-0.1, -0.16, -0.05) },
 };
+/** Shoulders when holding the flag pole upright in front: a little further forward than for a gun,
+ *  so the right hand can reach high up the pole */
+const POLE_SHOULDER = {
+  right: new THREE.Vector3(0.25, -0.22, -0.03),
+  left: new THREE.Vector3(-0.03, -0.27, -0.04),
+};
 /** Elbows hang below the arm, as in the rig */
 const RIGHT_POLE = new THREE.Vector3(0.2, -1, 0.1);
 const LEFT_POLE = new THREE.Vector3(-0.3, -1, 0);
@@ -117,8 +123,8 @@ export class FpArms {
   holdPole(pole: THREE.Object3D, upper: THREE.Vector3, lower: THREE.Vector3): void {
     this.showLeft(true);
     this.root.updateMatrixWorld(true);
-    placeJoint(this.right[0], SHOULDER.right.hip);
-    placeJoint(this.left[0], SHOULDER.left.hip);
+    placeJoint(this.right[0], POLE_SHOULDER.right);
+    placeJoint(this.left[0], POLE_SHOULDER.left);
     // The pole stands along the group's +Y; the rifle grip the right hand was measured on is close to
     // vertical too, so the same hold works, and the left comes round from the other side.
     pole.getWorldQuaternion(_hold);

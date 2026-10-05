@@ -23,7 +23,7 @@ export function controls(b: Bindings): [key: string, action: string][] {
     [k(b.crouch), 'crouch · while sprinting: slide'],
     [k(b.reload), 'reload'],
     [`${k(b.swap)} / wheel`, 'switch gun'],
-    [k(b.interact), 'pick up / swap gun'],
+    [k(b.interact), 'pick up / swap gun · drop flag'],
     [k(b.ability1, b.ability2, b.ability3), 'abilities'],
     [k(b.inventory), 'inventory'],
     [k(b.scoreboard), 'match summary (hold)'],
@@ -105,6 +105,8 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onIntro }:
             {score()}
           </div>
           <p className="state">{status}</p>
+          {/* Toasts can't float over the menu, so the latest one ("Click again to resume"...) shows here. */}
+          {hud.toast && <p key={`toast-${hud.toast.n}`} className="menu-toast" role="status">{hud.toast.text}</p>}
           {team && (
             <p className="muted">
               You're on <strong style={{ color: TEAM_INFO[team].color }}>{TEAM_INFO[team].name}</strong>

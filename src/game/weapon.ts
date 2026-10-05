@@ -17,6 +17,19 @@ const ADS_SPEED = 14;
 const SWITCH_TIME = 0.35;
 /** One swing of the flag, start to finish (s) */
 const SWING_TIME = 0.4;
+/** First-person flag: pole length (m), where its foot is held (camera space) and how it leans */
+const FLAG_POLE = 1.5;
+const FLAG_HOLD = { x: 0.22, y: -0.5, z: -0.38, pitch: -0.1, yaw: 0, roll: -0.06 };
+/** Where the hands grip the pole (up from its foot): right hand high, left hand low */
+const FLAG_GRIP = { upper: 0.6, lower: 0.35 };
+/**
+ * The hand holds are measured on the rifle, where the anchor is the barrel and the hand closes round the
+ * grip below it. On the pole the anchor has to be shifted (pole space: x right, z toward us) so the pole
+ * runs through the hollow of each fist, not the back of the hand. Measured from the finger bones.
+ */
+const FLAG_FIST = { right: new THREE.Vector3(-0.004, 0, 0.07), left: new THREE.Vector3(0.003, 0, -0.09) };
+/** The cloth is turned back and out to the right (the hands follow the pole, not the cloth) */
+const FLAG_CLOTH_YAW = 0.7;
 
 interface Held {
   kind: GunKind;
@@ -378,8 +391,8 @@ export class Weapon {
   }
 
   /**
-   * The flag held low on the right with the pole angled up and forward; a swing whips it
-   * across from right to left and back.
+   * The flag held upright on the right, both hands on the pole (right hand high, left low), the top
+   * leaning a little in and away; a swing chops the top forward and across to the left and back.
    */
   private updateFlag(dt: number, speed: number, sprinting: boolean): void {
     this.switchTimer = Math.max(0, this.switchTimer - dt);
@@ -389,36 +402,40 @@ export class Weapon {
     const bob = Math.min(speed / 9, 1);
     const raise = this.switchTimer > 0 ? Math.sin((this.switchTimer / SWITCH_TIME) * Math.PI) : 0;
     const k = this.swingTimer > 0 ? 1 - this.swingTimer / SWING_TIME : 0;
-    // Wind up a little to the right, then sweep hard across and come back.
-    const sweep = k === 0 ? 0 : k < 0.25 ? -0.4 * (k / 0.25) : Math.sin(((k - 0.25) / 0.75) * Math.PI) * 1.9 - 0.4 * (1 - (k - 0.25) / 0.75);
+    // Wind up (top back toward us), then chop forward and across, and come back.
+    const sweep = k === 0 ? 0 : k < 0.25 ? -0.25 * (k / 0.25) : Math.sin(((k - 0.25) / 0.75) * Math.PI) * 1.2 - 0.25 * (1 - (k - 0.25) / 0.75);
     const g = this.flag().group;
     g.position.set(
-      0.2 + Math.cos(this.bobTime) * 0.012 * bob - sweep * 0.14,
-      -0.26 - Math.abs(Math.sin(this.bobTime)) * 0.015 * bob - raise * 0.3 - (sprinting ? 0.04 : 0) + Math.abs(sweep) * 0.05,
-      -0.5,
+      FLAG_HOLD.x + Math.cos(this.bobTime) * 0.012 * bob - sweep * 0.08,
+      FLAG_HOLD.y - Math.abs(Math.sin(this.bobTime)) * 0.015 * bob - raise * 0.35 - (sprinting ? 0.05 : 0),
+      FLAG_HOLD.z - Math.max(0, sweep) * 0.06,
     );
-    // Pole leaning forward and out to the right, cloth trailing; the sweep swings it across.
-    g.rotation.set(-0.7 - Math.abs(sweep) * 0.3, 0.25 + sweep * 0.9, -0.45 + sweep * 0.9);
+    // Sprinting tips it forward a little more; the sweep throws the top forward and to the left.
+    g.rotation.set(
+      FLAG_HOLD.pitch - (sprinting ? 0.12 : 0) - sweep * 0.75,
+      FLAG_HOLD.yaw,
+      FLAG_HOLD.roll + sweep * 0.55,
+    );
     if (this.arms) {
-      // Both hands on the pole (its radius is about 0.02 before the group's scale), the right one higher.
       this.arms.visible = true;
       g.updateMatrixWorld(true);
-      this.arms.holdPole(g, _upper.set(0, 0.55, 0), _lower.set(0, 0.2, 0));
+      this.arms.holdPole(g, _upper.copy(FLAG_FIST.right).setY(FLAG_GRIP.upper), _lower.copy(FLAG_FIST.left).setY(FLAG_GRIP.lower));
     }
   }
 
   private flag(): { group: THREE.Group; cloth: THREE.MeshStandardMaterial } {
     if (this.flagView) return this.flagView;
     const group = new THREE.Group();
+    // Life size: the pole runs from below the screen to above it, the cloth at the top.
     const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.018, 0.022, 1.2, 10).translate(0, 0.45, 0),
-      new THREE.MeshStandardMaterial({ color: 0xd8dde4, metalness: 0.6, roughness: 0.35 }),
+      new THREE.CylinderGeometry(0.014, 0.017, FLAG_POLE, 12).translate(0, FLAG_POLE / 2, 0),
+      new THREE.MeshStandardMaterial({ color: 0x9aa3ad, metalness: 0.7, roughness: 0.35 }),
     );
     const cloth = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.25, side: THREE.DoubleSide, roughness: 0.8 });
-    const flagCloth = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.26).translate(0.21, 0.88, 0), cloth);
-    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.03, 10, 8).translate(0, 1.05, 0), pole.material);
+    const flagCloth = new THREE.Mesh(new THREE.PlaneGeometry(0.36, 0.24).translate(0.18, FLAG_POLE - 0.14, 0), cloth);
+    flagCloth.rotation.y = FLAG_CLOTH_YAW;
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.022, 10, 8).translate(0, FLAG_POLE, 0), pole.material);
     group.add(pole, flagCloth, cap);
-    group.scale.setScalar(0.55);
     group.visible = false;
     this.camera.add(group);
     this.flagView = { group, cloth };
