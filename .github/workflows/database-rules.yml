@@ -1,0 +1,66 @@
+# Tests the Realtime Database rules on every change to them, and deploys them to Firebase when
+# they land on main. Deploying needs the FIREBASE_SERVICE_ACCOUNT secret (see README, "Deploying the
+# database rules").
+name: Database rules
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - database.rules.json
+      - firebase.json
+      - .firebaserc
+      - scripts/test-rules.mjs
+      - .github/workflows/database-rules.yml
+  pull_request:
+    paths:
+      - database.rules.json
+      - firebase.json
+      - .firebaserc
+      - scripts/test-rules.mjs
+      - .github/workflows/database-rules.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test rules on the emulator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # The database emulator runs on Java.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - run: npm run test:rules
+
+  deploy:
+    name: Deploy rules to Firebase
+    needs: test
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    environment: production
+    # One deploy at a time; a newer push waits for the running one instead of racing it.
+    concurrency:
+      group: database-rules-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+      # The project comes from .firebaserc.
+      - run: npm run deploy:rules

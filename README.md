@@ -43,6 +43,27 @@ Open the game in two browser windows, create a room in one and join it from the 
 
 To play with friends on your LAN while developing, run `npm run dev -- --host`.
 
+### Deploying the database rules
+
+`.github/workflows/database-rules.yml` handles the rules:
+
+- **On every pull request and push that changes them**, `npm run test:rules` starts the database emulator and
+  checks `database.rules.json` against writes the game makes (must be allowed) and writes a cheater would try
+  (must be refused): leaderboard scores that don't match the formula, too many kills in a round, bad profile
+  or server ids, unknown paths. Run it locally the same way; it needs Java, like the emulator.
+- **On a push to `main`** (or a manual run from the Actions tab), once the tests pass, it deploys the rules to
+  the project in `.firebaserc` with `npm run deploy:rules`. Deploys run one at a time.
+
+One-time setup:
+
+1. In Google Cloud (**IAM & Admin → Service accounts**, same project as Firebase), create a service account
+   with the **Firebase Realtime Database Admin** role, and add a JSON key to it.
+2. On GitHub, **Settings → Secrets and variables → Actions**, add the key's whole JSON as
+   `FIREBASE_SERVICE_ACCOUNT`. The deploy job runs in the `production` environment, so you can also put the
+   secret there and require an approval before each deploy.
+3. If a deploy fails with a permission error about checking enabled APIs, also give the account the
+   **Service Usage Consumer** role.
+
 ## Game modes
 
 Every mode is one of three **base types**, which decide teams, flags and how points are scored, plus a set of
@@ -349,10 +370,20 @@ so V-Sync here decides when the game runs its update + render, not what the moni
 - A hidden tab always falls back to `requestAnimationFrame`, which the browser pauses, so an uncapped game
   doesn't burn the CPU in the background. The FPS counter counts the game's own frames.
 
-### Global leaderboard
+### Leaderboards
 
-The lobby lists the **top 20 players** of all time (top 10 in the Discord lobby), live: score, K/D and wins,
-with medals for the top three and your own row highlighted (or shown underneath if you're not in the top 20).
+There are two boards with the same columns:
+
+- **Global**: everyone who has played, wherever they played (browser or Discord).
+- **This server**: only rounds played in the Activity inside one Discord server. A round played there counts
+  on both boards. The Discord lobby's Leaderboard tab opens on the server board and has a 🌍 Global /
+  🏠 This server switch; outside a server (the browser, or an Activity in a DM) only the global board shows.
+  The server is told apart by its id (`sdk.guildId`), which needs no extra Discord permission; that's also
+  why the tab says "This server" instead of the server's name. Server boards start empty, so earlier rounds
+  only count globally.
+
+Each lists the **top 20 players**, live: score, K/D and wins, with medals for the top three and your own row
+highlighted (or shown underneath if you're not in the top 20).
 
 - Every **finished round** you played in adds your kills, deaths and flag captures, plus a win if your side
   (or you, in FFA / Gun Game) won. Spectators and players who joined during the results aren't counted, and
@@ -360,7 +391,8 @@ with medals for the top three and your own row highlighted (or shown underneath 
 - **Score = kills × 10 + captures × 30 + wins × 50.**
 - Your identity is a random id saved in the browser (`fps-profile`), or your Discord account inside Discord,
   so the name shown is the one you last played with.
-- Stored at `leaderboard/{profileId}` (`src/net/leaderboard.ts`). Like the rest of the game the numbers are
+- Stored at `leaderboard/{profileId}` and `guildboard/{guildId}/{profileId}` (`src/net/leaderboard.ts`); the same
+  rules guard both. Like the rest of the game the numbers are
   reported by each player, so the database rules limit what one round can add (≤ 100 kills / deaths, ≤ 10
   captures, ≤ 1 win, exactly one round) and check the score matches the formula. That stops casual editing,
   not a determined cheater.

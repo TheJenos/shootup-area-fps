@@ -11,7 +11,9 @@
     "preview": "vite preview",
     "typecheck": "tsc",
     "check:maps": "rolldown scripts/check-maps.ts --platform node --format esm --file node_modules/.cache/check-maps.mjs --log-level warn && node node_modules/.cache/check-maps.mjs",
-    "build:props": "node scripts/build-props.mjs"
+    "build:props": "node scripts/build-props.mjs",
+    "test:rules": "firebase emulators:exec --only database --project demo-fps \"node scripts/test-rules.mjs\"",
+    "deploy:rules": "firebase deploy --only database --non-interactive"
   },
   "dependencies": {
     "@discord/embedded-app-sdk": "^2.5.0",

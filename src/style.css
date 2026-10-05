@@ -838,6 +838,12 @@ kbd {
 
 /* Global leaderboard (lobby) */
 .leaderboard { margin-top: 8px; }
+.leaderboard .board-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.leaderboard .board-head h2 { margin: 0; }
+.board-switch { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 2px; gap: 2px; }
+.board-switch button { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; font-weight: 600; padding: 5px 10px; border-radius: 999px; cursor: pointer; }
+.board-switch button[aria-pressed='true'] { background: var(--accent); color: #1a1205; }
+.board-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .leaderboard table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
 .leaderboard th { font-size: 12px; color: var(--muted); font-weight: 600; text-align: right; padding: 0 6px 6px; text-transform: uppercase; letter-spacing: 0.5px; }
 .leaderboard td { text-align: right; padding: 6px; border-top: 1px solid var(--line); }

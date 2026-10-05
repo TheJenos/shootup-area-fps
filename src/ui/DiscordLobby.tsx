@@ -90,7 +90,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
         ? `Someone started first — you joined their ${setup.rules.name} match`
         : undefined;
       onEnter({
-        roomCode, playerId, name: discord.name, seed: setup.seed, profileId: discordProfileId(discord.userId), ...(notice ? { notice } : {}),
+        roomCode, playerId, name: discord.name, seed: setup.seed, profileId: discordProfileId(discord.userId), guildId: discord.guildId, ...(notice ? { notice } : {}),
       });
     } catch (err) {
       console.error(err);
@@ -110,7 +110,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
     try {
       const setup = await getRoomSetup(normalized);
       if (!setup) throw new Error(`Room ${normalized} doesn't exist.`);
-      onEnter({ roomCode: normalized, playerId: randomId(), name: discord.name, seed: setup.seed, profileId: discordProfileId(discord.userId) });
+      onEnter({ roomCode: normalized, playerId: randomId(), name: discord.name, seed: setup.seed, profileId: discordProfileId(discord.userId), guildId: discord.guildId });
     } catch (err) {
       console.error(err);
       setError(friendlyError(err));
@@ -244,7 +244,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
 
             {tab === 'leaderboard' && (
               <section id="panel-leaderboard" role="tabpanel" aria-labelledby="tab-leaderboard" className="tab-panel">
-                <Leaderboard limit={20} me={discordProfileId(discord.userId)} />
+                <Leaderboard limit={20} me={discordProfileId(discord.userId)} guildId={discord.guildId} />
               </section>
             )}
           </>

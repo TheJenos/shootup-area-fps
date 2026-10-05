@@ -118,6 +118,42 @@
           ".validate": false
         }
       }
+    },
+    "guildboard": {
+      "$guild": {
+        ".read": true,
+        ".indexOn": [
+          "score"
+        ],
+        "$pid": {
+          ".write": "$guild.matches(/^[0-9]{5,25}$/) && $pid.matches(/^[pd]_[A-Za-z0-9_-]{6,40}$/)",
+          ".validate": "newData.hasChildren(['name', 'kills', 'deaths', 'captures', 'wins', 'rounds', 'score'])",
+          "name": {
+            ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 16"
+          },
+          "kills": {
+            ".validate": "newData.isNumber() && newData.val() >= (data.exists() ? data.val() : 0) && newData.val() <= (data.exists() ? data.val() : 0) + 100"
+          },
+          "deaths": {
+            ".validate": "newData.isNumber() && newData.val() >= (data.exists() ? data.val() : 0) && newData.val() <= (data.exists() ? data.val() : 0) + 100"
+          },
+          "captures": {
+            ".validate": "newData.isNumber() && newData.val() >= (data.exists() ? data.val() : 0) && newData.val() <= (data.exists() ? data.val() : 0) + 10"
+          },
+          "wins": {
+            ".validate": "newData.isNumber() && newData.val() >= (data.exists() ? data.val() : 0) && newData.val() <= (data.exists() ? data.val() : 0) + 1"
+          },
+          "rounds": {
+            ".validate": "newData.isNumber() && newData.val() === (data.exists() ? data.val() : 0) + 1"
+          },
+          "score": {
+            ".validate": "newData.isNumber() && newData.val() === newData.parent().child('kills').val() * 10 + newData.parent().child('captures').val() * 30 + newData.parent().child('wins').val() * 50"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      }
     }
   }
 }

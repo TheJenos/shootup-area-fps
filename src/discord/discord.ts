@@ -5,6 +5,8 @@ export interface DiscordSession {
   /** Same for everyone who joined this Activity in this voice channel: becomes the room */
   instanceId: string;
   userId: string;
+  /** The Discord server the Activity runs in (null in DMs and group DMs) */
+  guildId: string | null;
   /** Display name, cut to the game's 16 characters */
   name: string;
 }
@@ -80,5 +82,5 @@ async function connect(): Promise<DiscordSession> {
   const { user } = await sdk.commands.authenticate({ access_token: body.access_token });
 
   const name = (user.global_name || user.username || 'Player').trim().slice(0, 16);
-  return { instanceId: sdk.instanceId, userId: user.id, name };
+  return { instanceId: sdk.instanceId, userId: user.id, guildId: sdk.guildId ?? null, name };
 }

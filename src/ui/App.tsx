@@ -14,6 +14,8 @@ export interface Session {
   notice?: string;
   /** Leaderboard identity: stays the same between visits (or Discord accounts) */
   profileId: string;
+  /** Inside a Discord server: its id, so rounds also count on that server's leaderboard */
+  guildId?: string | null;
 }
 
 /** Room codes are 5 characters, or 10 for Discord voice-channel rooms (DC + 8). */

@@ -123,6 +123,8 @@ export interface GameOptions {
   seed: string;
   /** Leaderboard identity (finished rounds are added to it) */
   profileId: string;
+  /** The Discord server we're playing in, if any: rounds also count on its leaderboard */
+  guildId?: string | null;
 }
 
 export class Game {
@@ -297,11 +299,13 @@ export class Game {
   private pingInFlight = false;
 
   private readonly profileId: string;
+  private readonly guildId: string | null;
   /** The last round we added to the leaderboard, so a round is never counted twice */
   private rankedRound = -1;
 
-  constructor({ host, roomCode, playerId, name, seed, profileId }: GameOptions) {
+  constructor({ host, roomCode, playerId, name, seed, profileId, guildId }: GameOptions) {
     this.profileId = profileId;
+    this.guildId = guildId ?? null;
     this.roomCode = roomCode;
     this.playerId = playerId;
     this.name = name;
@@ -1134,7 +1138,7 @@ export class Game {
   }
 
   /**
-   * The round just ended: add our part of it to the global leaderboard. Only rounds we were
+   * The round just ended: add our part of it to the global leaderboard (and our Discord server's). Only rounds we were
    * playing in (not spectating, not joined during the results) count, once each.
    */
   private recordRanking(): void {
@@ -1143,7 +1147,7 @@ export class Game {
     if (this.kills + this.deaths + this.stats.captures === 0 && performance.now() - this.joinedAt < 60_000) return;
     this.rankedRound = this.game.round;
     const won = ended.winner !== 'draw' && (this.team ? ended.winner === this.team : ended.winner === this.playerId);
-    recordRound(this.profileId, this.name, { kills: this.kills, deaths: this.deaths, captures: this.stats.captures, won })
+    recordRound(this.profileId, this.name, { kills: this.kills, deaths: this.deaths, captures: this.stats.captures, won }, this.guildId)
       .catch((err: unknown) => console.warn('Could not update the leaderboard', err));
   }
 
