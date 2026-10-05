@@ -69,15 +69,41 @@ interface Blast {
 }
 
 const BLAST_LIFE = 450;
+/**
+ * Explosion lights are created once and stay in the scene (dark until used): adding or removing a
+ * light changes the scene's light count, which makes every lit material recompile its shader — a
+ * visible hitch on every explosion. With a fixed pool, the count never changes.
+ */
+const LIGHT_POOL = 2;
 
 /** Flying grenades and explosion effects, for our own grenades and everyone else's. */
 export class GrenadeFx {
   private readonly scene: THREE.Scene;
   private readonly flights = new Map<string, Flight>();
   private blasts: Blast[] = [];
+  private readonly lights: THREE.PointLight[] = [];
+  private nextLight = 0;
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
+    for (let i = 0; i < LIGHT_POOL; i++) {
+      const light = new THREE.PointLight(0xff8a3a, 0, 20);
+      light.visible = true;
+      this.lights.push(light);
+      scene.add(light);
+    }
+    // Compile the blast material's shader now, not on the first explosion: an invisible, tiny blast.
+    const warm = new THREE.Mesh(blastGeo, new THREE.MeshBasicMaterial({
+      color: 0xffa040, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
+    warm.scale.setScalar(0.001);
+    warm.position.set(0, -50, 0);
+    warm.frustumCulled = false;
+    warm.onAfterRender = () => {
+      scene.remove(warm);
+      warm.material.dispose();
+    };
+    scene.add(warm);
   }
 
   launch(id: string, trajectory: Trajectory): void {
@@ -106,9 +132,11 @@ export class GrenadeFx {
       color: 0xffa040, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false,
     }));
     mesh.position.copy(at);
-    const light = new THREE.PointLight(0xff8a3a, 0, radius * 4);
+    // Reuse the oldest light in the pool.
+    const light = this.lights[this.nextLight++ % this.lights.length]!;
+    light.distance = radius * 4;
     light.position.copy(at).y += 0.5;
-    this.scene.add(mesh, light);
+    this.scene.add(mesh);
     this.blasts.push({ mesh, light, startedAt: performance.now(), radius });
   }
 
@@ -127,9 +155,10 @@ export class GrenadeFx {
     this.blasts = this.blasts.filter((b) => {
       const k = (now - b.startedAt) / BLAST_LIFE;
       if (k >= 1) {
-        this.scene.remove(b.mesh, b.light);
+        this.scene.remove(b.mesh);
         b.mesh.material.dispose();
-        b.light.dispose();
+        // The light goes dark but stays in the scene (see LIGHT_POOL); unless a newer blast took it.
+        if (!this.blasts.some((o) => o !== b && o.light === b.light && o.startedAt > b.startedAt)) b.light.intensity = 0;
         return false;
       }
       b.mesh.scale.setScalar(b.radius * (0.3 + 0.7 * Math.sqrt(k)));
@@ -143,9 +172,13 @@ export class GrenadeFx {
     for (const f of this.flights.values()) this.scene.remove(f.mesh);
     this.flights.clear();
     for (const b of this.blasts) {
-      this.scene.remove(b.mesh, b.light);
+      this.scene.remove(b.mesh);
       b.mesh.material.dispose();
     }
     this.blasts = [];
+    for (const l of this.lights) {
+      this.scene.remove(l);
+      l.dispose();
+    }
   }
 }

@@ -444,10 +444,13 @@ stocked separately from abilities) and go into a second slot when you stand on o
 
 | | Gun | Fire | Damage body / head | Magazine + spare | Notes |
 | --- | --- | --- | --- | --- | --- |
-| ▸ | Rifle | Automatic, 10/s | 20 / 50 | 30 + 90 | Ammo boxes refill it |
+| ▸ | Rifle | Automatic, 10/s | 20 / 50 | 30 + 90 | Falls off from 25 m to 60% at 65 m; ammo boxes refill it |
 | 💥 | Shotgun | Pump, 9 pellets | 12 / 18 per pellet | 6 + 12 | Falls off from 7 m to 25% at 28 m; ~100+ up close |
-| 🎯 | Sniper | Bolt action | 75 / 150 | 5 + 10 | Scope zooms to an 18° view; wild from the hip |
-| 🔫 | Deagle | Semi-auto | 40 / 90 | 7 + 21 | Heavy recoil |
+| 🎯 | Sniper | Bolt action | 75 / 150 | 5 + 10 | Scope zooms to an 18° view; wild from the hip; falls off from 80 m to 80% at 160 m (a headshot still kills) |
+| 🔫 | Deagle | Semi-auto | 40 / 90 | 7 + 21 | Heavy recoil; falls off from 15 m to 50% at 45 m |
+
+Damage falloff is per bullet (or pellet), from the distance the shot travelled: full damage up close, fading
+linearly to a fraction of it at long range, so each gun has a range it's best at (`falloff` in `src/game/guns.ts`).
 
 - Switch with **Q** or the mouse wheel (or the ⇄ button on touch screens). The ammo panel shows both slots,
   the magazine and the spare rounds.

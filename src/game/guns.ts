@@ -44,7 +44,7 @@ export interface GunDef {
 export const GUNS: Record<GunKind, GunDef> = {
   rifle: {
     name: 'Rifle', icon: '▸', color: 0xcfd6e2, auto: true, fireInterval: 0.1, mag: 30, reserve: 90, reloadTime: 1.4,
-    pellets: 1, bodyDamage: 20, headDamage: 50, spread: 0.002, movingSpread: 0.012, airSpread: 0.04, adsSpread: 0.3,
+    pellets: 1, bodyDamage: 20, headDamage: 50, falloff: { start: 25, end: 65, min: 0.6 }, spread: 0.002, movingSpread: 0.012, airSpread: 0.04, adsSpread: 0.3,
     recoil: 0.012, adsFov: 50, scope: false, range: 200, description: 'Automatic; ammo boxes refill it',
   },
   shotgun: {
@@ -55,12 +55,12 @@ export const GUNS: Record<GunKind, GunDef> = {
   },
   sniper: {
     name: 'Sniper', icon: '🎯', color: 0xa78bff, auto: false, fireInterval: 1.3, mag: 5, reserve: 10, reloadTime: 2.4,
-    pellets: 1, bodyDamage: 75, headDamage: 150, spread: 0.06, movingSpread: 0.03, airSpread: 0.08, adsSpread: 0.015,
+    pellets: 1, bodyDamage: 75, headDamage: 150, falloff: { start: 80, end: 160, min: 0.8 }, spread: 0.06, movingSpread: 0.03, airSpread: 0.08, adsSpread: 0.015,
     recoil: 0.09, adsFov: 18, scope: true, range: 300, description: 'One-shot headshots; aim to use the scope',
   },
   deagle: {
     name: 'Deagle', icon: '🔫', color: 0xffd166, auto: false, fireInterval: 0.32, mag: 7, reserve: 21, reloadTime: 1.6,
-    pellets: 1, bodyDamage: 40, headDamage: 90, spread: 0.004, movingSpread: 0.014, airSpread: 0.04, adsSpread: 0.4,
+    pellets: 1, bodyDamage: 40, headDamage: 90, falloff: { start: 15, end: 45, min: 0.5 }, spread: 0.004, movingSpread: 0.014, airSpread: 0.04, adsSpread: 0.4,
     recoil: 0.045, adsFov: 55, scope: false, range: 150, description: 'Hard-hitting semi-auto pistol',
   },
 };
