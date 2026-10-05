@@ -8,8 +8,12 @@ import type { MapTheme } from './mapgen';
  * Box surfaces are drawn in light neutral tones so each box's palette color tints them.
  */
 
-export type BoxSurface = 'crate' | 'concrete' | 'brick' | 'metal' | 'perimeter';
-export type FloorTexture = 'tiles' | 'sand' | 'snow' | 'asphalt' | 'plate';
+export type BoxSurface =
+  | 'crate' | 'concrete' | 'brick' | 'metal' | 'perimeter'
+  | 'planks' | 'container' | 'rock' | 'grass' | 'plaster';
+export type FloorTexture = 'tiles' | 'sand' | 'snow' | 'asphalt' | 'plate' | 'grass';
+/** Flat overlays on the floor (streets, lawns...); see GroundPatch in mapgen.ts */
+export type GroundKind = 'road' | 'sidewalk' | 'grass' | 'dirt' | 'concrete' | 'hazard';
 
 /** Metres covered by one repeat of each box surface; crates show one whole frame per face instead. */
 export const SURFACE_TILE: Record<BoxSurface, number | null> = {
@@ -18,6 +22,16 @@ export const SURFACE_TILE: Record<BoxSurface, number | null> = {
   brick: 2,
   metal: 2.5,
   perimeter: 6,
+  planks: 2,
+  container: 2.4,
+  rock: 3,
+  grass: 3,
+  plaster: 3,
+};
+
+/** Metres covered by one repeat of each ground patch texture */
+export const GROUND_TILE: Record<GroundKind, number> = {
+  road: 8, sidewalk: 2, grass: 4, dirt: 4, concrete: 4, hazard: 2,
 };
 
 /** Metres covered by one repeat of the floor texture */
@@ -253,12 +267,84 @@ function drawPerimeter(): HTMLCanvasElement {
   }).canvas;
 }
 
+/** Floorboards / wall planks: long boards with grain, one board every 1/8 of the repeat. */
+function drawPlanks(): HTMLCanvasElement {
+  const S = 512;
+  const boards = 8;
+  const shade = rng(21);
+  const boardShade = Float32Array.from({ length: boards * 3 }, () => shade());
+  return paint(S, S, (u, v) => {
+    const row = Math.floor(v * boards);
+    // Board ends are staggered row to row.
+    const offset = (boardShade[row] ?? 0) * 0.7;
+    const along = (u + offset) % 1;
+    const seg = Math.floor(along * 2);
+    const grain = fbm(u, v, 3, 3, 32);
+    let l = 0.78 + ((boardShade[row * 2 + seg + boards] ?? 0.5) - 0.5) * 0.16 + (grain - 0.5) * 0.2;
+    if (edgeDistance(v, boards) < 0.03) l -= 0.32;
+    if (edgeDistance(along, 2) < 0.004) l -= 0.25;
+    return grey(l);
+  }).canvas;
+}
+
+/** Shipping container steel: deep vertical corrugation, a frame rail top and bottom, rust at the edges. */
+function drawContainer(): HTMLCanvasElement {
+  const S = 512;
+  const ribs = 6;
+  return paint(S, S, (u, v) => {
+    const t = (u * ribs) % 1;
+    // Trapezoid profile: flat face, bevel, recess, bevel.
+    const face = t < 0.35 ? 0.1 : t < 0.45 ? -0.12 : t < 0.85 ? -0.02 : 0.08;
+    let l = 0.76 + face + (noise(u * 220, v * 220, 220) - 0.5) * 0.05;
+    const rail = Math.min(v, 1 - v);
+    if (rail < 0.05) l = 0.62 + (noise(u * 64, v * 64, 64) - 0.5) * 0.06;
+    const rust = fbm(u, v, 10, 4);
+    if (rust > 0.6) l -= (rust - 0.6) * 0.9;
+    return grey(l);
+  }).canvas;
+}
+
+/** Weathered rock: big soft blotches and cracks. */
+function drawRock(): HTMLCanvasElement {
+  const S = 512;
+  return paint(S, S, (u, v) => {
+    let l = 0.74 + (fbm(u, v, 4, 5) - 0.5) * 0.36 + (noise(u * 150, v * 150, 150) - 0.5) * 0.08;
+    if (Math.abs(fbm(u, v, 3, 4) - 0.5) < 0.008) l -= 0.25;
+    return grey(l);
+  }).canvas;
+}
+
+/** Turf on top of hills (tinted green by the palette color). */
+function drawGrassBox(): HTMLCanvasElement {
+  const S = 512;
+  return paint(S, S, (u, v) => {
+    const blade = noise(u * 260, v * 90, 260);
+    const l = 0.78 + (fbm(u, v, 6, 4) - 0.5) * 0.3 + (blade - 0.5) * 0.18;
+    return grey(l);
+  }).canvas;
+}
+
+/** Smooth painted render: almost flat, a little dirt toward the bottom. */
+function drawPlaster(): HTMLCanvasElement {
+  const S = 256;
+  return paint(S, S, (u, v) => {
+    let l = 0.9 + (fbm(u, v, 3, 3) - 0.5) * 0.06 + (noise(u * 120, v * 120, 120) - 0.5) * 0.03;
+    l -= Math.max(0, v - 0.85) * 0.4 * fbm(u, v, 12, 2);
+    return grey(l);
+  }).canvas;
+}
+
 const BOX_DRAWERS: Record<BoxSurface, () => HTMLCanvasElement> = {
   crate: drawCrate,
   concrete: drawConcrete,
   brick: drawBrick,
   metal: drawMetal,
   perimeter: drawPerimeter,
+  planks: drawPlanks,
+  container: drawContainer,
+  rock: drawRock,
+  grass: drawGrassBox,
+  plaster: drawPlaster,
 };
 
 export function boxTexture(surface: BoxSurface): THREE.CanvasTexture {
@@ -332,7 +418,67 @@ function drawFloor(kind: FloorTexture, theme: MapTheme): HTMLCanvasElement {
         if (Math.min(edgeDistance(u, 2), edgeDistance(v, 2)) < 0.003) return scaled(line, 0.8);
         return scaled(base, l);
       }).canvas;
+    case 'grass':
+      return paint(S, S, (u, v) => {
+        const blade = noise(u * 300, v * 110, 300);
+        let l = 1 + (fbm(u, v, 5, 4) - 0.5) * 0.24 + (blade - 0.5) * 0.14;
+        // Dry patches and clover.
+        const dry = fbm(u, v, 3, 3);
+        if (dry > 0.64) l += (dry - 0.64) * 0.6;
+        if (noise(u * 60, v * 60, 60) > 0.92) l -= 0.12;
+        return scaled(base, l);
+      }).canvas;
   }
+}
+
+/** Ground patch textures (streets, lawns, painted zones), in full color. */
+export function groundTexture(kind: GroundKind): THREE.CanvasTexture {
+  return cached(`ground:${kind}`, () => {
+    const S = 512;
+    switch (kind) {
+      case 'road':
+        // 8 m of asphalt across, with a dashed centre line running along v.
+        return toTexture(paint(S, S, (u, v) => {
+          let l = 0.95 + (noise(u * 200, v * 200, 200) - 0.5) * 0.28 + (fbm(u, v, 5, 3) - 0.5) * 0.14;
+          if (Math.abs(fbm(u, v, 4, 4) - 0.5) < 0.005) l -= 0.25;
+          const c: RGB = [62, 64, 70];
+          if (Math.abs(u - 0.5) < 0.012 && v % 0.5 < 0.3) return scaled([228, 206, 120], 0.9 + (fbm(u, v, 20, 2) - 0.5) * 0.3);
+          if (Math.abs(u - 0.04) < 0.008 || Math.abs(u - 0.96) < 0.008) return scaled([220, 220, 214], 0.85);
+          return scaled(c, l);
+        }).canvas);
+      case 'sidewalk': {
+        const shade = rng(31);
+        const slab = Float32Array.from({ length: 4 }, () => shade());
+        return toTexture(paint(S, S, (u, v) => {
+          const joint = Math.min(edgeDistance(u, 2), edgeDistance(v, 2));
+          if (joint < 0.012) return grey(0.42);
+          const s = slab[Math.floor(v * 2) * 2 + Math.floor(u * 2)] ?? 0.5;
+          return scaled([168, 166, 160], 0.95 + (s - 0.5) * 0.08 + (fbm(u, v, 8, 3) - 0.5) * 0.12);
+        }).canvas);
+      }
+      case 'grass':
+        return toTexture(paint(S, S, (u, v) => {
+          const l = 1 + (fbm(u, v, 5, 4) - 0.5) * 0.3 + (noise(u * 300, v * 110, 300) - 0.5) * 0.16;
+          return scaled([86, 128, 62], l);
+        }).canvas);
+      case 'dirt':
+        return toTexture(paint(S, S, (u, v) => {
+          let l = 1 + (fbm(u, v, 6, 4) - 0.5) * 0.3;
+          if (noise(u * 120, v * 120, 120) > 0.9) l -= 0.2;
+          return scaled([120, 96, 70], l);
+        }).canvas);
+      case 'concrete':
+        return toTexture(paint(S, S, (u, v) => {
+          let l = 0.9 + (fbm(u, v, 6) - 0.5) * 0.16 + (noise(u * 128, v * 128, 128) - 0.5) * 0.05;
+          if (Math.min(edgeDistance(u, 1), edgeDistance(v, 1)) < 0.004) l -= 0.2;
+          const stain = fbm(u, v, 3, 4);
+          if (stain < 0.32) l -= (0.32 - stain) * 0.8;
+          return scaled([150, 150, 146], l);
+        }).canvas);
+      case 'hazard':
+        return hazardTexture();
+    }
+  });
 }
 
 export function floorTexture(kind: FloorTexture, theme: MapTheme): THREE.CanvasTexture {

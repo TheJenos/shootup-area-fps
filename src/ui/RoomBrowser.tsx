@@ -1,20 +1,11 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { isConfigured } from '../net/firebase';
 import { watchRooms } from '../net/network';
-import { generateMap } from '../game/mapgen';
+import { mapName } from '../game/mapgen';
 import type { RoomSummary } from '../types';
 import { ROOM_CODE_MAX } from './App';
 
-const mapNames = new Map<string, string>();
-/** Theme name for a seed (generating a map is cheap, but the room list re-renders often). */
-export function mapName(seed: string): string {
-  let name = mapNames.get(seed);
-  if (!name) {
-    name = generateMap(seed).theme.name;
-    mapNames.set(seed, name);
-  }
-  return name;
-}
+export { mapName };
 
 /** How long the room list may stay on "Loading…" before we call it a failure (ms) */
 const ROOMS_TIMEOUT_MS = 8_000;

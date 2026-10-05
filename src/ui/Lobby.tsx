@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { isConfigured } from '../net/firebase';
 import { createRoom, getRoomSetup, randomId } from '../net/network';
-import { generateMap, normalizeSeed, randomSeed, SEED_MAX_LENGTH } from '../game/mapgen';
+import { generateMap, layoutName, normalizeSeed, randomSeed, SEED_MAX_LENGTH } from '../game/mapgen';
 import { MapPreview } from './MapPreview';
 import { initAudio } from '../game/audio';
 import { loadCharacter } from '../game/character';
 import { loadGunModels } from '../game/guns';
 import { loadFpArms } from '../game/fpArms';
+import { loadPropModels } from '../game/props';
 import { ModePicker } from './ModePicker';
 import { PRESETS, type ModeRules } from '../game/rules';
 import type { Session } from './App';
@@ -68,6 +69,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
     loadCharacter().catch(() => {});
     loadGunModels().catch(() => {});
     loadFpArms().catch(() => {});
+    loadPropModels().catch(() => {});
   }, []);
   // Opened from an invite link: once there's a name, a short countdown then straight in.
   const [invite, setInvite] = useState<Invite>(() => (initialCode && isConfigured && !initialError ? 'auto' : null));
@@ -257,7 +259,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
                       <div className="map-picker stacked">
                         {map ? <MapPreview map={map} mode={rules.base} /> : <div className="map-preview empty">Random map</div>}
                         <div className="map-controls">
-                          <strong>{map ? map.theme.name : 'Surprise me'}</strong>
+                          <strong>{map ? layoutName(map) : 'Surprise me'}</strong>
                           <div className="row">
                             <input
                               className="seed-input"

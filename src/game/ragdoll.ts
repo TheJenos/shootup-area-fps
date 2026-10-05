@@ -14,6 +14,8 @@ import { overRamp, rampHeightAt, type Ramp } from './ramps';
 
 /** Where bodies can land: the map's boxes and ramps (the arrays are refilled in place each map). */
 let worldColliders: THREE.Box3[] = [];
+/** Scratch list of the colliders near the body being simulated */
+const nearby: THREE.Box3[] = [];
 let worldRamps: Ramp[] = [];
 export function setRagdollWorld(colliders: THREE.Box3[], ramps: Ramp[]): void {
   worldColliders = colliders;
@@ -194,6 +196,19 @@ export class Ragdoll {
   }
 
   private collide(): void {
+    // Only the boxes near the body: maps have hundreds, a body touches a handful.
+    let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity; let minZ = Infinity; let maxZ = -Infinity;
+    for (const p of this.pos) {
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+      minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z);
+    }
+    const near = nearby;
+    near.length = 0;
+    for (const c of worldColliders) {
+      if (c.max.x < minX - 1 || c.min.x > maxX + 1 || c.max.y < minY - 1 || c.min.y > maxY + 1 || c.max.z < minZ - 1 || c.min.z > maxZ + 1) continue;
+      near.push(c);
+    }
     for (let i = 0; i < this.pos.length; i++) {
       const p = this.pos[i]!;
       const r = RADIUS[i]!;
@@ -210,7 +225,7 @@ export class Ragdoll {
           touching = true;
         }
       }
-      for (const c of worldColliders) {
+      for (const c of near) {
         if (p.x < c.min.x - r || p.x > c.max.x + r || p.y < c.min.y - r || p.y > c.max.y + r || p.z < c.min.z - r || p.z > c.max.z + r) continue;
         // Out along the shallowest side.
         const pushes: [number, 'x' | 'y' | 'z', number][] = [

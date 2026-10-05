@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { ARENA_HALF, buildWorld, type World } from './world';
-import { overRamp, rampHeightAt, type Ramp } from './ramps';
+import type { Ramp } from './ramps';
 import { setRagdollWorld } from './ragdoll';
-import { generateMap, normalizeSeed, randomSeed, CLASSIC_SEED } from './mapgen';
+import { generateMap, layoutName, mapName, normalizeSeed, randomSeed, CLASSIC_SEED } from './mapgen';
 import { LocalPlayer } from './player';
 import { RemotePlayer, type HitboxData } from './remotePlayer';
 import { loadCharacter, type CharacterAsset } from './character';
@@ -18,6 +18,7 @@ import { MAX_AMMO_PICKUPS, MAX_GUN_PICKUPS, MAX_PICKUPS, PickupField, kindOf, ty
 import { SmokeField, WALL_DISTANCE, WALL_DURATION, WallField, type WallAxis } from './deployables';
 import { GUNS, PICKUP_GUNS, isPickupGun, loadGunModels, maxShotDamage, shotDamage } from './guns';
 import { loadFpArms } from './fpArms';
+import { loadPropModels } from './props';
 import { GrenadeFx, simulateGrenade, THROW_LIFT, THROW_SPEED } from './grenades';
 import { FlagField, placementOf, type FlagPlacement } from './flags';
 import {
@@ -337,7 +338,7 @@ export class Game {
     if (this.appliedQuality) this.world.setShadowQuality(this.appliedQuality);
     this.mapSeed = map.seed;
     this.floorSurface = map.theme.surface;
-    this.hud.update({ map: { name: map.theme.name, seed: map.seed } });
+    this.hud.update({ map: { name: layoutName(map), seed: map.seed } });
   }
 
   /** Resolution and shadows from the quality setting; applied live when it changes. */
@@ -599,6 +600,8 @@ export class Game {
       }),
       loadGunModels(),
       loadFpArms(),
+      // Map models are only looks (their collision is already built), so don't hold up joining for them.
+      loadPropModels().catch((err: unknown) => console.warn('Could not load map models', err)),
     ]);
     this.character = character;
     this.weapon.setArms(arms);
@@ -1490,9 +1493,8 @@ export class Game {
   /** Theme name for a seed; generated once, since the HUD asks every frame. */
   private mapInfo(seed: string): { name: string; seed: string } {
     if (this.nextMapCache?.seed !== seed) {
-      const map = generateMap(seed);
-      this.nextMapCache = { seed, name: map.theme.name };
-      return { name: map.theme.name, seed: map.seed };
+      this.nextMapCache = { seed, name: mapName(seed) };
+      return { name: this.nextMapCache.name, seed: normalizeSeed(seed) || CLASSIC_SEED };
     }
     return { name: this.nextMapCache.name, seed: normalizeSeed(seed) || CLASSIC_SEED };
   }
@@ -1590,18 +1592,7 @@ export class Game {
 
   /** Height of whatever is under `p`, so a flag dropped mid-jump lands on the floor or a crate. */
   private groundBelow(p: THREE.Vector3): number {
-    let y = 0;
-    for (const c of this.world.colliders) {
-      if (p.x > c.min.x && p.x < c.max.x && p.z > c.min.z && p.z < c.max.z && c.max.y <= p.y + 0.05) {
-        y = Math.max(y, c.max.y);
-      }
-    }
-    for (const r of this.world.ramps) {
-      if (!overRamp(r, p.x, p.z)) continue;
-      const h = rampHeightAt(r, p.x, p.z);
-      if (h <= p.y + 0.3) y = Math.max(y, h);
-    }
-    return y;
+    return this.world.groundAt(p).y;
   }
 
   /** Leader only: send flags home when left lying around too long or their carrier disappeared. */
@@ -2654,8 +2645,9 @@ export class Game {
     if (step && this.joined) this.playStep(step, pos, true, remote.stance === 'crouch');
   }
 
+  /** What footsteps at `at` sound like: the top of whatever you're standing on, or the map's floor. */
   private surfaceAt(at: THREE.Vector3): sfx.Surface {
-    return this.groundBelow(at) > 0.05 ? 'wood' : this.floorSurface;
+    return this.world.groundAt(at).surface ?? this.floorSurface;
   }
 
   /** How loud, and from which side, a sound at `at` reaches us; null when out of hearing range. */

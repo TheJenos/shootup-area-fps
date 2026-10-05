@@ -148,22 +148,48 @@ Limits and team colors are in `src/game/modes.ts`.
 
 ## Maps
 
-Every room gets its own arena, generated from a **seed**. The lobby shows a top-down preview of the map for the
+Every room gets its own map, generated from a **seed**. The lobby shows a top-down preview of the map for the
 current seed: press 🎲 for a new one, type a seed a friend shared to get the same map, or type `classic` for
 the original hand-built arena (rooms made before seeds existed also use it). The pause menu and the Tab
-summary show the room's map and seed.
+summary show the room's map and seed; the name reads "Theme · Style".
 
-- The seed picks a theme (Training Yard, Dust Bowl, Frostbite, Dusk Yard, Toxic Works: sky, floor and colors),
-  a centerpiece and 10–16 pieces of cover: crates, walls, **low cover** (1.1–1.25 m: hides you crouched, shoot
-  over it standing), pillars, climbable stacks, L-shaped corners and **decks** (a 1.3–1.7 m platform with a
-  ramp up one side and a crate on top). The platform centerpiece has ramps on two sides and steps on the others.
+A seed picks one of three **styles** and a theme to go with it:
+
+| Style | Themes | What's in it |
+| --- | --- | --- |
+| **Industrial** | Toxic Works, Dusk Yard, Training Yard | A gantry bridge, tank farm or shed in the middle; a **warehouse** per quarter (big doors, a catwalk with a railing up a ramp stair, high windows to shoot out of, a skylight); rows of **shipping containers** you climb with crate steps (some stacked two high, some joined by a bridge); a water tower, chimneys, tanks or a factory block; barrels, pallets and barriers |
+| **Town** | Training Yard, Dusk Yard, Dust Bowl, Frostbite | Streets on both axes plus a cross street and side street per quarter, with lamps; blocks of **shops and houses** facing the street; one **enterable building** per quarter (doors on several sides, windows, half the time an upstairs reached by a stair); barriers, dumpsters and planters in the streets |
+| **Outdoor** | Greenwood, Frostbite, Dust Bowl | **Hills** (rock with a turf top, ramps up, some with a second tier); patches of **forest** (trunks block you; canopies stop bullets but you walk under them); big rocks; a **cabin**; logs, log piles, tents, fences and bushes |
+
+- **Buildings** (`src/game/levelgen/building.ts`) are made of boxes, so they collide, stop bullets and show on
+  the preview. Doors are at least 2 m wide; windows have a 1 m sill and are 1 m tall, so you shoot through them
+  but can't climb through. Upstairs floors and catwalks are reached by ramp stairs; roofs can't be reached.
+- **Models** (shops, houses, factories, street lights, trees, rocks...) are Kenney CC0 kits converted into one
+  file (`public/models/props.glb`, see Assets). They're only looks: each comes with invisible boxes the
+  generator places with it (the whole footprint for buildings, a trunk and a canopy for trees, a slightly
+  smaller box for rocks), and those are what players, bullets and grenades hit. The map is playable before
+  the models finish loading; they appear as soon as they have.
 - **Ramps** (`src/game/ramps.ts`) are real slopes: you walk up and down them, their sides block you like a wall
   until the slope is low enough to step onto, and running downhill sticks to the surface. Ledges up to 0.7 m
   (steps, the top of a ramp) are walked straight onto without jumping. Bullets hit ramps like any cover.
-- Maps are mirrored on both axes, so every spawn and both CTF bases face the same layout.
-- Cover never blocks a spawn point or a flag base, and every gap between obstacles is at least 1.6 m wide,
-  so no part of the floor can be sealed off.
-- Generation is pure, seeded code (`src/game/mapgen.ts`), so every client builds the identical arena.
+- **The outline isn't a square**: walls are pushed in from the edges (`src/game/levelgen/outline.ts`). Each side
+  of the map picks its own corner (a staircase that reads as a cut or rounded corner, a big block that makes a
+  plus-shaped map, or a smaller L), plus notches and bends along the walls and sometimes a pinched waist across
+  the middle. Industrial maps use concrete walls, Town brick and Outdoor rock cliffs with trees along the top.
+  All walls meet at right angles, and walls either touch or leave at least 1.6 m, so there are no slots to get
+  stuck in. Spawns the outline would cover move inward.
+- Maps are mirrored only between the two team halves (north and south), so both teams and both CTF bases face
+  the same layout, while the east and west sides of each half are generated separately and look different.
+- Cover never blocks a spawn point or a flag base, and every gap between obstacles is at least 1.6 m wide.
+  Each map is then checked (`src/game/levelgen/check.ts`): a flood fill over the floor must reach every spawn,
+  both flag bases and the outside of every door. A map that fails is regenerated with a variation of the seed,
+  and as a last resort the original box arena is used. `npm run check:maps` runs this over hundreds of seeds,
+  checks the same seed always gives the same map, and that the classic arena hasn't changed.
+- Footsteps follow what you stand on: wood on floorboards and crates, metal and concrete on catwalks,
+  containers and decks, grass on turf and lawns, otherwise the map's floor.
+- Boxes are merged into a few meshes per texture and models are instanced, so a map draws in a few dozen calls.
+- Generation is pure, seeded code (`src/game/mapgen.ts` and `src/game/levelgen/`), so every client builds the
+  identical map. Seeds made before the styles existed now give a different map (except `classic`).
 
 ### Textures
 
@@ -178,6 +204,10 @@ without seams, and they tile at real-world scale instead of stretching across lo
 | Frostbite | snow | concrete | corrugated metal |
 | Dusk Yard | cracked asphalt | brick | corrugated metal |
 | Toxic Works | diamond plate | corrugated metal | concrete |
+| Greenwood | grass | planks | rock |
+
+Buildings, containers and hills add their own: plaster and brick walls, floorboards, container steel, rock and
+turf. Streets, sidewalks, lawns, concrete pads and hazard stripes are flat patches drawn over the floor.
 
 - Crates are wooden, with planks and a brace.
 - The outer wall is concrete panels with grime at the bottom.
@@ -578,7 +608,11 @@ src/
   game/
     game.ts          game loop, shooting, damage, respawn, rendering
     hudStore.ts      engine -> React state bridge
-    mapgen.ts        seeded map generator (layout + theme), and the classic map
+    mapgen.ts        seeded map generator: picks the style and theme, checks the map, and the classic map
+    levelgen/        the generators: core.ts (placement + mirroring), industrial / town / outdoor.ts,
+                     building.ts (enterable buildings), props.ts (models + their collision), check.ts
+    props.ts         loads public/models/props.glb (the map models)
+    propManifest.ts  GENERATED by scripts/build-props.mjs: each model's size and collision boxes
     textures.ts      procedural textures (surfaces, floors, sky, props) + world-scale box UVs
     world.ts         turns a map layout into meshes, lighting, colliders, spawn points
     player.ts        first-person controller + collisions
@@ -615,6 +649,14 @@ src/
 The logo lives in `public/brand/`: `logo.svg` (source), PNG exports (`icon-512.png`, `icon-1024.png`), and
 `og-image.png` (1200×630 link preview). `public/favicon.svg` is a simplified version for tiny sizes, with
 `favicon-32.png` and `apple-touch-icon.png` rendered from it and the logo.
+
+`public/models/props.glb` holds the map models: 65 Kenney CC0 models (shops, houses, factories, chimneys,
+tanks, a water tower, street lights, barriers, dumpsters, fences, trees, rocks, logs, tents...), 46k triangles,
+1.9 MB (430 KB gzipped). `scripts/build-props.mjs` (`npm run build:props`) makes it from the raw packs in
+`assets-src/kenney/` (not committed; `assets-src/README.md` lists the downloads) using the list in
+`scripts/props.config.mjs`: it bakes each model's colour texture into its vertices so all of them share one
+material, centres its base on the origin, scales it to metres, and writes `src/game/propManifest.ts` with each
+model's size and collision boxes for the generator.
 
 `public/models/guns.glb` holds the four guns from Quaternius's
 [Ultimate Gun Pack](https://opengameart.org/content/low-poly-guns-pack) (CC0): AssaultRifle_2 (rifle), Shotgun_2,
@@ -674,6 +716,9 @@ The game's credits page is `public/credits.html` (linked from both lobbies as **
   [Interface Sounds](https://kenney.nl/assets/interface-sounds), [Sci-fi Sounds](https://kenney.nl/assets/sci-fi-sounds)
   and [Music Jingles](https://kenney.nl/assets/music-jingles), CC0.
 - **Heartbeat:** [Heartbeat Sounds](https://opengameart.org/content/heartbeat-sounds) by bart, CC0.
+- **Map models:** Kenney's [City Kit Commercial](https://kenney.nl/assets/city-kit-commercial),
+  [City Kit Suburban](https://kenney.nl/assets/city-kit-suburban), [City Kit Roads](https://kenney.nl/assets/city-kit-roads),
+  [City Kit Industrial](https://kenney.nl/assets/city-kit-industrial) and [Nature Kit](https://kenney.nl/assets/nature-kit), CC0.
 - **Gun models:** [Ultimate Gun Pack](https://opengameart.org/content/low-poly-guns-pack) by Quaternius, CC0.
 - **First-person arms:** "FPS Rig AKM" by J-Toastie, CC-BY, via Poly Pizza (found through the MIT-licensed
   [ThreeJS_FPS_2.0](https://github.com/Footprintarts/ThreeJS_FPS_2.0) template, whose demo placement the hold was

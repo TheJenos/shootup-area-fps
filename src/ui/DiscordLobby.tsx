@@ -5,9 +5,10 @@ import { initAudio } from '../game/audio';
 import { loadCharacter } from '../game/character';
 import { loadGunModels } from '../game/guns';
 import { loadFpArms } from '../game/fpArms';
+import { loadPropModels } from '../game/props';
 import { ModePicker } from './ModePicker';
 import { PRESETS, type ModeRules } from '../game/rules';
-import { generateMap, normalizeSeed, randomSeed, SEED_MAX_LENGTH } from '../game/mapgen';
+import { generateMap, layoutName, mapName, normalizeSeed, randomSeed, SEED_MAX_LENGTH } from '../game/mapgen';
 import { MapPreview } from './MapPreview';
 import { RoomBrowser, useRooms } from './RoomBrowser';
 import type { Session } from './App';
@@ -60,6 +61,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
     loadCharacter().catch(() => {});
     loadGunModels().catch(() => {});
     loadFpArms().catch(() => {});
+    loadPropModels().catch(() => {});
     connectDiscord()
       .then(async (d) => {
         const setup = await getRoomSetup(roomCodeFor(d.instanceId));
@@ -174,7 +176,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
                     <div className="match-info">
                       <span className={`mode-badge ${existing.rules.base}`}>{existing.rules.short}</span>
                       <div>
-                        <strong>{existing.rules.name}</strong> on <strong>{generateMap(existing.seed).theme.name}</strong>
+                        <strong>{existing.rules.name}</strong> on <strong>{mapName(existing.seed)}</strong>
                         <p className="muted">A match is running in this voice channel.</p>
                       </div>
                     </div>
@@ -195,7 +197,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
                         <div className="map-picker stacked">
                           {map ? <MapPreview map={map} mode={rules.base} /> : <div className="map-preview empty">Random map</div>}
                           <div className="map-controls">
-                            <strong>{map ? map.theme.name : 'Surprise me'}</strong>
+                            <strong>{map ? layoutName(map) : 'Surprise me'}</strong>
                             <div className="row">
                               <input
                                 className="seed-input"
