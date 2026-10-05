@@ -148,8 +148,8 @@ Limits and team colors are in `src/game/modes.ts`.
 
 ## Maps
 
-Every room gets its own map, generated from a **seed**. The lobby shows a top-down preview of the map for the
-current seed: press 🎲 for a new one, type a seed a friend shared to get the same map, or type `classic` for
+Every room gets its own map, generated from a **seed**. The lobby shows a 3D preview of the map for the
+current seed (it slowly turns; drag to turn it yourself): press 🎲 for a new one, type a seed a friend shared to get the same map, or type `classic` for
 the original hand-built arena (rooms made before seeds existed also use it). The pause menu and the Tab
 summary show the room's map and seed; the name reads "Theme · Style".
 
@@ -619,7 +619,7 @@ src/
     TouchControls.tsx   on-screen controls for phones and tablets
     MatchSummary.tsx    match summary (Tab)
     SettingsPanel.tsx   sensitivity + key binding editor
-    MapPreview.tsx      top-down map preview in the lobby
+    MapPreview.tsx      3D map preview (lobby and pause menu); 2D fallback without WebGL
   game/
     game.ts          game loop, shooting, damage, respawn, rendering
     hudStore.ts      engine -> React state bridge

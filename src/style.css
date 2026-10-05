@@ -1028,6 +1028,9 @@ kbd {
 
 .map-picker { display: flex; gap: 14px; align-items: stretch; }
 .map-preview { border-radius: 8px; border: 1px solid var(--line); flex-shrink: 0; display: block; }
+.map-preview.gl { overflow: hidden; position: relative; cursor: grab; touch-action: none; background: var(--panel, #111); }
+.map-preview.gl:active { cursor: grabbing; }
+.map-preview-gl { display: block; width: 100%; height: 100%; }
 .map-preview.empty { width: 168px; height: 168px; display: grid; place-items: center; color: var(--muted); border-style: dashed; }
 .map-controls { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; }
 .map-controls strong { font-size: 16px; }
