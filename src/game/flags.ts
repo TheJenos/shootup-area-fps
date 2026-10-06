@@ -11,7 +11,7 @@ const CARRIED_SCALE = 0.75;
 /** How far up the (scaled) pole the hand grips it */
 const CARRIED_GRIP = POLE_HEIGHT * CARRIED_SCALE * 0.32;
 /** Forward lean of a carried flag (radians), so it reads as held out in front */
-const CARRIED_LEAN = 0.18;
+export const CARRIED_LEAN = 0.18;
 /** Fallback when the hand isn't known: held at about hand height beside them */
 const CARRIED_HAND_HEIGHT = 1.0;
 

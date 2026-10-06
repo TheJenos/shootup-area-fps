@@ -17,7 +17,8 @@
     "test:e2e:ui": "firebase emulators:exec --only database --project demo-fps \"playwright test --ui\"",
     "deploy:rules": "firebase deploy --only database --non-interactive",
     "test": "vitest run",
-    "test:maps": "npm run check:maps -- --count 40 --golden"
+    "test:maps": "npm run check:maps -- --count 40 --golden",
+    "build:character": "node scripts/build-character.mjs"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.21.0",

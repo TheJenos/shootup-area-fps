@@ -817,9 +817,13 @@ pistol is held one-handed (the left arm is hidden); mid-reload the left hand goe
 the pole; spectating in first person shows them too. The weapon camera is 70° like the rig's demo, and at the hip
 the gun points straight ahead a little right of the eye and pitched up slightly (`HIP_CANT`), as the rig holds it.
 
-`public/models/Soldier.glb` is the soldier from the [three.js examples](https://github.com/mrdoob/three.js/tree/r186/examples/models/gltf)
-(originally a [Mixamo](https://www.mixamo.com) character), with Idle / Walk / Run animations.
-Other players use it; the gun, hitboxes, aim pose, player-color tint and death fall are added in code
+`public/models/Soldier.glb` is the [SWAT](https://poly.pizza/m/Btfn3G5Xv4) character by Quaternius (CC0), low-poly and
+flat-coloured to match the guns and the Kenney maps, with Idle / Walk / Run animations. `npm run build:character`
+makes it from the raw download in `assets-src/quaternius/Swat.glb` (`scripts/build-character.mjs`): it turns the
+model to face -Z, scales it to 1.73 m, keeps only those three clips, names the materials (`Uniform` takes the
+player's colour, the `Visor` their colour in full, `Gear` and `Skin` stay as they are), and moves the feet, which
+are IK targets in the original rig, under the shins (re-baking their animation) so they follow the legs when the
+game bends them. Other players use it; the gun, hitboxes, aim pose, player-color tint and death fall are added in code
 (`src/game/remotePlayer.ts`). The aim pose is layered over the animation with two-bone arm IK
 (`src/game/ik.ts`): both hands hold the gun pointed exactly where the player is looking, at the ready
 normally and raised to the eye while they aim down sights (sent as `aim` with their pose), with the
@@ -834,8 +838,10 @@ and elbows can't fold flat); joints collide with the floor, cover and ramps, wit
 skate; each bone of the skinned model is then turned to follow its joints. The killing hit shoves the body away
 from the killer (harder for the shotgun, sniper and grenades; headshots snap the head back), grenades throw
 bodies lying nearby, and MVP replays ragdoll their victims too. A body settles within a couple of seconds and
-stops simulating. To swap in another Mixamo-rigged model, keep the clip names and the `mixamorigSpine2` /
-`mixamorigHead` / arm (`…Arm`, `…ForeArm`, `…Hand`, both sides) bones.
+stops simulating. To swap in another model, keep the clip names, list its bones in `BONES`
+(`src/game/character.ts`), and re-measure the rig constants at the top of `remotePlayer.ts` (`HAND_FORWARD` /
+`HAND_UP`, `PALM`, `CURL_AXIS` / `FIST` for the fists the hands close into, `HEAD_HIT_OFFSET`, `FOOT_REST`). Leg, spine and head bends turn about the body's
+left-right axis, so they don't depend on how the rig's bone axes point.
 
 ## Credits
 
@@ -862,4 +868,4 @@ The game's credits page is `public/credits.html` (linked from both lobbies as **
 - **First-person arms:** "FPS Rig AKM" by J-Toastie, CC-BY, via Poly Pizza (found through the MIT-licensed
   [ThreeJS_FPS_2.0](https://github.com/Footprintarts/ThreeJS_FPS_2.0) template, whose demo placement the hold was
   measured in). Keep this credit if you keep `public/models/fpArms.glb`.
-- **Soldier model:** three.js examples / Mixamo (see [Assets](#assets)).
+- **Player model:** [SWAT](https://poly.pizza/m/Btfn3G5Xv4) by Quaternius, CC0 (see [Assets](#assets)).

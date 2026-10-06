@@ -4,7 +4,8 @@ import { makeXrayMaterial, makeXrayMeshes } from './xray';
 import { GUNS, buildRemoteGun, remoteGunLength } from './guns';
 import { reach, setWorldQuaternion } from './ik';
 import { Ragdoll, type RagdollBones } from './ragdoll';
-import { cloneCharacter, GAITS, type CharacterAsset, type Gait } from './character';
+import { BONES, cloneCharacter, GAITS, type CharacterAsset, type Gait } from './character';
+import { CARRIED_LEAN } from './flags';
 import { TEAMS, TEAM_INFO } from './modes';
 import type { GunKind, PlayerState, Stance, Team } from '../types';
 
@@ -18,8 +19,6 @@ export interface HitboxData {
 const WALK_FROM = 0.5;
 const RUN_FROM = 6.8;
 const FADE = 0.2;
-// The model's skeleton is authored in centimeters (root scale 0.01).
-const BONE_SCALE = 100;
 // How much of the aim pitch the upper body takes.
 const SPINE_PITCH = 0.7;
 // The rest of the aim pitch goes to the head.
@@ -31,7 +30,7 @@ const HEAD_PITCH = 0.3;
  * up to the eye. Positions are in metres in the aim frame: forward along the look direction, up, right.
  * The rifle-sized guns are placed by the back of the stock; the pistol by its grip, out in front.
  */
-const READY_STOCK = { forward: 0.12, up: -0.2, right: 0.0 };
+const READY_STOCK = { forward: 0.02, up: -0.18, right: -0.03 };
 const ADS_STOCK = { forward: 0.06, up: -0.07, right: 0.035 };
 const PISTOL_READY = { forward: 0.42, up: -0.28, right: -0.06 };
 const PISTOL_ADS = { forward: 0.5, up: -0.08, right: -0.02 };
@@ -56,12 +55,17 @@ const _pole = new THREE.Vector3();
 const _gunQuat = new THREE.Quaternion();
 const _q = new THREE.Quaternion();
 const _tmp = new THREE.Vector3();
+const _color = new THREE.Color();
 /** Lengths of the switch dip and the throw swing (s) */
 const SWITCH_LEN = 0.4;
 const THROW_LEN = 0.55;
 /** A carried flag's swing: tipped back this far over the shoulder, then through this far forward (radians) */
 const FLAG_WIND = 0.9;
 const FLAG_STRIKE = 1.7;
+/** Where a carried flag's pole is gripped, from the shoulder (m): out in front, elbow bent */
+const FLAG_CARRY = { forward: 0.24, up: -0.3, right: 0.04 };
+const _fwd = new THREE.Vector3();
+const _grip = new THREE.Vector3();
 const _handQuat = new THREE.Quaternion();
 const _basis = new THREE.Matrix4();
 const _scale = new THREE.Vector3();
@@ -73,21 +77,21 @@ const HP_PREDICTION_MS = 600;
 
 /*
  * The model has no crouch or slide animation, so they're posed on top of whatever it's
- * playing: thighs forward, knees bent, upper body leaning (radians), then the hips are
+ * playing: thighs forward, knees bent, upper body leaning (radians), then the body is
  * lowered until the feet are back on the ground. The pose blends in and out.
  */
 const CROUCH_POSE = { thigh: 1.1, knee: 1.75, lean: 0.35 };
 const SLIDE_POSE = { thigh: 1.65, knee: 0.3, lean: -0.8 };
-/** How high the feet sit above the ground when standing (m) */
-const FOOT_REST = 0.12;
+/** How high the foot bones sit above the ground when standing (m) */
+const FOOT_REST = 0.02;
 /** Body hitbox height (scale) and how far a crouch / slide lowers the head tag and chest */
 const CROUCH_BODY = 0.68;
 const SLIDE_BODY = 0.42;
 
 /*
- * Tinting. In free-for-all each player gets a light wash of their own colour so the uniform's
- * texture still shows. In team modes the whole uniform takes the team colour, with a faint glow
- * so teams stay readable in shadow and at a distance.
+ * Tinting. Only the uniform takes the player's colour (the gear stays black, the skin skin-toned).
+ * In free-for-all it's a wash of their own colour; in team modes the uniform takes the team
+ * colour, with a faint glow so teams stay readable in shadow and at a distance.
  */
 const FFA_TINT = 0.45;
 const TEAM_TINT = 0.65;
@@ -111,8 +115,8 @@ const shieldMat = new THREE.MeshBasicMaterial({
 
 // World forward / up expressed in the right-hand bone's local space, measured in the Idle pose.
 // Aligning the rifle with them makes it point ahead instead of along the fingers.
-const HAND_FORWARD = new THREE.Vector3(-0.25, 0.29, 0.92).normalize();
-const HAND_UP = new THREE.Vector3(0.13, -0.93, 0.33).normalize();
+const HAND_FORWARD = new THREE.Vector3(-0.89, 0.32, 0.31).normalize();
+const HAND_UP = new THREE.Vector3(-0.3, -0.95, 0.11).normalize();
 const GUN_IN_HAND = new THREE.Quaternion().setFromRotationMatrix(
   new THREE.Matrix4().makeBasis(
     new THREE.Vector3().crossVectors(HAND_UP, HAND_FORWARD).normalize(),
@@ -120,8 +124,22 @@ const GUN_IN_HAND = new THREE.Quaternion().setFromRotationMatrix(
     HAND_FORWARD,
   ),
 );
-// Grip in the palm (bone units are cm), with most of the rifle in front of the hand.
-const GUN_OFFSET = new THREE.Vector3(0, 9, 0).addScaledVector(HAND_FORWARD, 14);
+/** The middle of the fist from the hand bone (m, in its axes): what's held (gun, flag pole) runs through it */
+const PALM = new THREE.Vector3(0, 0.1, -0.03);
+/*
+ * The model's fingers are straight, so a hand that holds something is curled into a fist: each joint
+ * turns about the knuckle line (the hand bone's X, both hands; the palms face its -Z) by these angles
+ * (rad), knuckle to tip. The thumb closes a little.
+ */
+const CURL_AXIS = new THREE.Vector3(-1, 0, 0);
+const FIST = [1.3, 1.4, 1.0];
+const THUMB_CURL = [0.3, 0.5];
+// Grip in the palm, with most of the rifle in front of the hand.
+const GUN_OFFSET = PALM.clone().addScaledVector(HAND_FORWARD, 0.14);
+/** The head hitbox's centre from the head bone (m, in its axes): up the skull and a touch forward */
+const HEAD_HIT_OFFSET = new THREE.Vector3(0, 0.18, 0.02);
+/** The body's left in the model's space (it faces -Z): the axis legs, spine and head bend about */
+const MODEL_LEFT = new THREE.Vector3(-1, 0, 0);
 GUN_IN_HAND_INV.copy(GUN_IN_HAND).invert();
 
 function angleLerp(a: number, b: number, t: number): number {
@@ -167,6 +185,12 @@ export class RemotePlayer {
   /** Throw animation: seconds since it started, or -1 */
   private throwTime = -1;
   private flagSwingNow = 0;
+  /** 0..1 blend from carrying the flag to swinging it, so the arm eases back after a strike */
+  private swingAmount = 0;
+  /** PALM in the hand bone's units */
+  private readonly palm = new THREE.Vector3();
+  /** Finger joints of each hand (right, left): bind-pose rotation, CURL_AXIS in the joint's space, full-fist angle */
+  private readonly fists: { bone: THREE.Object3D; rest: THREE.Quaternion; axis: THREE.Vector3; angle: number }[][];
   private throwsSeen: number | undefined;
   /** Gun switch: the gun dips for a moment */
   private switchTime = -1;
@@ -263,6 +287,7 @@ export class RemotePlayer {
       // Always on the transparent path (drawn solid at opacity 1): three.js compiles opaque
       // materials to ignore opacity, so switching for the cloak would need a shader recompile.
       mat.transparent = true;
+      mat.userData.baseColor = mat.color.clone();
       mesh.material = mat;
       this.materials.push(mat);
     });
@@ -274,14 +299,15 @@ export class RemotePlayer {
     ) as Record<Gait, THREE.AnimationAction>;
     this.actions.Idle.play();
 
-    this.spine = bone(this.model, 'mixamorigSpine2');
-    this.hips = bone(this.model, 'mixamorigHips');
-    this.thighs = [bone(this.model, 'mixamorigLeftUpLeg'), bone(this.model, 'mixamorigRightUpLeg')];
-    this.shins = [bone(this.model, 'mixamorigLeftLeg'), bone(this.model, 'mixamorigRightLeg')];
-    this.feet = [bone(this.model, 'mixamorigLeftFoot'), bone(this.model, 'mixamorigRightFoot')];
-    this.head = bone(this.model, 'mixamorigHead');
-    this.rightArm = [bone(this.model, 'mixamorigRightArm'), bone(this.model, 'mixamorigRightForeArm'), bone(this.model, 'mixamorigRightHand')];
-    this.leftArm = [bone(this.model, 'mixamorigLeftArm'), bone(this.model, 'mixamorigLeftForeArm'), bone(this.model, 'mixamorigLeftHand')];
+    const bones = (names: readonly string[]) => names.map((n) => bone(this.model, n));
+    this.spine = bone(this.model, BONES.chest);
+    this.hips = bone(this.model, BONES.body);
+    this.thighs = bones(BONES.thighs);
+    this.shins = bones(BONES.shins);
+    this.feet = bones(BONES.feet);
+    this.head = bone(this.model, BONES.head);
+    this.rightArm = bones(BONES.rightArm) as [THREE.Object3D, THREE.Object3D, THREE.Object3D];
+    this.leftArm = bones(BONES.leftArm) as [THREE.Object3D, THREE.Object3D, THREE.Object3D];
     this.ragdollBones = {
       hips: this.hips, chest: this.spine, head: this.head,
       lArm: this.leftArm[0], lFore: this.leftArm[1], lHand: this.leftArm[2],
@@ -292,12 +318,28 @@ export class RemotePlayer {
     this.aiming = !!data.aim;
     this.stanceNow = data.stance ?? 'stand';
 
+    // Things riding on bones are sized in metres: undo the skeleton's scale.
+    const boneScale = (b: THREE.Object3D) => b.getWorldScale(_scale).x / this.model.getWorldScale(_tmp).x;
     const gun = this.gunHolder;
     this.setGun(data.gun ?? 'rifle');
-    gun.scale.setScalar(BONE_SCALE);
-    gun.position.copy(GUN_OFFSET);
+    const handScale = boneScale(this.rightArm[2]);
+    gun.scale.setScalar(1 / handScale);
+    gun.position.copy(GUN_OFFSET).divideScalar(handScale);
+    this.palm.copy(PALM).divideScalar(handScale);
+    this.fists = [BONES.rightFingers, BONES.leftFingers].map((hand) => hand.flatMap((chain, f) => {
+      const thumb = f === hand.length - 1;
+      // The axis is the same line all along a finger, so in each joint's space it's the parent's, undone by the joint's rest turn.
+      // (Each chain starts at the knuckle, under the finger's palm bone.)
+      const palmBone = bone(this.model, chain[0]!).parent!;
+      const axis = CURL_AXIS.clone().applyQuaternion(_q.copy(palmBone.quaternion).invert());
+      return chain.map((name, j) => {
+        const b = bone(this.model, name);
+        axis.applyQuaternion(_q.copy(b.quaternion).invert());
+        return { bone: b, rest: b.quaternion.clone(), axis: axis.clone(), angle: (thumb ? THUMB_CURL : FIST)[j]! };
+      });
+    }));
     gun.quaternion.copy(GUN_IN_HAND);
-    bone(this.model, 'mixamorigRightHand').add(gun);
+    this.rightArm[2].add(gun);
 
     this.bodyHit = new THREE.Mesh(bodyHitGeo, hitboxMat);
     this.bodyHit.position.y = 0.75;
@@ -305,10 +347,11 @@ export class RemotePlayer {
 
     // The head hitbox rides on the head bone so it follows the animation.
     this.headHit = new THREE.Mesh(headHitGeo, hitboxMat);
-    this.headHit.scale.setScalar(BONE_SCALE);
-    this.headHit.position.set(0, 18, 2);
+    const headScale = boneScale(this.head);
+    this.headHit.scale.setScalar(1 / headScale);
+    this.headHit.position.copy(HEAD_HIT_OFFSET).divideScalar(headScale);
     this.headHit.userData = { playerId: id, head: true } satisfies HitboxData;
-    bone(this.model, 'mixamorigHead').add(this.headHit);
+    this.head.add(this.headHit);
 
     this.tag = new NameTag(data.name || '???');
     this.tag.sprite.position.y = 2.15;
@@ -553,9 +596,9 @@ export class RemotePlayer {
     return this.flagSwingNow;
   }
 
-  /** Where their right hand is (world space): a carried flag is held there. */
+  /** Where their right fist is (world space): a carried flag's pole runs through it. */
   handPosition(out: THREE.Vector3): THREE.Vector3 {
-    return this.rightArm[2].getWorldPosition(out);
+    return this.rightArm[2].localToWorld(out.copy(this.palm));
   }
 
   get carryingFlag(): boolean {
@@ -574,6 +617,7 @@ export class RemotePlayer {
   setCarrying(carrying: boolean): void {
     if (carrying === this.carrying) return;
     this.carrying = carrying;
+    this.swingAmount = 0;
     this.gunHolder.visible = !carrying;
   }
 
@@ -665,9 +709,12 @@ export class RemotePlayer {
     this.mixer.timeScale = this.alive ? 1 : 0;
     this.mixer.update(dt);
     // Lean the upper body to match where they're aiming (applied after the animation).
-    this.spine.rotateX(-this.pitch * SPINE_PITCH);
+    this.bend(this.spine, -this.pitch * SPINE_PITCH);
     this.applyStance(dt);
     this.applyAim(dt);
+    // The right hand always holds the gun or the flag; the left grips the gun when it's up.
+    this.curlFingers(0, 1);
+    this.curlFingers(1, this.carrying ? 0 : this.readyAmount);
 
     // Died while we were watching: the body goes limp as a ragdoll, starting from this pose.
     if (!this.alive && !this.ragdoll && this.fall < 1) {
@@ -689,10 +736,10 @@ export class RemotePlayer {
       // Knees give first, then the body tips over and rolls a little to one side.
       const f = this.fall;
       const buckle = Math.min(1, f * 2.5);
-      for (const thigh of this.thighs) thigh.rotateX(-buckle * 0.9);
-      for (const shin of this.shins) shin.rotateX(buckle * 1.4);
-      this.spine.rotateX(buckle * 0.5);
-      this.head.rotateX(buckle * 0.6);
+      for (const thigh of this.thighs) this.bend(thigh, -buckle * 0.9);
+      for (const shin of this.shins) this.bend(shin, buckle * 1.4);
+      this.bend(this.spine, buckle * 0.5);
+      this.bend(this.head, buckle * 0.6);
       const tip = Math.max(0, (f - 0.15) / 0.85);
       const eased = 1 - (1 - tip) ** 3;
       this.group.rotation.x = (-Math.PI / 2) * eased;
@@ -721,9 +768,9 @@ export class RemotePlayer {
     const sl = this.slideAmount;
 
     if (c > 0.001 || sl > 0.001) {
-      for (const thigh of this.thighs) thigh.rotateX(-(c * CROUCH_POSE.thigh + sl * SLIDE_POSE.thigh));
-      for (const shin of this.shins) shin.rotateX(c * CROUCH_POSE.knee + sl * SLIDE_POSE.knee);
-      this.spine.rotateX(c * CROUCH_POSE.lean + sl * SLIDE_POSE.lean);
+      for (const thigh of this.thighs) this.bend(thigh, -(c * CROUCH_POSE.thigh + sl * SLIDE_POSE.thigh));
+      for (const shin of this.shins) this.bend(shin, c * CROUCH_POSE.knee + sl * SLIDE_POSE.knee);
+      this.bend(this.spine, c * CROUCH_POSE.lean + sl * SLIDE_POSE.lean);
       this.plantFeet();
     }
 
@@ -743,13 +790,13 @@ export class RemotePlayer {
   private applyAim(dt: number): void {
     const shooting = performance.now() - this.firedAt < SHOOT_HOLD_MS;
     const ready = !this.alive ? 0
-      : this.carrying ? (this.throwTime >= 0 ? 1 : 0)
+      : this.carrying ? 1
         : this.aiming || shooting || (this.gait !== 'Run' && this.slideAmount < 0.5) ? 1 : 0;
     // Snap up fast for a strike or a shot (the first bullets shouldn't leave from the hip), ease otherwise.
     const speed = this.carrying || shooting ? 16 : READY_SPEED;
     this.readyAmount += (ready - this.readyAmount) * (1 - Math.exp(-speed * dt));
     this.adsAmount += ((this.aiming && this.alive ? 1 : 0) - this.adsAmount) * (1 - Math.exp(-ADS_SPEED * dt));
-    this.head.rotateX(-this.pitch * HEAD_PITCH);
+    this.bend(this.head, -this.pitch * HEAD_PITCH);
     this.flagSwingNow = 0;
     const w = this.readyAmount;
     if (w < 0.01) return;
@@ -778,9 +825,9 @@ export class RemotePlayer {
     _up.crossVectors(_right, _dir).normalize();
 
     if (this.carrying) {
-      // The flag is in the right hand: that arm swings it, the left keeps its animation.
-      this.swingFlag(throwPhase, w);
-      bones.forEach((b, i) => { if (i < 3 && w < 0.999) b.quaternion.slerpQuaternions(this.armAnim[i]!, b.quaternion, w); });
+      // The flag is in the right hand: that arm holds and swings it, the left keeps its animation.
+      this.swingFlag(throwPhase, w, dt);
+      this.blendArms(3, w);
       return;
     }
 
@@ -814,8 +861,7 @@ export class RemotePlayer {
 
     // The hand sits where the gun's centre minus its offset in the palm puts it.
     const hand = this.rightArm[2];
-    hand.getWorldScale(_scale);
-    _offset.copy(GUN_OFFSET).multiplyScalar(_scale.x).applyQuaternion(_handQuat);
+    _offset.copy(GUN_OFFSET).applyQuaternion(_handQuat);
     _handAt.copy(_gunAt).sub(_offset);
 
     _pole.copy(_right).multiplyScalar(lerp(0.5, 1, a)).addScaledVector(WORLD_UP, -1);
@@ -845,40 +891,92 @@ export class RemotePlayer {
     _pole.copy(_right).multiplyScalar(-0.6).addScaledVector(WORLD_UP, -1);
     reach(this.leftArm[0], this.leftArm[1], this.leftArm[2], _support, _pole);
 
-    if (w < 0.999) bones.forEach((b, i) => b.quaternion.slerpQuaternions(this.armAnim[i]!, b.quaternion, w));
+    this.blendArms(6, w);
+  }
+
+  /** Close hand 0 (right) or 1 (left) into a fist, `amount` 0..1 of the way. */
+  private curlFingers(hand: number, amount: number): void {
+    for (const { bone: b, rest, axis, angle } of this.fists[hand]!) b.quaternion.copy(rest).multiply(_q.setFromAxisAngle(axis, angle * amount));
+  }
+
+  /** Blend the first `count` arm bones (right arm, then left) from the animation's pose to the one just set, by `w`. */
+  private blendArms(count: number, w: number): void {
+    if (w >= 0.999) return;
+    const bones = [...this.rightArm, ...this.leftArm];
+    for (let i = 0; i < count; i++) {
+      const b = bones[i]!;
+      // (Not slerpQuaternions(anim, b.quaternion, w): that copies `anim` over b.quaternion before reading it.)
+      _q.copy(b.quaternion);
+      b.quaternion.copy(this.armAnim[i]!).slerp(_q, w);
+    }
   }
 
   /**
-   * Flag swing: the right hand winds up over the shoulder (flag tipped back), then chops forward
-   * and down (flag swung through to past level), like a club.
+   * The carried flag: held upright out in front, the fist round the pole. A swing winds the hand up
+   * over the shoulder (flag tipped back), then chops forward and down (flag swung through to past
+   * level), like a club, and eases back to the carry.
    */
-  private swingFlag(phase: number, w: number): void {
-    // After the strike (phase < 0) the arm eases back from the follow-through as `w` fades.
+  private swingFlag(phase: number, w: number, dt: number): void {
+    this.swingAmount += ((phase >= 0 ? 1 : 0) - this.swingAmount) * (1 - Math.exp(-16 * dt));
+    const s = this.swingAmount;
+    // After the strike (phase < 0) the arm eases back from the follow-through as `s` fades.
     if (phase < 0) phase = 1;
     const wind = Math.min(1, phase / 0.35);
     const release = Math.max(0, (phase - 0.35) / 0.65);
     const strike = 1 - (1 - release) ** 2;
-    this.head.getWorldPosition(_tmp);
-    const back = _tmp.clone().addScaledVector(_dir, -0.15).addScaledVector(WORLD_UP, 0.3).addScaledVector(_right, 0.3);
-    const fwd = _tmp.clone().addScaledVector(_dir, 0.65).addScaledVector(WORLD_UP, -0.45).addScaledVector(_right, 0.12);
+    const tip = (release > 0 ? THREE.MathUtils.lerp(-FLAG_WIND, FLAG_STRIKE, strike) : -FLAG_WIND * wind) * s;
+    this.flagSwingNow = tip * w;
+
+    // Level forward (the flag ignores the look pitch), and where the fist goes.
+    _fwd.set(_right.z, 0, -_right.x);
+    this.rightArm[0].getWorldPosition(_grip)
+      .addScaledVector(_fwd, FLAG_CARRY.forward).addScaledVector(WORLD_UP, FLAG_CARRY.up).addScaledVector(_right, FLAG_CARRY.right);
+    if (s > 0.001) {
+      this.head.getWorldPosition(_tmp);
+      const back = _tmp.clone().addScaledVector(_fwd, -0.15).addScaledVector(WORLD_UP, 0.3).addScaledVector(_right, 0.3);
+      const fwd = _tmp.clone().addScaledVector(_fwd, 0.65).addScaledVector(WORLD_UP, -0.45).addScaledVector(_right, 0.12);
+      const swung = release > 0 ? back.lerp(fwd, strike) : _grip.clone().lerp(back, wind);
+      _grip.lerp(swung, s);
+    }
+
+    // The fist holds the pole as it would a gun pointing up the pole: along it, leaning forward with the flag.
+    const lean = CARRIED_LEAN + this.flagSwingNow;
+    _gunAt.copy(WORLD_UP).multiplyScalar(Math.cos(lean)).addScaledVector(_fwd, Math.sin(lean));
+    _support.copy(WORLD_UP).multiplyScalar(Math.sin(lean)).addScaledVector(_fwd, -Math.cos(lean));
+    _basis.makeBasis(_offset.crossVectors(_support, _gunAt), _support, _gunAt);
+    _handQuat.setFromRotationMatrix(_basis).multiply(GUN_IN_HAND_INV);
+
     const hand = this.rightArm[2];
-    const rest = hand.getWorldPosition(new THREE.Vector3());
-    const target = release > 0 ? back.lerp(fwd, strike) : rest.lerp(back, wind);
+    _handAt.copy(_grip).sub(_offset.copy(PALM).applyQuaternion(_handQuat));
     _pole.copy(_right).multiplyScalar(0.8).addScaledVector(WORLD_UP, -1);
-    reach(this.rightArm[0], this.rightArm[1], hand, target, _pole);
-    this.flagSwingNow = (release > 0 ? THREE.MathUtils.lerp(-FLAG_WIND, FLAG_STRIKE, strike) : -FLAG_WIND * wind) * w;
+    reach(this.rightArm[0], this.rightArm[1], hand, _handAt, _pole);
+    setWorldQuaternion(hand, _handQuat);
   }
 
-  /** Lower the hips so the lowest foot is back at standing height after the legs were bent. */
+  /**
+   * Turn a bone about the body's left-right axis, whatever way the rig's bone axes point:
+   * + tips a leg's far end back and the spine and head forward.
+   */
+  private bend(b: THREE.Object3D, angle: number): void {
+    this.model.getWorldQuaternion(_q);
+    _tmp.copy(MODEL_LEFT).applyQuaternion(_q);
+    b.getWorldQuaternion(_q);
+    b.rotateOnAxis(_tmp.applyQuaternion(_q.invert()), angle);
+  }
+
+  /** Lower the body so the lowest foot is back at standing height after the legs were bent. */
   private plantFeet(): void {
+    const parent = this.hips.parent;
+    if (!parent) return;
     this.model.updateMatrixWorld(true);
     const v = new THREE.Vector3();
     const lowest = Math.min(...this.feet.map((f) => f.getWorldPosition(v).y)) - this.group.position.y;
     const lift = lowest - FOOT_REST;
     if (lift <= 0) return;
-    // The rig is Z-up inside the scaled armature, so "down" for the hips is local -Z.
-    const scale = this.hips.parent?.getWorldScale(v).z || 1;
-    this.hips.position.z -= lift / scale;
+    // World down in the parent's space (the animation sets the position afresh every frame).
+    parent.getWorldQuaternion(_q).invert();
+    const scale = parent.getWorldScale(v).x;
+    this.hips.position.addScaledVector(v.set(0, -1, 0).applyQuaternion(_q), lift / scale);
   }
 
   /** Pick Idle / Walk / Run from how fast the avatar is actually moving. */
@@ -916,12 +1014,12 @@ export class RemotePlayer {
     const onTeam = !!(team ?? teamOfColor(color));
     const tint = new THREE.Color(color);
     for (const mat of this.materials) {
-      if (mat.name.includes('Visor')) {
+      if (mat.name === 'Visor') {
         // Visor in full colour; in team modes it glows too.
         mat.color.copy(tint);
         mat.emissive.copy(tint).multiplyScalar(onTeam ? TEAM_VISOR_GLOW : 0);
-      } else {
-        mat.color.setRGB(1, 1, 1).lerp(tint, onTeam ? TEAM_TINT : FFA_TINT);
+      } else if (mat.name === 'Uniform') {
+        mat.color.copy(mat.userData.baseColor as THREE.Color).multiply(_color.setRGB(1, 1, 1).lerp(tint, onTeam ? TEAM_TINT : FFA_TINT));
         mat.emissive.copy(tint).multiplyScalar(onTeam ? TEAM_GLOW : 0);
       }
       this.baseLook.set(mat, { color: mat.color.clone(), emissive: mat.emissive.clone() });
