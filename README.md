@@ -629,12 +629,13 @@ default, C, are moved to Ctrl; anyone who picked a key themselves keeps it.
 
 Browsers normally don't let a page catch the close-tab shortcut, so the game uses two safeguards:
 
-- **Keyboard Lock (Chrome, Edge, Opera):** "Click to play" also goes fullscreen and asks the browser for every
-  bound key, plus W, T, N, Q, Tab and 1–9 (`navigator.keyboard.lock`). The game then receives Ctrl+W, Ctrl+T,
-  Ctrl+1 (switch tab), Ctrl+Tab and Cmd+W itself and ignores them, so crouching never closes or switches the
-  tab. While you play, Esc isn't locked, so it releases the mouse and opens the menu as usual. While the
-  mouse is free (menu, inventory, settings) Esc is locked too, so it closes the panel (and Esc in the menu
-  resumes) instead of leaving fullscreen; hold Esc to leave fullscreen. Turn off
+- **Keyboard Lock (Chrome, Edge, Opera):** joining or creating a room goes fullscreen (so does "Click to
+  play" if you've left it), and asks the browser for every bound key, plus W, T, N, Q, Tab, 1–9 and Esc
+  (`navigator.keyboard.lock`). The game then receives Ctrl+W, Ctrl+T, Ctrl+1 (switch tab), Ctrl+Tab and Cmd+W
+  itself and ignores them, so crouching never closes or switches the tab. A tap of Esc opens the menu (the
+  game releases the mouse itself), closes a panel, or resumes from the menu, and the game stays fullscreen;
+  only holding Esc down leaves fullscreen (browsers always allow that). Firefox and Safari have no Keyboard
+  Lock, so there Esc leaves fullscreen and the next click to play goes back in. Turn off
   **Fullscreen while playing** in Settings to play windowed (and lose this protection).
 - **Ctrl shortcuts a page can block** (Ctrl+S save, Ctrl+D bookmark, Ctrl+A, Ctrl+R, Ctrl+F...) are blocked
   while the mouse is captured, in every browser.

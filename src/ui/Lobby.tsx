@@ -4,6 +4,7 @@ import { createRoom, getRoomSetup, randomId } from '../net/network';
 import { isPlayableSpec } from '../game/mapgen';
 import { MapPicker, useMapChoice } from './MapPicker';
 import { initAudio } from '../game/audio';
+import { enterFullscreen } from '../game/fullscreen';
 import { loadCharacter } from '../game/character';
 import { loadGunModels } from '../game/guns';
 import { loadFpArms } from '../game/fpArms';
@@ -101,6 +102,8 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
   const run = async (kind: 'join' | 'create', action: (playerName: string) => Promise<void>) => {
     if (!hasName || busy) return;
     initAudio();
+    // Fullscreen now, while we still have the click (browsers refuse it once the room has loaded).
+    enterFullscreen().catch(() => { /* refused (no click, e.g. an invite's countdown): the first click to play retries */ });
     setBusy(kind);
     setError('');
     try {
@@ -110,6 +113,8 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
       setError(friendlyError(err));
       setBusy(null);
       setJoiningCode('');
+      // Didn't get in: back out of fullscreen to read the lobby.
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     }
   };
 

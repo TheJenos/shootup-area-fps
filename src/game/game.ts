@@ -39,6 +39,7 @@ import { baseRules, goalOf, type ModeRules } from './rules';
 import * as sfx from './audio';
 import { actionFor, keyFor, keyLabel, settings, type Action, type Quality } from './settings';
 import { IN_DISCORD } from '../discord/patch';
+import { enterFullscreen, keyboardLock, keysToLock } from './fullscreen';
 import { setDiscordActivity } from '../discord/discord';
 import { TOUCH } from './device';
 import { StepTracker, type StepEvent } from './footsteps';
@@ -105,28 +106,6 @@ const r3 = (n: number) => Math.round(n * 1000) / 1000;
 const toArr = (v: THREE.Vector3): Vec3Tuple => [r2(v.x), r2(v.y), r2(v.z)];
 const fromArr = (a: Vec3Tuple) => new THREE.Vector3(a[0], a[1], a[2]);
 
-/** Keyboard Lock API (Chrome / Edge, fullscreen only); not in TypeScript's DOM types yet. */
-interface KeyboardLock {
-  lock(codes?: string[]): Promise<void>;
-  unlock(): void;
-}
-const keyboardLock = (): KeyboardLock | undefined => (navigator as Navigator & { keyboard?: KeyboardLock }).keyboard;
-
-/**
- * Keys to take from the browser while playing fullscreen: every bound key (crouch is Ctrl, and
- * Ctrl+1 / Ctrl+Tab would switch tabs), plus the letters of tab / window shortcuts.
- * @param escape take Esc too. Only while the mouse is free (menu, inventory): there the browser's Esc
- *   would leave fullscreen, while the game uses it to close the panel. While playing it's left to the
- *   browser so it releases the mouse. (Holding Esc always leaves fullscreen.)
- */
-function keysToLock(escape: boolean): string[] {
-  const keys = new Set<string>(Object.values(settings.get().bindings));
-  for (const code of ['KeyW', 'KeyT', 'KeyN', 'KeyQ', 'Tab']) keys.add(code);
-  for (let d = 1; d <= 9; d++) keys.add(`Digit${d}`);
-  if (escape) keys.add('Escape');
-  else keys.delete('Escape');
-  return [...keys];
-}
 
 export interface GameOptions {
   /** Element the WebGL canvas is mounted into */
@@ -476,7 +455,7 @@ export class Game {
   requestPointerLock(): void {
     // Fullscreen first: it needs the click, and pointer lock doesn't once we're fullscreen.
     // Not inside Discord, which manages its own window.
-    if (settings.get().fullscreen && !IN_DISCORD) this.enterFullscreen();
+    if (!document.fullscreenElement) this.enterFullscreen();
     if (this.touch) this.startTouchPlay();
     else this.lockPointer();
   }
@@ -705,9 +684,9 @@ export class Game {
    * fullscreen and only in Chrome / Edge; elsewhere the "leave site?" prompt is the safety net.
    */
   private enterFullscreen(): void {
-    if (document.fullscreenElement || !document.documentElement.requestFullscreen) return;
-    document.documentElement.requestFullscreen({ navigationUI: 'hide' })
+    enterFullscreen()
       .then(() => {
+        if (!document.fullscreenElement) return;
         if (this.touch) {
           // Phones: hold the screen in landscape (Android; iOS can't, so the HUD asks to rotate).
           const orientation = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
@@ -720,16 +699,18 @@ export class Game {
       .catch(() => { /* refused or unsupported: play windowed */ });
   }
 
-  /** Re-take the keys for fullscreen: Esc too while the mouse is free (see keysToLock). */
+  /** Re-take the keys for fullscreen (see keysToLock). */
   private syncKeyboardLock(): void {
     if (!document.fullscreenElement) return;
-    keyboardLock()?.lock(keysToLock(!this.locked)).catch(() => {});
+    keyboardLock()?.lock(keysToLock()).catch(() => {});
   }
 
   private bindInput(signal: AbortSignal): void {
     const canvas = this.renderer.domElement;
 
     window.addEventListener('resize', () => this.resize(), { signal });
+    // Fullscreen may have started in the lobby (or come back): take our keys for it.
+    document.addEventListener('fullscreenchange', () => this.syncKeyboardLock(), { signal });
 
     document.addEventListener('pointerlockerror', () => {
       if (IN_DISCORD) this.enterFreeMouse();
@@ -809,6 +790,11 @@ export class Game {
       }
       if (e.code === 'Escape' && this.inventoryOpen) this.closeInventory(false);
       else if (e.code === 'Escape' && this.freeMouse) this.exitFreeMouse();
+      else if (e.code === 'Escape' && this.locked) {
+        // Fullscreen keeps Esc for the game (see keysToLock), so the browser doesn't release the
+        // mouse itself: pause here, and stay fullscreen.
+        if (!e.repeat) document.exitPointerLock();
+      }
       else if (e.code === 'Escape' && !e.repeat && !this.locked && this.joined && performance.now() - this.unlockedAt > 400) {
         // Esc in the menu goes back to the game (not straight after the Esc that opened it).
         this.requestPointerLock();
