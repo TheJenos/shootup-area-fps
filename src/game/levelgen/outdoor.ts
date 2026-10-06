@@ -1,5 +1,5 @@
 /**
- * Outdoor maps: grassy hills (plateaus with ramps, some with a second tier), big rocks, patches
+ * Outdoor maps: rolling terrain (levelgen/terrain.ts), now and then a rocky plateau with ramps, big rocks, patches
  * of forest (trunks block you, canopies stop bullets but you walk under them), a cabin or two,
  * fallen logs, log piles, tents and fences.
  */
@@ -98,8 +98,9 @@ function outdoorCover(p: Placer, x: number, z: number): Piece {
 
 export function outdoorLayout(seed: string, p: Placer): MapLayout {
   carveOutline(p, 'outdoor');
-  // A hill or a rock outcrop in the middle.
-  if (p.chance(0.5)) {
+  // A rock outcrop in the middle, now and then a built-up mound with ramps instead (the terrain
+  // supplies most of the hills).
+  if (p.chance(0.2)) {
     const s = round(p.range(5, 7));
     const h = round(p.range(1.2, 1.6));
     const boxes: MapBox[] = [
@@ -133,17 +134,17 @@ export function outdoorLayout(seed: string, p: Placer): MapLayout {
     return placed;
   };
 
-  tryPlace((x, z) => hill(p, x, z), 2 + Math.floor(p.rand() * 3), 120);
-  tryPlace((x, z) => cabin(p, x, z), p.chance(0.75) ? 1 + (p.chance(0.5) ? 1 : 0) : 0, 120);
-  tryPlace((x, z) => forest(p, x, z), 4 + Math.floor(p.rand() * 3), 160);
+  tryPlace((x, z) => hill(p, x, z), p.chance(0.5) ? 1 : 0, 120);
+  tryPlace((x, z) => cabin(p, x, z), 1 + (p.chance(0.6) ? 1 : 0) + (p.chance(0.3) ? 1 : 0), 220);
+  tryPlace((x, z) => forest(p, x, z), 7 + Math.floor(p.rand() * 5), 300);
   // Big rocks as cover.
   tryPlace((x, z) => {
     const id = p.pick(propsTagged('rock'));
     const rot: PropRot = p.pick(rots);
     const s = propSize(id, rot);
     return s.h >= 1.6 ? propPiece(id, x, z, rot) : propPiece('rock-tall-a', x, z, rot);
-  }, 6 + Math.floor(p.rand() * 5), 160);
-  tryPlace((x, z) => outdoorCover(p, x, z), 10 + Math.floor(p.rand() * 8), 240, GAP / 2);
-  fillCover(p, 3 + Math.floor(p.rand() * 4), 200);
+  }, 10 + Math.floor(p.rand() * 8), 300);
+  tryPlace((x, z) => outdoorCover(p, x, z), 18 + Math.floor(p.rand() * 14), 450, GAP / 2);
+  fillCover(p, 6 + Math.floor(p.rand() * 7), 400);
   return p.result(seed, 'outdoor');
 }

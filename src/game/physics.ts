@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type RAPIER_NS from '@dimforge/rapier3d-compat';
 import type { Ramp } from './ramps';
+import type { TerrainMesh } from './world';
 
 /*
  * Rapier rigid-body physics, shared by ragdolls, loose props, thrown items and the player.
@@ -94,8 +95,8 @@ export class PhysicsWorld {
     this.world.timestep = PHYSICS_STEP;
   }
 
-  /** Replace the map geometry. Boxes are axis-aligned; ramps become wedge-shaped hulls. */
-  setMap(colliders: readonly THREE.Box3[], ramps: readonly Ramp[]): void {
+  /** Replace the map geometry. Boxes are axis-aligned; ramps become wedge-shaped hulls; hills a triangle mesh. */
+  setMap(colliders: readonly THREE.Box3[], ramps: readonly Ramp[], terrain: TerrainMesh | null = null): void {
     const { R, world } = this;
     if (this.mapBody) world.removeRigidBody(this.mapBody);
     // Deployed walls and turrets hung off the old map body; they went with it.
@@ -105,6 +106,10 @@ export class PhysicsWorld {
     const solid = groups(GROUP.WORLD, ALL);
     // The floor: a thick slab whose top is y = 0.
     world.createCollider(R.ColliderDesc.cuboid(500, 1, 500).setTranslation(0, -1, 0).setCollisionGroups(solid).setFriction(0.9), body);
+    // The hills on top of it (flat parts of the mesh lie on the slab).
+    if (terrain) {
+      world.createCollider(R.ColliderDesc.trimesh(terrain.positions, terrain.indices).setCollisionGroups(solid).setFriction(0.9), body);
+    }
     const center = new THREE.Vector3();
     const size = new THREE.Vector3();
     for (const box of colliders) {

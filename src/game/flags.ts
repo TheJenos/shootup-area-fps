@@ -54,6 +54,9 @@ interface FlagView {
   rest: Float32Array;
   beam: THREE.Mesh;
   ring: THREE.Mesh;
+  /** The pad and the hazard stripes around it */
+  pad: THREE.Mesh;
+  hazard: THREE.Mesh;
   placement: FlagPlacement;
 }
 
@@ -107,8 +110,20 @@ export class FlagField {
       this.add(pad, hazard, ring, flag);
       const positions = clothGeo.getAttribute('position') as THREE.BufferAttribute;
       const rest = Float32Array.from(positions.array);
-      this.views[team] = { flag, cloth, positions, rest, beam, ring, placement: { at: 'base' } };
+      this.views[team] = { flag, cloth, positions, rest, beam, ring, pad, hazard, placement: { at: 'base' } };
       this.place(team, { at: 'base' });
+    }
+  }
+
+  /** The map changed (and FLAG_BASES with it): move the bases, and flags standing on them. */
+  moveBases(): void {
+    for (const team of TEAMS) {
+      const base = FLAG_BASES[team];
+      const view = this.views[team];
+      view.pad.position.set(base.x, 0.04, base.z);
+      view.hazard.position.set(base.x, 0.01, base.z);
+      view.ring.position.set(base.x, 0.1, base.z);
+      this.place(team, view.placement);
     }
   }
 

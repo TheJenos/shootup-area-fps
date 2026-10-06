@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { ARENA_HALF, buildWorld, type World } from './world';
+import { buildWorld, type World } from './world';
 import type { Ramp } from './ramps';
 import { loadPhysics, PhysicsWorld, setActivePhysics } from './physics';
 import { DebrisField, LOOSE_PROPS } from './debris';
@@ -26,7 +26,7 @@ import { loadPropModels } from './props';
 import { GrenadeFx, simulateGrenade, THROW_LIFT, THROW_SPEED } from './grenades';
 import { FlagField, placementOf, type FlagPlacement } from './flags';
 import {
-  CLOCK_WARNING, FLAG_BASES, FLAG_RADIUS, FLAG_RETURN_TIME, GUN_GAME_LADDER, MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_HEAD_DAMAGE,
+  CLOCK_WARNING, FLAG_BASES, setFlagBases, FLAG_RADIUS, FLAG_RETURN_TIME, GUN_GAME_LADDER, MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_HEAD_DAMAGE,
   MELEE_RANGE, MODES, MVP_TIME, RESULTS_TIME, TEAMS, TEAM_INFO, gunGameGun, otherTeam, teamSpawns,
 } from './modes';
 import { MomentTracker } from './moments';
@@ -353,7 +353,7 @@ export class Game {
     this.weapon = new Weapon(aspect);
     this.povWeapon = new Weapon(aspect);
     this.effects = new Effects(this.scene);
-    this.pickups = new PickupField(this.scene, this.obstacles);
+    this.pickups = new PickupField(this.scene, this.obstacles, () => this.world);
     this.grenades = new GrenadeFx(this.scene);
     this.smoke = new SmokeField(this.scene);
     this.walls = new WallField(this.scene, this.colliders, this.solids);
@@ -391,8 +391,10 @@ export class Game {
       colliders: this.colliders, solids: this.solids, ramps: this.ramps, obstacles: this.obstacles,
     }, { looseProps: LOOSE_PROPS });
     if (this.appliedQuality) this.world.setQuality(this.appliedQuality);
-    this.physics?.setMap(this.colliders, this.ramps);
+    this.physics?.setMap(this.colliders, this.ramps, this.world.terrainMesh);
     this.debris.setProps(this.world.looseProps);
+    setFlagBases(map.flags);
+    this.flagField?.moveBases();
     this.mapSeed = map.seed;
     this.floorSurface = map.theme.surface;
     this.hud.update({ map: { name: layoutName(map), seed: map.seed } });
@@ -402,7 +404,7 @@ export class Game {
   private startPhysics(): void {
     const physics = new PhysicsWorld();
     this.physics = physics;
-    physics.setMap(this.colliders, this.ramps);
+    physics.setMap(this.colliders, this.ramps, this.world.terrainMesh);
     // Deployed walls and turrets block movement too.
     const mirror = (box: THREE.Box3, added: boolean) => (added ? physics.addBox(box, box) : physics.removeBox(box));
     this.walls.onCollider = mirror;
@@ -928,8 +930,8 @@ export class Game {
       const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
       this.specPos.addScaledVector(dir, forward * speed).addScaledVector(right, strafe * speed);
       this.specPos.y = THREE.MathUtils.clamp(this.specPos.y + rise * speed, 0.5, 60);
-      this.specPos.x = THREE.MathUtils.clamp(this.specPos.x, -ARENA_HALF, ARENA_HALF);
-      this.specPos.z = THREE.MathUtils.clamp(this.specPos.z, -ARENA_HALF, ARENA_HALF);
+      this.specPos.x = THREE.MathUtils.clamp(this.specPos.x, -this.world.half, this.world.half);
+      this.specPos.z = THREE.MathUtils.clamp(this.specPos.z, -this.world.half, this.world.half);
       cam.position.copy(this.specPos);
       cam.rotation.set(this.player.pitch, this.player.yaw, 0);
     }
@@ -2449,7 +2451,7 @@ export class Game {
     const z = r2(p.z - Math.cos(yaw) * 1.6);
     const y = r2(this.groundBelow(new THREE.Vector3(x, p.y + 0.1, z)));
     const box = TurretField.boxFor(x, y, z);
-    const limit = ARENA_HALF - 0.8;
+    const limit = this.world.half - 0.8;
     if (Math.abs(x) > limit || Math.abs(z) > limit) return false;
     if (this.world.colliders.some((c) => c.intersectsBox(box))) return false;
     const padded = box.clone().expandByScalar(0.3);
@@ -2512,7 +2514,7 @@ export class Game {
   private placeMine(): boolean {
     const p = this.player.position;
     if (!this.player.onGround) return false;
-    const limit = ARENA_HALF - 0.6;
+    const limit = this.world.half - 0.6;
     if (Math.abs(p.x) > limit || Math.abs(p.z) > limit) return false;
     const x = r2(p.x);
     const z = r2(p.z);
@@ -2637,7 +2639,7 @@ export class Game {
     const foot = new THREE.Vector3(x, p.y + 0.1, z);
     const y = r2(this.groundBelow(foot));
     const box = WallField.boxFor(x, y, z, axis);
-    const limit = ARENA_HALF - 0.8;
+    const limit = this.world.half - 0.8;
     if (Math.abs(box.min.x) > limit || Math.abs(box.max.x) > limit || Math.abs(box.min.z) > limit || Math.abs(box.max.z) > limit) return false;
     if (this.world.colliders.some((c) => c.intersectsBox(box))) return false;
     const padded = box.clone().expandByScalar(0.4);
@@ -2977,7 +2979,7 @@ export class Game {
     this.physics?.update(dt);
     this.debris.update();
     // Backstop for the invisible boundary (world.ts): if anything still put us outside, step back in.
-    const edge = ARENA_HALF - 0.9;
+    const edge = this.world.half - 0.9;
     const pos = this.player.position;
     if (Math.abs(pos.x) > edge + 0.5 || Math.abs(pos.z) > edge + 0.5) {
       pos.x = THREE.MathUtils.clamp(pos.x, -edge, edge);

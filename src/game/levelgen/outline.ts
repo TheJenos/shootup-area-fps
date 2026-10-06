@@ -14,10 +14,10 @@ import type { MapBox, MapStyle, Piece } from './types';
 
 const WALL_H = 6;
 /** Keep the outline this far from the flags (x and z) */
-const FLAG_KEEP_X = 9;
-const FLAG_KEEP_Z = 24;
+const FLAG_KEEP_X = 12;
+const FLAG_KEEP_Z = 34;
 /** Never push in further than this from an edge, so the middle stays open */
-const MAX_DEPTH = 18;
+const MAX_DEPTH = 25;
 
 /**
  * Rectangles for one side of the north half (east if sx = 1, west if sx = -1). Each side picks its
@@ -33,7 +33,7 @@ function sideShapes(p: Placer, sx: 1 | -1): Rect[] {
   let cornerSize = 0;
   if (corner === 'stairs') {
     // Steps cut diagonally across the corner: from far off it reads as a bevelled or rounded edge.
-    const size = p.range(12, 18);
+    const size = p.range(16, 25);
     const steps = 3 + Math.floor(p.rand() * 3);
     const curve = p.chance(0.5);
     for (let i = 0; i < steps; i++) {
@@ -46,39 +46,39 @@ function sideShapes(p: Placer, sx: 1 | -1): Rect[] {
     }
     cornerSize = size;
   } else if (corner === 'block') {
-    const w = p.range(12, 17);
-    const d = p.range(12, 17);
+    const w = p.range(16, 24);
+    const d = p.range(16, 24);
     add(E - w, E, E - d, E);
     cornerSize = Math.max(w, d);
   } else if (corner === 'l') {
-    const w = p.range(6, 11);
-    const d = p.range(6, 11);
+    const w = p.range(8, 15);
+    const d = p.range(8, 15);
     add(E - w, E, E - d, E);
     if (p.chance(0.5)) add(E - w - p.range(3, 5), E - w, E - p.range(3, Math.max(3.5, d - 2)), E);
     cornerSize = Math.max(w, d);
   }
   // Notches along the side wall (x = E), between the middle and the corner.
-  const notches = p.chance(0.8) ? 1 + (p.chance(0.4) ? 1 : 0) : 0;
+  const notches = p.chance(0.85) ? 1 + (p.chance(0.5) ? 1 : 0) : 0;
   for (let i = 0; i < notches; i++) {
-    const len = p.range(5, 12);
+    const len = p.range(7, 16);
     const room = E - cornerSize - 3 - len;
     if (room < 3) break;
     const z0 = p.range(3, room);
-    const depth = p.range(4, 14);
+    const depth = p.range(5, 19);
     add(E - depth, E, z0, z0 + len);
     if (p.chance(0.4)) {
       // A step on one end: a bent wall.
-      const step = p.range(2, 5);
+      const step = p.range(2, 6);
       add(E - depth - step, E - depth, z0, z0 + p.range(2.5, len - 1));
     }
   }
   // A notch in the back wall (z = E) between the flag and the corner.
   if (p.chance(0.6)) {
-    const len = p.range(5, 11);
+    const len = p.range(7, 15);
     const room = E - Math.max(cornerSize, 3) - len - 1;
     if (room > FLAG_KEEP_X) {
       const x0 = p.range(FLAG_KEEP_X, room);
-      const depth = p.range(3, 9);
+      const depth = p.range(4, 12);
       add(x0, x0 + len, E - depth, E);
     }
   }
@@ -88,8 +88,8 @@ function sideShapes(p: Placer, sx: 1 | -1): Rect[] {
 /** A pinch across the middle on one side (centred on z = 0, so it's its own mirror image). */
 function waist(p: Placer, sx: 1 | -1): Rect | null {
   if (!p.chance(0.45)) return null;
-  const depth = p.range(6, 15);
-  const half = p.range(3, 7);
+  const depth = p.range(8, 21);
+  const half = p.range(4, 9);
   const E = ARENA_HALF;
   return sx === 1 ? { minX: E - depth, maxX: E, minZ: -half, maxZ: half } : { minX: -E, maxX: -E + depth, minZ: -half, maxZ: half };
 }
@@ -100,7 +100,7 @@ function allowed(r: Rect, kept: Rect[]): boolean {
   const depthX = Math.min(r.maxX + E, E - r.minX);
   const depthZ = Math.min(r.maxZ + E, E - r.minZ);
   if (Math.min(depthX, depthZ) > MAX_DEPTH) return false;
-  // The flag spots at (0, ±32) and the ground in front of them stay open.
+  // The flag spots at (0, ±45) and the ground in front of them stay open.
   if (r.minX < FLAG_KEEP_X && r.maxX > -FLAG_KEEP_X && Math.max(Math.abs(r.minZ), Math.abs(r.maxZ)) > FLAG_KEEP_Z) return false;
   for (const k of kept) {
     const g = gapBetween(k, r);

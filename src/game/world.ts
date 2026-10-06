@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { ARENA_HALF, type MapBox, type MapLayout, type StepSurface } from './mapgen';
+import { terrainHeight, type MapBox, type MapLayout, type StepSurface, type Terrain } from './mapgen';
 import type { Quality } from './settings';
 import { overRamp, rampHeightAt, wedgeGeometry, type Ramp } from './ramps';
 import {
@@ -12,7 +12,6 @@ import { propParts, whenPropsReady } from './props';
 /** The sky dome sits inside the camera's far plane (300 m) and follows the camera. */
 const SKY_RADIUS = 250;
 
-export { ARENA_HALF };
 
 /** The lists a world fills in place, so everything holding them sees each new map. */
 export interface WorldLists {
@@ -31,7 +30,17 @@ export interface WorldOptions {
   looseProps?: ReadonlySet<string>;
 }
 
+/** The terrain as one triangle mesh, for the physics engine */
+export interface TerrainMesh {
+  positions: Float32Array;
+  indices: Uint32Array;
+}
+
 export interface World extends WorldLists {
+  /** Half the map's width: the outer walls stand at ±half */
+  half: number;
+  /** The hills' surface for the physics engine; null on a flat map */
+  terrainMesh: TerrainMesh | null;
   spawnPoints: THREE.Vector3[];
   /** Keep this centered on the camera so the horizon never gets closer */
   sky: THREE.Object3D;
@@ -40,8 +49,9 @@ export interface World extends WorldLists {
   /** The props left out for the caller to simulate (see WorldOptions.looseProps) */
   looseProps: MapLayout['props'];
   /**
-   * The top of whatever is under `p` (the floor is 0) and what footsteps on it sound like (null
-   * means the map's floor). Boxes count if their top is at most 5 cm above p, ramps 30 cm.
+   * The top of whatever is under `p` (the floor, which rises over the terrain's hills) and what
+   * footsteps on it sound like (null means the map's floor). Boxes count if their top is at most
+   * 5 cm above p, ramps 30 cm.
    */
   groundAt(p: THREE.Vector3): { y: number; surface: StepSurface | null };
   /** Shadow map resolution and surface detail (bump maps) for the graphics quality setting */
@@ -87,7 +97,7 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
   solids.length = 0;
   ramps.length = 0;
   obstacles.length = 0;
-  const { theme } = layout;
+  const { theme, half } = layout;
   const root = new THREE.Group();
   root.name = `map:${layout.seed}`;
   scene.add(root);
@@ -100,7 +110,7 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
   );
   sky.renderOrder = -1;
   root.add(sky);
-  scene.fog = new THREE.Fog(theme.sky, 45, 130);
+  scene.fog = new THREE.Fog(theme.sky, 45, Math.max(130, half * 2.6));
 
   // Indoor maps lean on the sky light: rooms only get the sun through windows and skylights.
   const indoor = layout.style === 'industrial' || layout.style === 'town';
@@ -109,25 +119,24 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
   sun.position.set(30, 60, 20);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  Object.assign(sun.shadow.camera, { left: -50, right: 50, top: 50, bottom: -50, near: 1, far: 150 });
+  const reach = half + 10;
+  Object.assign(sun.shadow.camera, { left: -reach, right: reach, top: reach, bottom: -reach, near: 1, far: reach * 3 });
   sun.shadow.bias = -0.0005;
   root.add(sun);
 
-  // The texture is shared between games, so tile through the UVs rather than its repeat setting.
-  const floorGeo = new THREE.PlaneGeometry(ARENA_HALF * 2, ARENA_HALF * 2);
-  const floorUv = floorGeo.getAttribute('uv') as THREE.BufferAttribute;
-  for (let i = 0; i < floorUv.count; i++) {
-    floorUv.setXY(i, (floorUv.getX(i) * ARENA_HALF * 2) / FLOOR_TILE, (floorUv.getY(i) * ARENA_HALF * 2) / FLOOR_TILE);
-  }
   const floorMap = floorTexture(theme.floorTexture, theme);
   const floorMat = new THREE.MeshStandardMaterial({ map: floorMap, bumpMap: floorMap, bumpScale: 0.6, roughness: 0.95 });
   /** Materials whose colour texture doubles as a bump map; the bump is dropped below high quality. */
   const bumped: THREE.MeshStandardMaterial[] = [floorMat];
-  const floor = new THREE.Mesh(floorGeo, floorMat);
-  floor.rotation.x = -Math.PI / 2;
-  floor.receiveShadow = true;
-  root.add(floor);
-  solids.push(floor);
+  const terrainMesh = layout.terrain ? terrainTriangles(layout.terrain, half) : null;
+  for (const geo of floorGeometries(layout.terrain, half)) {
+    const floor = new THREE.Mesh(geo, floorMat);
+    floor.receiveShadow = true;
+    // Hills throw shadows across the low ground; flat floor has nothing to shadow.
+    floor.castShadow = geo.userData.hilly === true;
+    root.add(floor);
+    solids.push(floor);
+  }
 
   const materials = new Map<string, THREE.MeshStandardMaterial>();
   const material = (surface: BoxSurface, color: number) => {
@@ -249,7 +258,7 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
   };
 
   // Perimeter walls
-  const W = ARENA_HALF;
+  const W = half;
   const wall = (x: number, z: number, w: number, d: number): MapBox => ({ x, z, w, h: 6, d, y: 0, color: theme.wall, surface: 'perimeter' });
   for (const b of [wall(0, -W, W * 2 + 1, 1), wall(0, W, W * 2 + 1, 1), wall(-W, 0, 1, W * 2 + 1), wall(W, 0, 1, W * 2 + 1)]) addBox(b);
 
@@ -349,7 +358,8 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
   };
   const unsubscribe = layout.props.length ? whenPropsReady(addProps) : () => {};
 
-  const spawnPoints = layout.spawnPoints.map(([x, z]) => new THREE.Vector3(x, 0, z));
+  const ground = (x: number, z: number) => terrainHeight(layout.terrain, half, x, z);
+  const spawnPoints = layout.spawnPoints.map(([x, z]) => new THREE.Vector3(x, ground(x, z), z));
 
   // Painted markers on the floor at each spawn, pointing toward the middle of the map.
   // Decoration only: not colliders, not hit by bullets.
@@ -365,7 +375,7 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
   });
   for (const p of spawnPoints) {
     const marker = new THREE.Mesh(markerGeo, markerMat);
-    marker.position.set(p.x, 0.01, p.z);
+    marker.position.set(p.x, p.y + 0.01, p.z);
     // The arrow points along the texture's top, which is -z before rotating; face the center.
     marker.rotation.y = Math.atan2(p.x, p.z);
     marker.receiveShadow = true;
@@ -373,7 +383,7 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
   }
 
   const groundAt = (p: THREE.Vector3): { y: number; surface: StepSurface | null } => {
-    let y = 0;
+    let y = ground(p.x, p.z);
     let surface: StepSurface | null = null;
     for (const c of colliders) {
       if (p.x > c.min.x && p.x < c.max.x && p.z > c.min.z && p.z < c.max.z && c.max.y <= p.y + 0.05 && c.max.y > y) {
@@ -443,7 +453,95 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
   };
 
   const looseProps = layout.props.filter((p) => options.looseProps?.has(p.id));
-  return { colliders, solids, ramps, obstacles, spawnPoints, sky, root, looseProps, groundAt, setQuality, dispose };
+  return { colliders, solids, ramps, obstacles, half, terrainMesh, spawnPoints, sky, root, looseProps, groundAt, setQuality, dispose };
+}
+
+/** Floor tiles per side: separate meshes so bullet raycasts and culling skip most of the hills */
+const FLOOR_CHUNK = 16;
+
+/**
+ * The floor: flat squares where the ground is flat, and the terrain's triangles (the same split as
+ * terrainHeight) where it isn't. Textured in world units, so the tiling is seamless across chunks.
+ * The texture is shared between games, so tiling goes through the UVs rather than its repeat setting.
+ */
+function floorGeometries(t: Terrain | undefined, half: number): THREE.BufferGeometry[] {
+  const flatSquare = (x0: number, z0: number, x1: number, z1: number) => {
+    const geo = new THREE.PlaneGeometry(x1 - x0, z1 - z0).rotateX(-Math.PI / 2).translate((x0 + x1) / 2, 0, (z0 + z1) / 2);
+    const pos = geo.getAttribute('position') as THREE.BufferAttribute;
+    const uv = geo.getAttribute('uv') as THREE.BufferAttribute;
+    for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) / FLOOR_TILE, -pos.getZ(i) / FLOOR_TILE);
+    return geo;
+  };
+  if (!t) return [flatSquare(-half, -half, half, half)];
+  const side = t.n + 1;
+  const out: THREE.BufferGeometry[] = [];
+  for (let c0 = 0; c0 < t.n; c0 += FLOOR_CHUNK) {
+    for (let r0 = 0; r0 < t.n; r0 += FLOOR_CHUNK) {
+      const c1 = Math.min(t.n, c0 + FLOOR_CHUNK);
+      const r1 = Math.min(t.n, r0 + FLOOR_CHUNK);
+      const x = (i: number) => -half + i * t.cell;
+      let hilly = false;
+      for (let r = r0; r <= r1 && !hilly; r++) for (let c = c0; c <= c1; c++) if (t.heights[r * side + c]! > 0) { hilly = true; break; }
+      if (!hilly) {
+        out.push(flatSquare(x(c0), x(r0), x(c1), x(r1)));
+        continue;
+      }
+      const cols = c1 - c0 + 1;
+      const positions: number[] = [];
+      const uvs: number[] = [];
+      for (let r = r0; r <= r1; r++) {
+        for (let c = c0; c <= c1; c++) {
+          positions.push(x(c), t.heights[r * side + c]!, x(r));
+          uvs.push(x(c) / FLOOR_TILE, -x(r) / FLOOR_TILE);
+        }
+      }
+      const index: number[] = [];
+      for (let r = 0; r < r1 - r0; r++) {
+        for (let c = 0; c < c1 - c0; c++) {
+          const a = r * cols + c; // (x0, z0)
+          const b = a + 1; // (x1, z0)
+          const d = a + cols; // (x0, z1)
+          const e = d + 1; // (x1, z1)
+          // Split along a–e, counter-clockwise seen from above.
+          index.push(a, e, b, a, d, e);
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geo.setIndex(index);
+      geo.computeVertexNormals();
+      geo.userData.hilly = true;
+      out.push(geo);
+    }
+  }
+  return out;
+}
+
+/** The terrain's hills as one triangle mesh (same split as terrainHeight and the drawn floor). */
+function terrainTriangles(t: Terrain, half: number): TerrainMesh {
+  const side = t.n + 1;
+  const positions = new Float32Array(side * side * 3);
+  for (let r = 0; r < side; r++) {
+    for (let c = 0; c < side; c++) {
+      const i = (r * side + c) * 3;
+      positions[i] = -half + c * t.cell;
+      positions[i + 1] = t.heights[r * side + c]!;
+      positions[i + 2] = -half + r * t.cell;
+    }
+  }
+  // Only the raised triangles: the flat ones would lie on the physics floor slab.
+  const h = t.heights;
+  const list: number[] = [];
+  for (let r = 0; r < t.n; r++) {
+    for (let c = 0; c < t.n; c++) {
+      const a = r * side + c;
+      const e = a + side + 1;
+      if (h[a]! > 0 || h[e]! > 0 || h[a + 1]! > 0) list.push(a, e, a + 1);
+      if (h[a]! > 0 || h[a + side]! > 0 || h[e]! > 0) list.push(a, a + side, e);
+    }
+  }
+  return { positions, indices: new Uint32Array(list) };
 }
 
 /** Compute `root`'s matrices now and stop three.js recomputing them each frame (for things that never move). */

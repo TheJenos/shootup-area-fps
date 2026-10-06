@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ABILITIES } from './abilities';
-import { ARENA_HALF } from './world';
+import type { World } from './world';
 import { boxTexture } from './textures';
 import { GUNS, buildGunModel, isPickupGun } from './guns';
 import type { AbilityType, PickupRecord, PickupType } from '../types';
@@ -158,13 +158,21 @@ export class PickupField {
   private readonly scene: THREE.Scene;
   /** Everything taking up floor space (cover, ramps), so pickups don't land inside it */
   private readonly colliders: THREE.Box3[];
+  /** The current map: its size, and the ground to stand pickups on */
+  private readonly map: () => Pick<World, 'half' | 'groundAt'>;
   private readonly pickups = new Map<string, PickupView>();
 
   private pedestal: THREE.MeshStandardMaterial | null = null;
 
-  constructor(scene: THREE.Scene, obstacles: THREE.Box3[]) {
+  constructor(scene: THREE.Scene, obstacles: THREE.Box3[], map: () => Pick<World, 'half' | 'groundAt'>) {
     this.scene = scene;
     this.colliders = obstacles;
+    this.map = map;
+  }
+
+  /** Height of the floor (or hillside) at (x, z), ignoring anything standing there. */
+  private floorAt(x: number, z: number): number {
+    return this.map().groundAt(new THREE.Vector3(x, 0, z)).y;
   }
 
   /** Metal plate under every pickup; one material shared by all of them. */
@@ -203,7 +211,7 @@ export class PickupField {
       color, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
     });
     const group = new THREE.Group();
-    group.position.set(record.x, 0, record.z);
+    group.position.set(record.x, this.floorAt(record.x, record.z), record.z);
     let icon: THREE.Object3D;
     if (kind === 'gun') {
       // A full-size copy of the gun itself, spinning on its side.
@@ -251,14 +259,14 @@ export class PickupField {
     for (const [id, p] of this.pickups) {
       const dx = p.record.x - pos.x;
       const dz = p.record.z - pos.z;
-      if (dx * dx + dz * dz < PICKUP_RADIUS * PICKUP_RADIUS && pos.y < 1.5) return id;
+      if (dx * dx + dz * dz < PICKUP_RADIUS * PICKUP_RADIUS && pos.y < p.group.position.y + 1.5) return id;
     }
     return null;
   }
 
   /** A random spot on open floor, away from cover and other pickups. */
   randomSpot(): { x: number; z: number } | null {
-    const limit = ARENA_HALF - 2;
+    const limit = this.map().half - 2;
     for (let attempt = 0; attempt < 40; attempt++) {
       const x = (Math.random() * 2 - 1) * limit;
       const z = (Math.random() * 2 - 1) * limit;
@@ -277,7 +285,7 @@ export class PickupField {
    * evenly spaced angles, pushed further out when cover or the arena edge is in the way.
    */
   scatterAround(x: number, z: number, count: number): { x: number; z: number }[] {
-    const limit = ARENA_HALF - 1;
+    const limit = this.map().half - 1;
     const spots: { x: number; z: number }[] = [];
     const free = (sx: number, sz: number) => this.isOpen(sx, sz, spots);
     const start = Math.random() * Math.PI * 2;
@@ -308,7 +316,7 @@ export class PickupField {
    * clear spot around it, so drops spread out instead of piling onto each other.
    */
   spotNear(x: number, z: number): { x: number; z: number } {
-    const limit = ARENA_HALF - 1;
+    const limit = this.map().half - 1;
     const round = (v: number) => Math.round(v * 100) / 100;
     if (this.isOpen(x, z)) return { x: round(x), z: round(z) };
     const start = Math.random() * Math.PI * 2;
@@ -326,7 +334,7 @@ export class PickupField {
 
   /** Open floor inside the arena, clear of cover, and not on top of another pickup (or `taken` spot). */
   private isOpen(x: number, z: number, taken: readonly { x: number; z: number }[] = []): boolean {
-    const limit = ARENA_HALF - 1;
+    const limit = this.map().half - 1;
     if (Math.abs(x) >= limit || Math.abs(z) >= limit) return false;
     const blocked = this.colliders.some((c) =>
       x > c.min.x - SCATTER_CLEARANCE && x < c.max.x + SCATTER_CLEARANCE &&

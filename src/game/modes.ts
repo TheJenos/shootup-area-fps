@@ -67,10 +67,18 @@ export const CLOCK_WARNING = 30;
 /** Each team's half of the map: red owns +z, blue owns -z. */
 const SIDE: Record<Team, number> = { red: 1, blue: -1 };
 
+/** Where each team's flag stands on the current map: moved in place by setFlagBases when a map loads. */
 export const FLAG_BASES: Record<Team, THREE.Vector3> = {
   red: new THREE.Vector3(0, 0, 32 * SIDE.red),
   blue: new THREE.Vector3(0, 0, 32 * SIDE.blue),
 };
+
+/** Move the flag bases to a map's flag spots ([x, z], red's first; see MapLayout.flags). */
+export function setFlagBases(flags: readonly [number, number][]): void {
+  const [red, blue] = flags;
+  if (red) FLAG_BASES.red.set(red[0], 0, red[1]);
+  if (blue) FLAG_BASES.blue.set(blue[0], 0, blue[1]);
+}
 
 /**
  * Carrying the enemy flag stows your guns and grenades: the flag itself is your only weapon,

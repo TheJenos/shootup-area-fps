@@ -156,13 +156,13 @@ function centerpiece(p: Placer): void {
 export function industrialLayout(seed: string, p: Placer): MapLayout {
   carveOutline(p, 'industrial');
   // Keep the lanes to both flags and the side spawns open.
-  p.reserve({ minX: -3, maxX: 3, minZ: 20, maxZ: INNER });
-  p.reserve({ minX: 20, maxX: INNER, minZ: -3, maxZ: 3 });
-  p.reserve({ minX: -INNER, maxX: -20, minZ: -3, maxZ: 3 });
+  p.reserve({ minX: -3, maxX: 3, minZ: 28, maxZ: INNER });
+  p.reserve({ minX: 28, maxX: INNER, minZ: -3, maxZ: 3 });
+  p.reserve({ minX: -INNER, maxX: -28, minZ: -3, maxZ: 3 });
   centerpiece(p);
 
-  // A warehouse on each side of our half (mirrored into the other), if one fits.
-  for (const sx of [1, -1]) {
+  // A warehouse or two on each side of our half (mirrored into the other), if they fit.
+  for (const sx of [1, -1, 1, -1].slice(0, 2 + (p.chance(0.6) ? 2 : 0))) {
     for (let attempt = 0; attempt < 60; attempt++) {
       const flip = p.chance(0.5);
       const w = round(flip ? p.range(10, 13) : p.range(14, 17));
@@ -178,8 +178,8 @@ export function industrialLayout(seed: string, p: Placer): MapLayout {
   }
 
   // Landmarks: a water tower, chimneys, tanks, or a closed factory block.
-  const landmarks = 2 + Math.floor(p.rand() * 3);
-  for (let placed = 0, attempt = 0; attempt < 120 && placed < landmarks; attempt++) {
+  const landmarks = 3 + Math.floor(p.rand() * 4);
+  for (let placed = 0, attempt = 0; attempt < 200 && placed < landmarks; attempt++) {
     const id = p.pick(['water-tower', 'chimney', 'chimney-medium', 'tank-large', 'tank', 'factory-c', 'factory-d', 'factory-e'] as const);
     const rot = p.pick([0, 1, 2, 3] as const);
     const s = propSize(id, rot);
@@ -192,8 +192,8 @@ export function industrialLayout(seed: string, p: Placer): MapLayout {
   }
 
   // Container rows and yards.
-  const rows = 4 + Math.floor(p.rand() * 5);
-  for (let placed = 0, attempt = 0; attempt < 240 && placed < rows; attempt++) {
+  const rows = 8 + Math.floor(p.rand() * 7);
+  for (let placed = 0, attempt = 0; attempt < 400 && placed < rows; attempt++) {
     const axis = p.chance(0.5) ? 'x' : 'z';
     const x = p.range(-INNER + 8, INNER - 8);
     const z = p.range(4, INNER - 8);
@@ -206,8 +206,8 @@ export function industrialLayout(seed: string, p: Placer): MapLayout {
   }
 
   // Small industrial cover, then the classic pieces to fill the gaps.
-  const smalls = 10 + Math.floor(p.rand() * 10);
-  for (let placed = 0, attempt = 0; attempt < 400 && placed < smalls; attempt++) {
+  const smalls = 20 + Math.floor(p.rand() * 16);
+  for (let placed = 0, attempt = 0; attempt < 700 && placed < smalls; attempt++) {
     const x = p.range(-INNER + 2, INNER - 2);
     const z = p.range(2, INNER - 2);
     const kind = p.rand();
@@ -218,6 +218,6 @@ export function industrialLayout(seed: string, p: Placer): MapLayout {
     p.place(piece);
     placed++;
   }
-  fillCover(p, 6 + Math.floor(p.rand() * 8), 400);
+  fillCover(p, 12 + Math.floor(p.rand() * 14), 700);
   return p.result(seed, 'industrial');
 }

@@ -6,12 +6,14 @@
  * generator in levelgen/ places pieces in one quarter and mirrors them into the other three, so
  * every spawn and both CTF bases see the same layout. Each map is checked (levelgen/check.ts):
  * if it fails, the seed is retried with a suffix, and as a last resort the original box arena
- * is used. The `classic` seed is the original hand-made arena.
+ * is used. Then terrain (levelgen/terrain.ts) raises rolling hills in the open ground between the
+ * pieces. The `classic` seed is the original hand-made arena, on a smaller, flat map.
  */
 
 import type { BoxSurface } from './textures';
-import { ARENA_HALF, Placer, SPAWN_POINTS, rngFor } from './levelgen/core';
+import { ARENA_HALF, CLASSIC_FLAGS, CLASSIC_HALF, CLASSIC_SPAWNS, Placer, rngFor } from './levelgen/core';
 import { checkLayout } from './levelgen/check';
+import { addTerrain, type TerrainOptions } from './levelgen/terrain';
 import { industrialLayout } from './levelgen/industrial';
 import { outdoorLayout } from './levelgen/outdoor';
 import { townLayout } from './levelgen/town';
@@ -19,8 +21,9 @@ import { arenaLayout } from './levelgen/pieces';
 import type { MapBox, MapLayout, MapStyle, MapTheme } from './levelgen/types';
 
 export type {
-  BoxBlocks, GroundKind, GroundPatch, MapBox, MapLayout, MapProp, MapStyle, MapTheme, PropRot, StepSurface,
+  BoxBlocks, GroundKind, GroundPatch, MapBox, MapLayout, MapProp, MapStyle, MapTheme, PropRot, StepSurface, Terrain,
 } from './levelgen/types';
+export { terrainHeight } from './levelgen/terrain';
 export { ARENA_HALF };
 
 /** Seed of the original hand-made map (also used for rooms made before seeds existed) */
@@ -110,7 +113,21 @@ const GENERATORS: Record<Exclude<MapStyle, 'arena'>, (seed: string, p: Placer) =
 /** Retries with a suffixed seed before falling back to the plain arena */
 const RETRIES = 4;
 
+/** How hilly each style's open ground gets: big rolling hills outdoors, low mounds elsewhere */
+const TERRAIN: Record<MapStyle, TerrainOptions> = {
+  outdoor: { height: 3.6, scale: 26 },
+  industrial: { height: 1.5, scale: 20 },
+  town: { height: 1.2, scale: 18 },
+  arena: { height: 1.6, scale: 22 },
+};
+
 function generate(seed: string): MapLayout {
+  const layout = generateFlat(seed);
+  addTerrain(layout, rngFor(`${seed}#terrain`), TERRAIN[layout.style]);
+  return layout;
+}
+
+function generateFlat(seed: string): MapLayout {
   const { style, theme } = styleAndTheme(rngFor(seed));
   for (let attempt = 0; attempt <= RETRIES; attempt++) {
     const rand = rngFor(attempt ? `${seed}#${attempt}` : seed);
@@ -182,5 +199,8 @@ function classicMap(): MapLayout {
     add(0, sx * 24, 12, 2, 1, 0x4f6a7a, 'concrete');
     add(sx * 24, 0, 1, 2, 12, 0x4f6a7a, 'concrete');
   }
-  return { seed: CLASSIC_SEED, theme: THEMES[0] as MapTheme, style: 'arena', boxes, props: [], ground: [], spawnPoints: SPAWN_POINTS, doors: [] };
+  return {
+    seed: CLASSIC_SEED, theme: THEMES[0] as MapTheme, style: 'arena', half: CLASSIC_HALF, flags: CLASSIC_FLAGS,
+    boxes, props: [], ground: [], spawnPoints: CLASSIC_SPAWNS, doors: [],
+  };
 }

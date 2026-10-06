@@ -3,10 +3,11 @@
  * fail) and by scripts/check-maps.ts over many seeds.
  *
  * The main one is a flood fill over the floor: every spawn, both flag spots and the outside of
- * every building door must be reachable on foot from the first spawn.
+ * every building door must be reachable on foot from the first spawn. Terrain needs no check of its
+ * own: it's flat wherever anything stands and never steeper than the player climbs (terrain.ts).
  */
 
-import { ARENA_HALF, FLAG_CLEARANCE, FLAG_SPOTS } from './core';
+import { FLAG_CLEARANCE } from './core';
 import type { MapLayout } from './types';
 
 /** Player half-width (player.ts RADIUS) */
@@ -26,7 +27,7 @@ export interface CheckReport {
 
 export function checkLayout(l: MapLayout): CheckReport {
   const problems: string[] = [];
-  const half = ARENA_HALF - 0.5;
+  const half = l.half - 0.5;
   const n = Math.ceil((half * 2) / CELL);
   const blocked = new Uint8Array(n * n);
   const cell = (v: number) => Math.floor((v + half) / CELL);
@@ -86,7 +87,7 @@ export function checkLayout(l: MapLayout): CheckReport {
     return false;
   };
   for (const [x, z] of l.spawnPoints) if (!reached(x, z, 0.5)) problems.push(`spawn ${x},${z} unreachable`);
-  for (const [x, z] of FLAG_SPOTS) if (!reached(x, z, 1)) problems.push(`flag ${x},${z} unreachable`);
+  for (const [x, z] of l.flags) if (!reached(x, z, 1)) problems.push(`flag ${x},${z} unreachable`);
   for (const [x, z] of l.doors) if (!reached(x, z, 0.6)) problems.push(`door ${x},${z} unreachable`);
 
   // Nothing over a spawn (you'd spawn inside it) or in a flag's clearance.
@@ -94,7 +95,7 @@ export function checkLayout(l: MapLayout): CheckReport {
     for (const [x, z] of l.spawnPoints) {
       if (Math.abs(x - b.x) < b.w / 2 + 0.5 && Math.abs(z - b.z) < b.d / 2 + 0.5 && b.y < 2.5) problems.push(`box over spawn ${x},${z}`);
     }
-    for (const [x, z] of FLAG_SPOTS) {
+    for (const [x, z] of l.flags) {
       const dx = Math.max(0, Math.abs(x - b.x) - b.w / 2);
       const dz = Math.max(0, Math.abs(z - b.z) - b.d / 2);
       if (Math.hypot(dx, dz) < FLAG_CLEARANCE - 0.01 && b.blocks !== 'shots') problems.push(`box in flag clearance ${x},${z}`);

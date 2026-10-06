@@ -8,17 +8,34 @@
 import { mirrorRampDir } from '../ramps';
 import type { GroundPatch, MapBox, MapLayout, MapProp, MapStyle, MapTheme, Piece, PropRot } from './types';
 
-export const ARENA_HALF = 40;
+/** Half the width of generated maps (the outer walls stand at ±ARENA_HALF) */
+export const ARENA_HALF = 56;
+/** Half the width of the hand-made classic arena */
+export const CLASSIC_HALF = 40;
 
-/** Same spawns on every map; the generator keeps them clear. */
-export const SPAWN_POINTS: [number, number][] = [];
-for (const sx of [-1, 1]) {
-  for (const sz of [-1, 1]) SPAWN_POINTS.push([sx * 35, sz * 35], [sx * 17, sz * 26], [sx * 26, sz * 17]);
-  SPAWN_POINTS.push([0, sx * 34], [sx * 34, 0]);
+/** Spawns for an arena: corners, two flanking each corner, and one on each axis near the wall. */
+function spawnsFor(corner: number, near: number, far: number, axis: number): [number, number][] {
+  const out: [number, number][] = [];
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) out.push([sx * corner, sz * corner], [sx * near, sz * far], [sx * far, sz * near]);
+    out.push([0, sx * axis], [sx * axis, 0]);
+  }
+  return out;
 }
 
-/** Matches FLAG_BASES in modes.ts */
-export const FLAG_SPOTS: [number, number][] = [[0, 32], [0, -32]];
+/** Same spawns on every generated map; the generator keeps them clear. */
+export const SPAWN_POINTS: [number, number][] = [
+  ...spawnsFor(49, 24, 36, 48),
+  // A bigger map gets a ring further in too, so nobody spawns a long run from the fight.
+  ...[[-1, 1], [1, 1], [-1, -1], [1, -1]].flatMap(([sx, sz]) => [[sx! * 14, sz! * 40], [sx! * 40, sz! * 14]] as [number, number][]),
+];
+/** The classic arena's spawns */
+export const CLASSIC_SPAWNS: [number, number][] = spawnsFor(35, 17, 26, 34);
+
+/** Where the flags stand on generated maps (red's first) */
+export const FLAG_SPOTS: [number, number][] = [[0, 45], [0, -45]];
+/** The classic arena's flags */
+export const CLASSIC_FLAGS: [number, number][] = [[0, 32], [0, -32]];
 
 /** Narrowest gap left between obstacles (players are 0.7 m wide) */
 export const GAP = 1.6;
@@ -80,7 +97,14 @@ function mirrorPivotBox(b: MapBox, sx: number, sz: number): MapBox {
   const rot = mirrorRot(p.rot, sx, sz);
   const [dx, dz] = turn(p.dx, p.dz, rot);
   const odd = rot % 2 === 1;
-  return { ...b, x: round(x + dx), z: round(z + dz), w: round(odd ? p.d : p.w), d: round(odd ? p.w : p.d), pivot: { ...p, x, z, rot } };
+  return {
+    ...b, x: round(x + dx), z: round(z + dz), w: round(odd ? p.d : p.w), d: round(odd ? p.w : p.d), pivot: { ...p, x, z, rot },
+    ...(b.rest ? { rest: mirrorRest(b.rest, sx, sz) } : {}),
+  };
+}
+
+function mirrorRest(r: { x: number; z: number }, sx: number, sz: number): { x: number; z: number } {
+  return { x: round(r.x * sx), z: round(r.z * sz) };
 }
 
 const mirrorRot = (rot: PropRot, sx: number, sz: number): PropRot => {
@@ -98,6 +122,7 @@ export function mirrored(piece: Piece): Piece[] {
     for (const sz of [1, -1]) {
       const boxes = piece.boxes.map((b) => (b.pivot ? mirrorPivotBox(b, sx, sz) : {
         ...b, x: round(b.x * sx), z: round(b.z * sz), ...(b.ramp ? { ramp: mirrorRampDir(b.ramp, sx, sz) } : {}),
+        ...(b.rest ? { rest: mirrorRest(b.rest, sx, sz) } : {}),
       }));
       const props = piece.props?.map((p) => ({ ...p, x: round(p.x * sx), z: round(p.z * sz), rot: mirrorRot(p.rot, sx, sz) }));
       const ground = piece.ground?.map((g) => ({ ...g, x: round(g.x * sx), z: round(g.z * sz) }));
@@ -208,7 +233,7 @@ export class Placer {
       if (!free(x, z, north)) {
         // Walk toward a point in the middle of our half, then try sideways steps.
         const tx = 0;
-        const tz = z > 0 ? 18 : 0;
+        const tz = z > 0 ? 25 : 0;
         for (let t = 0.05; t <= 1; t += 0.05) {
           const cx = round(x + (tx - x) * t);
           const cz = round(z + (tz - z) * t);
@@ -222,7 +247,7 @@ export class Placer {
 
   result(seed: string, style: MapStyle): MapLayout {
     return {
-      seed, theme: this.theme, style,
+      seed, theme: this.theme, style, half: ARENA_HALF, flags: FLAG_SPOTS,
       boxes: this.boxes, props: this.props, ground: this.ground,
       spawnPoints: this.spawns, doors: this.doors,
     };

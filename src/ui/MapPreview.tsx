@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { buildWorld } from '../game/world';
-import { ARENA_HALF, layoutName, type MapLayout } from '../game/mapgen';
-import { FLAG_BASES, TEAM_INFO } from '../game/modes';
+import { layoutName, type MapLayout } from '../game/mapgen';
+import { TEAM_INFO } from '../game/modes';
 import type { GameMode } from '../types';
 
 const SIZE = 168;
@@ -25,11 +25,27 @@ function draw2D(canvas: HTMLCanvasElement, map: MapLayout, mode: GameMode): void
   canvas.height = SIZE * ratio;
   g.setTransform(ratio, 0, 0, ratio, 0, 0);
 
-  const scale = SIZE / (ARENA_HALF * 2 + 1);
-  const px = (v: number) => (v + ARENA_HALF + 0.5) * scale;
+  const scale = SIZE / (map.half * 2 + 1);
+  const px = (v: number) => (v + map.half + 0.5) * scale;
 
   g.fillStyle = map.theme.floor;
   g.fillRect(0, 0, SIZE, SIZE);
+
+  // Hills: lit from the north-west, so slopes read as relief.
+  const t = map.terrain;
+  if (t) {
+    const side = t.n + 1;
+    const h = (c: number, r: number) => t.heights[Math.min(t.n, r) * side + Math.min(t.n, c)]!;
+    for (let r = 0; r < t.n; r++) {
+      for (let c = 0; c < t.n; c++) {
+        const top = h(c, r);
+        if (top <= 0 && h(c + 1, r + 1) <= 0) continue;
+        const shade = (h(c, r) - h(c + 1, r + 1)) * 0.6 + top * 0.05;
+        g.fillStyle = shade >= 0 ? `rgba(255, 255, 255, ${Math.min(0.35, shade)})` : `rgba(0, 0, 0, ${Math.min(0.35, -shade)})`;
+        g.fillRect(px(-map.half + c * t.cell), px(-map.half + r * t.cell), t.cell * scale + 0.5, t.cell * scale + 0.5);
+      }
+    }
+  }
   g.strokeStyle = hex(map.theme.wall);
   g.lineWidth = scale * 1.5;
   g.strokeRect(g.lineWidth / 2, g.lineWidth / 2, SIZE - g.lineWidth, SIZE - g.lineWidth);
@@ -88,12 +104,12 @@ function draw2D(canvas: HTMLCanvasElement, map: MapLayout, mode: GameMode): void
   }
 
   if (mode === 'ctf') {
-    for (const team of ['red', 'blue'] as const) {
-      const base = FLAG_BASES[team];
+    for (const [i, team] of (['red', 'blue'] as const).entries()) {
+      const [x, z] = map.flags[i] ?? [0, 0];
       g.strokeStyle = TEAM_INFO[team].color;
       g.lineWidth = 2;
       g.beginPath();
-      g.arc(px(base.x), px(base.z), 1.5 * scale + 2, 0, Math.PI * 2);
+      g.arc(px(x), px(z), 1.5 * scale + 2, 0, Math.PI * 2);
       g.stroke();
     }
   }
@@ -118,10 +134,11 @@ function previewRenderer(): THREE.WebGLRenderer | null {
 }
 
 /** A team-coloured ring and pole where each CTF flag stands. */
-function flagMarkers(): THREE.Group {
+function flagMarkers(map: MapLayout): THREE.Group {
   const g = new THREE.Group();
-  for (const team of ['red', 'blue'] as const) {
-    const base = FLAG_BASES[team];
+  for (const [i, team] of (['red', 'blue'] as const).entries()) {
+    const [x, z] = map.flags[i] ?? [0, 0];
+    const base = { x, z };
     const mat = new THREE.MeshBasicMaterial({ color: TEAM_INFO[team].color, fog: false });
     const ring = new THREE.Mesh(new THREE.RingGeometry(1.6, 2.2, 32).rotateX(-Math.PI / 2), mat);
     ring.position.set(base.x, 0.05, base.z);
@@ -155,8 +172,8 @@ export function MapPreview({ map, mode }: { map: MapLayout; mode: GameMode }) {
     const world = buildWorld(scene, map, { colliders: [], solids: [], ramps: [], obstacles: [] });
     world.setQuality('low');
     // Seen from outside, so push the fog back to just soften the far edge.
-    scene.fog = new THREE.Fog(map.theme.sky, 110, 220);
-    const markers = mode === 'ctf' ? flagMarkers() : null;
+    scene.fog = new THREE.Fog(map.theme.sky, map.half * 2.75, map.half * 5.5);
+    const markers = mode === 'ctf' ? flagMarkers(map) : null;
     if (markers) scene.add(markers);
 
     const camera = new THREE.PerspectiveCamera(40, 1, 1, 400);
@@ -183,7 +200,7 @@ export function MapPreview({ map, mode }: { map: MapLayout; mode: GameMode }) {
       // Another preview took the canvas: this one stops drawing.
       if (renderer.domElement.parentElement !== host) return;
       if (!dragging) yaw += (dt * Math.PI * 2) / ORBIT_PERIOD;
-      const dist = ARENA_HALF * 3.05;
+      const dist = map.half * 3.05;
       camera.position.set(Math.sin(yaw) * Math.cos(pitch) * dist, Math.sin(pitch) * dist, Math.cos(yaw) * Math.cos(pitch) * dist);
       camera.lookAt(0, 0, 0);
       renderer.render(scene, camera);

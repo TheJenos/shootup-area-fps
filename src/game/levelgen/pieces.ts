@@ -1,10 +1,9 @@
 /**
- * Small cover pieces (the original arena's crates, walls, pillars, stacks, decks...) and the
+ * Small cover pieces (the original arena's crates, walls, pillars, stacks, corners...) and the
  * original box-arena generator, kept as the fallback when a generated map fails its checks.
  */
 
 import type { BoxSurface } from '../textures';
-import type { RampDir } from '../ramps';
 import { GAP, INNER, Placer, rectOf, round } from './core';
 import type { MapBox, MapLayout, MapTheme, Piece } from './types';
 
@@ -16,12 +15,11 @@ export function makePiece(
 ): MapBox[] {
   const kind = rand();
   const at = (
-    b: Omit<MapBox, 'x' | 'z' | 'surface' | 'ramp'> & { dx?: number; dz?: number }, surface: BoxSurface, ramp?: RampDir,
+    b: Omit<MapBox, 'x' | 'z' | 'surface' | 'ramp'> & { dx?: number; dz?: number }, surface: BoxSurface,
   ): MapBox => {
     const { dx = 0, dz = 0, ...rest } = b;
     return {
       ...rest, x: round(x + dx), z: round(z + dz), w: round(rest.w), h: round(rest.h), d: round(rest.d), y: round(rest.y), surface,
-      ...(ramp ? { ramp } : {}),
     };
   };
 
@@ -48,7 +46,7 @@ export function makePiece(
     const s = range(2.4, 3.4);
     return [at({ w: s, h: range(4, 6), d: s, y: 0, color: color() }, theme.pillarSurface)];
   }
-  if (kind < 0.8) {
+  if (kind < 0.84) {
     // Climbable stack: a step up to a tall crate with a small crate on top
     const c = color();
     const dir = rand() < 0.5 ? 1 : -1;
@@ -56,20 +54,6 @@ export function makePiece(
       at({ w: 2, h: 2, d: 2, y: 0, color: c }, 'crate'),
       at({ dx: dir * 2.1, w: 2, h: 1, d: 2, y: 0, color: c }, 'crate'),
       at({ w: 1.2, h: 1, d: 1.2, y: 2, color: color() }, 'crate'),
-    ];
-  }
-  if (kind < 0.9) {
-    // Deck: a raised platform with a ramp up one side and a bit of cover on top
-    const c = color();
-    const w = range(4, 6);
-    const d = range(3.5, 5);
-    const h = range(1.3, 1.7);
-    const dir = rand() < 0.5 ? 1 : -1;
-    const rampLen = h * 2.2;
-    return [
-      at({ w, h, d, y: 0, color: c }, 'concrete'),
-      at({ dx: dir * (w / 2 + rampLen / 2), w: rampLen, h, d: Math.min(d, 2.6), y: 0, color: c }, 'concrete', dir > 0 ? 'x-' : 'x+'),
-      at({ dx: -dir * (w / 2 - 0.5), w: 0.7, h: 1.1, d: Math.min(d, 2.4), y: h, color: color() }, 'crate'),
     ];
   }
   // L-shaped corner
@@ -138,7 +122,7 @@ export function arenaLayout(seed: string, p: Placer): MapLayout {
   for (const axis of ['z', 'x'] as const) {
     if (p.chance(0.35)) continue;
     for (let attempt = 0; attempt < 10; attempt++) {
-      const along = round(p.range(14, 26));
+      const along = round(p.range(20, 36));
       const len = round(p.range(6, 13));
       const wall: MapBox = axis === 'z'
         ? { x: 0, z: along, w: len, h: round(p.range(1.6, 2.6)), d: 0.9, y: 0, color: p.color(), surface: theme.wallSurface }
@@ -151,6 +135,6 @@ export function arenaLayout(seed: string, p: Placer): MapLayout {
     }
   }
 
-  fillCover(p, Math.floor(p.range(20, 33)));
+  fillCover(p, Math.floor(p.range(38, 62)), 700);
   return p.result(seed, 'arena');
 }

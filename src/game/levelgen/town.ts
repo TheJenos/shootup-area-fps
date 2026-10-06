@@ -118,8 +118,8 @@ const sideFront = (f: Front, sx: 1 | -1): Front => (sx === 1 ? f : f === 'e' ? '
 function townSide(p: Placer, sx: 1 | -1, a: number, enterableHere: boolean, twoFloors: boolean): void {
   const cross = round(p.range(6, 8));
   const side = round(p.range(6, 8));
-  const atZ = round(p.range(22, 29));
-  const atX = round(p.range(21, 29));
+  const atZ = round(p.range(29, 40));
+  const atX = round(p.range(28, 40));
   const c0 = round(atZ - cross / 2);
   const c1 = round(atZ + cross / 2);
   const s0 = round(atX - side / 2);
@@ -177,8 +177,8 @@ function townSide(p: Placer, sx: 1 | -1, a: number, enterableHere: boolean, twoF
   }
 
   // Cover in the streets.
-  const streetPieces = 5 + Math.floor(p.rand() * 4);
-  for (let placed = 0, attempt = 0; attempt < 160 && placed < streetPieces; attempt++) {
+  const streetPieces = 9 + Math.floor(p.rand() * 6);
+  for (let placed = 0, attempt = 0; attempt < 280 && placed < streetPieces; attempt++) {
     const k = p.rand();
     const x = k < 0.35 ? p.range(1.5, a - 0.8) : k < 0.7 ? p.range(a + 2, INNER - 2) : p.range(s0 + 0.8, s1 - 0.8);
     const z = k < 0.35 ? p.range(6, INNER - 4) : k < 0.7 ? p.range(c0 + 0.8, c1 - 0.8) : p.range(a + 2, INNER - 2);
@@ -188,7 +188,7 @@ function townSide(p: Placer, sx: 1 | -1, a: number, enterableHere: boolean, twoF
     placed++;
   }
   // Cones: decoration only.
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 5; i++) {
     const cone = propPiece('cone', round(sx * p.range(a + 2, INNER - 2)), round(p.range(c0 + 0.6, c1 - 0.6)), 0);
     if (p.fits({ boxes: [{ x: cone.props![0]!.x, z: cone.props![0]!.z, w: 0.6, d: 0.6, h: 0.8, y: 0, color: 0, surface: 'concrete' }] }, { ignoreReserved: true, gap: 0.8 })) p.place(cone);
   }

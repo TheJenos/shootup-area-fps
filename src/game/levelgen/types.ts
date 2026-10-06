@@ -44,6 +44,8 @@ export interface MapBox {
    * (a lopsided model's boxes would otherwise land on the wrong side of it).
    */
   pivot?: { x: number; z: number; rot: PropRot; dx: number; dz: number; w: number; d: number };
+  /** Part of a model that settles onto the terrain (MapProp.settle) standing at this spot: lifted with it */
+  rest?: { x: number; z: number };
 }
 
 /** Quarter turns, so mirrored copies stay exact */
@@ -58,6 +60,8 @@ export interface MapProp {
   y: number;
   rot: PropRot;
   scale?: number;
+  /** A natural thing (tree, rock, bush) that may stand on a hillside: lowered onto the terrain under it */
+  settle?: true;
 }
 
 /** A flat overlay on the floor: streets, sidewalks, lawns, painted zones. */
@@ -90,10 +94,28 @@ export interface MapTheme {
   palette: number[];
 }
 
+/**
+ * Rolling ground: heights on a square grid of vertices covering the whole map (row by row along z,
+ * each row along x). Everything placed on the map sits on flat ground (height 0); the terrain only
+ * rises in the open ground between, and never steeper than you can walk (see levelgen/terrain.ts).
+ */
+export interface Terrain {
+  /** Cells per side (vertices per side is one more) */
+  n: number;
+  /** Cell size (m) */
+  cell: number;
+  /** (n + 1)² heights, row z = -half first */
+  heights: number[];
+}
+
 export interface MapLayout {
   seed: string;
   theme: MapTheme;
   style: MapStyle;
+  /** Half the map's width: the outer walls stand at ±half on both axes */
+  half: number;
+  /** Where the two CTF flags stand ([x, z], red's +z first) */
+  flags: [number, number][];
   boxes: MapBox[];
   props: MapProp[];
   ground: GroundPatch[];
@@ -101,6 +123,8 @@ export interface MapLayout {
   spawnPoints: [number, number][];
   /** Points just outside each building door, which must be reachable (checked by levelgen/check.ts) */
   doors: [number, number][];
+  /** Hills in the open ground; none on flat maps */
+  terrain?: Terrain;
 }
 
 /** A group of things placed (and mirrored) together. */
