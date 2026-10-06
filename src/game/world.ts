@@ -43,6 +43,12 @@ export interface World extends WorldLists {
   dispose(): void;
 }
 
+/**
+ * A cylinder's collision: three boxes (half-sizes as fractions of its width and depth) whose union is
+ * an eight-sided shape inside the circle. Each box's corners touch the circle (0.46² + 0.19² ≈ 0.5²).
+ */
+const CYLINDER_FIT = [[0.46, 0.19], [0.19, 0.46], [0.3535, 0.3535]] as const;
+
 /** The invisible boundary around the map: how high it goes and how thick it is (m) */
 const BOUNDARY_HEIGHT = 200;
 const BOUNDARY_THICKNESS = 4;
@@ -177,19 +183,38 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
     batch.geos.push(geo);
   };
 
+  /** A round thing's invisible stand-in for bullets: the cylinder itself, not its box. */
+  const proxyCylGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
+  const addCylinderProxy = (b: MapBox) => {
+    const mesh = new THREE.Mesh(proxyCylGeo, proxyMat);
+    mesh.position.set(b.x, b.y + b.h / 2, b.z);
+    mesh.scale.set(b.w, b.h, b.d);
+    proxies.add(mesh);
+    mesh.updateMatrixWorld();
+    solids.push(mesh);
+  };
+
   const addBox = (b: MapBox) => {
     const blocks = b.blocks ?? 'all';
     if (b.visible !== false) addVisual(b);
     if (blocks !== 'shots') {
-      const box = new THREE.Box3(
-        new THREE.Vector3(b.x - b.w / 2, b.y, b.z - b.d / 2),
-        new THREE.Vector3(b.x + b.w / 2, b.y + b.h, b.z + b.d / 2),
-      );
-      colliders.push(box);
-      obstacles.push(box);
-      stepOf.set(box, stepFor(b));
+      // Cylinders (tanks, barrels) collide as an eight-sided shape that stays inside them, not as
+      // their box: no invisible corners to bump into.
+      const parts = b.shape === 'cylinder' ? CYLINDER_FIT : [[0.5, 0.5] as const];
+      for (const [fx, fz] of parts) {
+        const box = new THREE.Box3(
+          new THREE.Vector3(b.x - b.w * fx, b.y, b.z - b.d * fz),
+          new THREE.Vector3(b.x + b.w * fx, b.y + b.h, b.z + b.d * fz),
+        );
+        colliders.push(box);
+        obstacles.push(box);
+        stepOf.set(box, stepFor(b));
+      }
     }
-    if (blocks !== 'move') addProxy(b);
+    if (blocks !== 'move') {
+      if (b.shape === 'cylinder') addCylinderProxy(b);
+      else addProxy(b);
+    }
   };
 
   const addRamp = (b: MapBox) => {

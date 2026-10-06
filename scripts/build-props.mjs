@@ -132,6 +132,7 @@ function collidersFor(entry, size) {
   const c = entry.collider;
   if (c === 'none') return [];
   if (c === 'box') return [{ dx: 0, dz: 0, y: 0, w: r2(size.w), d: r2(size.d), h: r2(size.h) }];
+  if (c.boxes) return c.boxes.map((b) => ({ dx: r2(b.dx), dz: r2(b.dz), y: r2(b.y), w: r2(b.w), d: r2(b.d), h: r2(b.h) }));
   if (c.shrink) return [{ dx: 0, dz: 0, y: 0, w: r2(size.w * c.shrink), d: r2(size.d * c.shrink), h: r2(size.h * 0.9) }];
   if (c.trunk) {
     const boxes = [{ dx: 0, dz: 0, y: 0, w: c.trunk, d: c.trunk, h: r2(Math.min(c.h, size.h)) }];

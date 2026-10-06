@@ -31,13 +31,19 @@ export interface MapBox {
   surface: BoxSurface;
   /** A ramp instead of a box: the top slopes from the floor up to `h` at this side */
   ramp?: RampDir;
-  /** Drawn as an upright cylinder (barrels, tanks); collision stays the box */
+  /** Drawn as an upright cylinder (barrels, tanks); collides as an eight-sided shape inside it */
   shape?: 'cylinder';
   /** Not drawn: collision and bullet proxy for a model (MapProp) that supplies the looks */
   visible?: false;
   blocks?: BoxBlocks;
   /** Footstep sound on top of it; otherwise derived from the surface */
   step?: StepSurface;
+  /**
+   * For a model's collision box: the model's position and turn, and the box's offset and size before
+   * turning. Mirrored copies turn models rather than reflect them, so the box is re-placed from these
+   * (a lopsided model's boxes would otherwise land on the wrong side of it).
+   */
+  pivot?: { x: number; z: number; rot: PropRot; dx: number; dz: number; w: number; d: number };
 }
 
 /** Quarter turns, so mirrored copies stay exact */

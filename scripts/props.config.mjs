@@ -6,6 +6,9 @@
  *     'box'                 its whole footprint (optionally shrunk, for rough shapes like rocks)
  *     { trunk, h, canopy }  a thin trunk you can't walk through and a canopy that only stops bullets
  *     'none'                decoration you walk through (cones, small plants)
+ *     { boxes }             boxes fitted to the model by hand (metres, from the base centre), for shapes
+ *                           a single box would get badly wrong: legs with open space between them,
+ *                           a round tank with bits sticking out
  * - `tags` say what the generator may use it for.
  */
 
@@ -17,6 +20,22 @@ const N = 'kenney_nature-kit/Models/GLTF format';
 
 const city = 8;
 const nature = 5;
+
+/**
+ * The water tower: four legs that lean in toward the tank (three boxes each, stepping inward) and the
+ * tank on top, so you can see and shoot between the legs. Measured from the model.
+ */
+const waterTower = () => {
+  const boxes = [];
+  for (const sx of [1, -1]) for (const sz of [1, -1]) {
+    for (const [y, cx, cz] of [[0, 2.32, 1.94], [2.5, 2.05, 1.66], [5, 1.77, 1.38]]) {
+      boxes.push({ dx: sx * cx, dz: sz * cz, y, w: 1.25, d: 1.25, h: 2.5 });
+    }
+  }
+  boxes.push({ dx: 0, dz: 0, y: 7.3, w: 6.6, d: 6.6, h: 4.7 });
+  boxes.push({ dx: 0, dz: 0, y: 12, w: 5.1, d: 5.1, h: 5.13 });
+  return boxes;
+};
 
 export const PROPS = [
   // Town: shops and offices (closed buildings), houses
@@ -39,8 +58,18 @@ export const PROPS = [
   { id: 'chimney', file: `${I}/chimney-large.glb`, scale: city, collider: 'box', tags: ['industrial'] },
   { id: 'chimney-medium', file: `${I}/chimney-medium.glb`, scale: city, collider: 'box', tags: ['industrial'] },
   { id: 'tank-large', file: `${I}/detail-tank-large.glb`, scale: city, collider: 'box', tags: ['industrial'] },
-  { id: 'tank', file: `${I}/detail-tank.glb`, scale: city, collider: 'box', tags: ['industrial'] },
-  { id: 'water-tower', file: `${I}/water-tower.glb`, scale: city, collider: 'box', tags: ['industrial'] },
+  {
+    // A tank lying on its side, and a valve box off one end (with a gap between them).
+    id: 'tank', file: `${I}/detail-tank.glb`, scale: city, tags: ['industrial'],
+    collider: {
+      boxes: [
+        { dx: 0.62, dz: -0.03, y: 0, w: 5.53, d: 3.06, h: 3 },
+        { dx: 0.62, dz: -0.03, y: 3, w: 5.4, d: 1.7, h: 0.32 },
+        { dx: -2.89, dz: 0.06, y: 0, w: 1, d: 1.25, h: 1.75 },
+      ],
+    },
+  },
+  { id: 'water-tower', file: `${I}/water-tower.glb`, scale: city, collider: { boxes: waterTower() }, tags: ['industrial'] },
   // Outdoor
   ...['tree_oak', 'tree_default', 'tree_detailed', 'tree_fat', 'tree_tall', 'tree_pineTallA', 'tree_pineRoundC', 'tree_cone'].map((f) => ({
     id: f.replace('tree_', 'tree-').replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`), file: `${N}/${f}.glb`, scale: nature * 1.15,

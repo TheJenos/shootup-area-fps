@@ -62,6 +62,27 @@ export const round = (n: number) => Math.round(n * 100) / 100;
 const footprint = (p: Piece) => p.boxes.filter((b) => b.blocks !== 'shots');
 
 /** Prop rotation after mirroring x (sx = -1) and/or z (sz = -1). */
+/** Rotate an offset by quarter turns (same as a model's rotation.y). */
+export function turn(dx: number, dz: number, rot: PropRot): [number, number] {
+  switch (rot) {
+    case 1: return [dz, -dx];
+    case 2: return [-dx, -dz];
+    case 3: return [-dz, dx];
+    default: return [dx, dz];
+  }
+}
+
+/** A model's collision box in a mirrored copy: turned with the model (which is turned, not reflected). */
+function mirrorPivotBox(b: MapBox, sx: number, sz: number): MapBox {
+  const p = b.pivot!;
+  const x = round(p.x * sx);
+  const z = round(p.z * sz);
+  const rot = mirrorRot(p.rot, sx, sz);
+  const [dx, dz] = turn(p.dx, p.dz, rot);
+  const odd = rot % 2 === 1;
+  return { ...b, x: round(x + dx), z: round(z + dz), w: round(odd ? p.d : p.w), d: round(odd ? p.w : p.d), pivot: { ...p, x, z, rot } };
+}
+
 const mirrorRot = (rot: PropRot, sx: number, sz: number): PropRot => {
   let r: number = rot;
   if (sx < 0) r = (4 - r) % 4;
@@ -75,7 +96,7 @@ export function mirrored(piece: Piece): Piece[] {
   const seen = new Set<string>();
   for (const sx of [1]) {
     for (const sz of [1, -1]) {
-      const boxes = piece.boxes.map((b) => ({
+      const boxes = piece.boxes.map((b) => (b.pivot ? mirrorPivotBox(b, sx, sz) : {
         ...b, x: round(b.x * sx), z: round(b.z * sz), ...(b.ramp ? { ramp: mirrorRampDir(b.ramp, sx, sz) } : {}),
       }));
       const props = piece.props?.map((p) => ({ ...p, x: round(p.x * sx), z: round(p.z * sz), rot: mirrorRot(p.rot, sx, sz) }));

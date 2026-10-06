@@ -191,7 +191,10 @@ A seed picks one of three **styles** and a theme to go with it:
 - **Models** (shops, houses, factories, street lights, trees, rocks...) are Kenney CC0 kits converted into one
   file (`public/models/props.glb`, see Assets). They're only looks: each comes with invisible boxes the
   generator places with it (the whole footprint for buildings, a trunk and a canopy for trees, a slightly
-  smaller box for rocks), and those are what players, bullets and grenades hit. The map is playable before
+  smaller box for rocks, boxes fitted by hand for the water tower's legs and the lying tank), and those are
+  what players, bullets and grenades hit. Off-centre boxes are re-placed with their model in the mirrored half
+  (models are turned there, not reflected). Round tanks and barrels collide as an eight-sided shape inside the
+  cylinder, and bullets hit the cylinder itself, so there are no invisible corners. The map is playable before
   the models finish loading; they appear as soon as they have.
 - **Ramps** (`src/game/ramps.ts`) are real slopes: you walk up and down them, their sides block you like a wall
   until the slope is low enough to step onto, and running downhill sticks to the surface. Ledges up to 0.7 m
