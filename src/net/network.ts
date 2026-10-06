@@ -4,6 +4,7 @@ import {
   runTransaction, type DatabaseReference, type Unsubscribe,
 } from 'firebase/database';
 import { db } from './firebase';
+import { countNet } from '../game/perfStats';
 import { rulesOfRoom, type ModeRules } from '../game/rules';
 import { CLASSIC_SEED, normalizeSeed } from '../game/mapgen';
 import type {
@@ -196,8 +197,8 @@ export class RoomConnection {
     const playersRef = ref(db(), `rooms/${this.code}/players`);
     const { onPlayerAdded, onPlayerChanged, onPlayerRemoved, onEvent, onPickupAdded, onPickupRemoved, onGame } = this.handlers;
     this.unsubs.push(
-      onChildAdded(playersRef, (s) => s.key && onPlayerAdded(s.key, s.val() as PlayerState)),
-      onChildChanged(playersRef, (s) => s.key && onPlayerChanged(s.key, s.val() as PlayerState)),
+      onChildAdded(playersRef, (s) => s.key && (countNet('down', s.val()), onPlayerAdded(s.key, s.val() as PlayerState))),
+      onChildChanged(playersRef, (s) => s.key && (countNet('down', s.val()), onPlayerChanged(s.key, s.val() as PlayerState))),
       onChildRemoved(playersRef, (s) => s.key && onPlayerRemoved(s.key)),
       onChildAdded(this.pickupsRef, (s) => s.key && onPickupAdded(s.key, s.val() as PickupRecord)),
       onChildRemoved(this.pickupsRef, (s) => s.key && onPickupRemoved(s.key)),
@@ -207,7 +208,7 @@ export class RoomConnection {
     // Push keys are time-ordered, so starting at a freshly generated key skips
     // events that happened before we joined.
     const fromNow = query(this.eventsRef, orderByKey(), startAt(push(this.eventsRef).key));
-    this.unsubs.push(onChildAdded(fromNow, (s) => onEvent(s.val() as GameEvent)));
+    this.unsubs.push(onChildAdded(fromNow, (s) => (countNet('down', s.val()), onEvent(s.val() as GameEvent))));
   }
 
   private async registerPresence(): Promise<void> {
@@ -230,6 +231,7 @@ export class RoomConnection {
 
   /** Partial update of our own player record (position, hp, ...). */
   sendState(partial: Partial<PlayerState>): Promise<void> {
+    countNet('up', partial);
     return update(this.playerRef, partial);
   }
 
@@ -253,6 +255,7 @@ export class RoomConnection {
 
   sendEvent(event: OutgoingEvent): void {
     const eventRef = push(this.eventsRef);
+    countNet('up', event);
     set(eventRef, { ...event, from: this.playerId, t: serverTimestamp() });
     const timer = setTimeout(() => {
       this.timers.delete(timer);
@@ -324,15 +327,16 @@ export class RoomConnection {
 
   /**
    * Credit a kill to another player and resolve to their new total.
-   * Transaction so it never resurrects a player who left.
+   * Transaction so it never resurrects a player who left: every player record has `kills` from
+   * the moment it's written, so a missing one means the player is gone. Only the kill count is
+   * locked, not the whole record, which the killer rewrites many times a second (each of those
+   * would make the transaction start over).
    */
   async creditKill(killerId: string): Promise<number | null> {
-    const result = await runTransaction(ref(db(), `rooms/${this.code}/players/${killerId}`), (player: PlayerState | null) => {
-      if (player) player.kills = (player.kills || 0) + 1;
-      return player;
-    });
-    const player = result.snapshot.val() as PlayerState | null;
-    return result.committed && player ? player.kills : null;
+    const result = await runTransaction(ref(db(), `rooms/${this.code}/players/${killerId}/kills`), (kills: number | null) =>
+      kills === null ? undefined : kills + 1);
+    const kills = result.snapshot.val() as number | null;
+    return result.committed && kills !== null ? kills : null;
   }
 
   async leave(): Promise<void> {

@@ -361,6 +361,7 @@ export class RemotePlayer {
     }
     if (wasAlive && !this.alive) this.fallRoll = (Math.random() - 0.5) * 1.2;
     if (this.alive) {
+      this.ragdoll?.dispose();
       this.ragdoll = null;
       this.pendingHit = null;
     }
@@ -929,6 +930,8 @@ export class RemotePlayer {
   }
 
   dispose(): void {
+    this.ragdoll?.dispose();
+    this.ragdoll = null;
     this.mixer.stopAllAction();
     this.mixer.uncacheRoot(this.model);
     this.scene.remove(this.group);

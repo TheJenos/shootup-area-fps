@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { keyFor, settings } from './settings';
-import { overRamp, rampHeightAt, type Ramp } from './ramps';
+import { GROUP, groups, type PhysicsWorld, type RapierCollider, type RapierBody } from './physics';
+import type { CharacterCollision, KinematicCharacterController, Capsule } from '@dimforge/rapier3d-compat';
 import type { Stance } from '../types';
 
 const GRAVITY = 22;
@@ -31,10 +32,31 @@ const MAX_PITCH = Math.PI / 2 - 0.01;
 const STEP_UP = 0.7;
 /** Walking downhill sticks to the ramp instead of bouncing off it, up to this gap */
 const STICK_DOWN = 0.35;
+/** Steepest slope you can walk up (ramps are well under this) */
+const MAX_SLOPE = THREE.MathUtils.degToRad(55);
+/** Gap the character controller keeps between the body and the world (m) */
+const SKIN = 0.02;
 
-type Axis = 'x' | 'y' | 'z';
+/**
+ * Collision is Rapier's kinematic character controller: a capsule that slides along walls, steps
+ * up ledges, walks ramps and sticks to the ground going downhill. It only collides with the map
+ * (and deployed walls); a second, kinematic capsule follows it to shove loose props around.
+ */
+interface Body {
+  physics: PhysicsWorld;
+  controller: KinematicCharacterController;
+  /** The shape the controller moves (not simulated: it touches nothing by itself) */
+  collider: RapierCollider;
+  /** Follows the player so loose props get pushed */
+  pusher: RapierBody;
+  pusherCollider: RapierCollider;
+  /** A standing body, for testing whether there's room to stand up */
+  standShape: Capsule;
+  /** Scratch space for the controller's collision reports */
+  hit: CharacterCollision;
+}
 
-/** First-person controller: WASD + mouse look, gravity, jumping and AABB collisions. */
+/** First-person controller: WASD + mouse look, gravity, jumping and collisions (Rapier). */
 export class LocalPlayer {
   readonly position = new THREE.Vector3();
   readonly velocity = new THREE.Vector3();
@@ -62,19 +84,15 @@ export class LocalPlayer {
   touchJump = false;
 
   private readonly camera: THREE.PerspectiveCamera;
-  private readonly colliders: THREE.Box3[];
-  private readonly ramps: Ramp[];
-  private wasOnGround = false;
+  private body: Body | null = null;
   private eyeHeight = EYE_HEIGHT;
   private tilt = 0;
   private slideLeft = 0;
   private slideCooldown = 0;
   private crouchWasHeld = false;
 
-  constructor(camera: THREE.PerspectiveCamera, colliders: THREE.Box3[], ramps: Ramp[], signal: AbortSignal) {
+  constructor(camera: THREE.PerspectiveCamera, signal: AbortSignal) {
     this.camera = camera;
-    this.colliders = colliders;
-    this.ramps = ramps;
     camera.rotation.order = 'YXZ';
 
     window.addEventListener('keydown', (e) => this.keys.add(e.code), { signal });
@@ -86,6 +104,39 @@ export class LocalPlayer {
       const scale = MOUSE_SENSITIVITY * sensitivity * this.lookScale;
       this.look(-e.movementX * scale, -e.movementY * scale * (invertY ? -1 : 1));
     }, { signal });
+  }
+
+  /** Give the player a body in the physics world (once it has loaded). Until then it can't move. */
+  attachPhysics(physics: PhysicsWorld): void {
+    this.detachPhysics();
+    const { R, world } = physics;
+    const controller = world.createCharacterController(SKIN);
+    controller.setUp({ x: 0, y: 1, z: 0 });
+    controller.setSlideEnabled(true);
+    controller.enableAutostep(STEP_UP, 0.15, false);
+    controller.setMaxSlopeClimbAngle(MAX_SLOPE);
+    controller.setMinSlopeSlideAngle(MAX_SLOPE + 0.1);
+    controller.enableSnapToGround(STICK_DOWN);
+    controller.setApplyImpulsesToDynamicBodies(false);
+    const half = capsuleHalf(HEIGHT);
+    const collider = world.createCollider(R.ColliderDesc.capsule(half, RADIUS).setCollisionGroups(groups(0, 0)));
+    const pusher = world.createRigidBody(R.RigidBodyDesc.kinematicPositionBased());
+    const pusherCollider = world.createCollider(
+      R.ColliderDesc.capsule(half, RADIUS).setCollisionGroups(groups(GROUP.PLAYER, GROUP.DEBRIS)),
+      pusher,
+    );
+    this.body = { physics, controller, collider, pusher, pusherCollider, standShape: new R.Capsule(half, RADIUS - 0.02), hit: new R.CharacterCollision() };
+    this.placeBody(true);
+  }
+
+  detachPhysics(): void {
+    const b = this.body;
+    if (!b) return;
+    this.body = null;
+    if (b.physics.disposed) return;
+    b.physics.world.removeCharacterController(b.controller);
+    b.physics.world.removeCollider(b.collider, false);
+    b.physics.world.removeRigidBody(b.pusher);
   }
 
   look(dYaw: number, dPitch: number): void {
@@ -111,6 +162,7 @@ export class LocalPlayer {
     this.tilt = 0;
     this.yaw = yaw;
     this.pitch = 0;
+    this.placeBody(true);
     this.syncCamera();
   }
 
@@ -134,22 +186,34 @@ export class LocalPlayer {
     return this.stance === 'stand' ? HEIGHT : CROUCH_HEIGHT;
   }
 
-  /** Whether our body would fit with its feet at height `y` (nothing overhead there). */
-  private headroomAt(y: number): boolean {
-    const p = this.position;
-    return !this.colliders.some((c) =>
-      p.x + RADIUS > c.min.x && p.x - RADIUS < c.max.x &&
-      p.z + RADIUS > c.min.z && p.z - RADIUS < c.max.z &&
-      y + this.height > c.min.y && y < c.max.y - 1e-3 && c.max.y > y + 1e-3);
-  }
-
   /** Whether there's room above us to stand up (e.g. not under the top of a stack). */
   private canStand(): boolean {
+    const b = this.body;
+    if (!b) return true;
     const p = this.position;
-    return !this.colliders.some((c) =>
-      p.x + RADIUS > c.min.x && p.x - RADIUS < c.max.x &&
-      p.z + RADIUS > c.min.z && p.z - RADIUS < c.max.z &&
-      p.y + HEIGHT > c.min.y && p.y + CROUCH_HEIGHT <= c.min.y + 1e-3);
+    // A slightly slimmer standing body, lifted off the floor: only something overhead stops us.
+    const hit = b.physics.world.intersectionWithShape(
+      { x: p.x, y: p.y + SKIN + 0.05 + HEIGHT / 2, z: p.z }, IDENTITY, b.standShape,
+      undefined, groups(GROUP.PLAYER, GROUP.WORLD), b.collider,
+    );
+    return hit === null;
+  }
+
+  /** Put the capsule's feet at `position`, sized for the stance. */
+  private placeBody(teleport = false): void {
+    const b = this.body;
+    if (!b) return;
+    const h = this.height;
+    const half = capsuleHalf(h);
+    if (b.collider.halfHeight() !== half) {
+      b.collider.setHalfHeight(half);
+      b.pusherCollider.setHalfHeight(half);
+    }
+    const p = this.position;
+    const center = { x: p.x, y: p.y + SKIN + h / 2, z: p.z };
+    b.collider.setTranslation(center);
+    if (teleport) b.pusher.setTranslation(center, true);
+    else b.pusher.setNextKinematicTranslation(center);
   }
 
   /**
@@ -234,13 +298,7 @@ export class LocalPlayer {
       this.stance = 'stand';
     }
     this.velocity.y -= GRAVITY * this.gravityScale * dt;
-
-    this.wasOnGround = this.onGround;
-    this.onGround = false;
-    this.moveAxis('x', this.velocity.x * dt);
-    this.moveAxis('z', this.velocity.z * dt);
-    this.moveAxis('y', this.velocity.y * dt);
-    this.landOnRamps();
+    this.collide(dt);
 
     if (this.position.y < 0) {
       this.position.y = 0;
@@ -262,64 +320,56 @@ export class LocalPlayer {
   }
 
   /**
-   * Ramps: stand on the slope under us. Coming down a slope sticks to it (so running downhill
-   * doesn't skip), and we never sink into it.
+   * Move by this frame's velocity, letting the character controller slide us along walls, up
+   * steps and ramps. Velocity loses whatever the world blocked, as before: a wall stops you,
+   * a ceiling ends a jump, the floor stops the fall.
    */
-  private landOnRamps(): void {
-    const p = this.position;
-    for (const r of this.ramps) {
-      if (!overRamp(r, p.x, p.z)) continue;
-      const surface = rampHeightAt(r, p.x, p.z);
-      const below = surface - p.y;
-      const onIt = (below >= 0 && below < STEP_UP + 0.3) || (below < 0 && -below < STICK_DOWN && this.wasOnGround && this.velocity.y <= 0);
-      if (!onIt) continue;
-      p.y = surface;
-      if (this.velocity.y < 0) this.velocity.y = 0;
-      this.onGround = true;
+  private collide(dt: number): void {
+    const b = this.body;
+    const v = this.velocity;
+    if (!b) {
+      this.position.addScaledVector(v, dt);
+      this.onGround = false;
+      return;
     }
-  }
+    this.placeBody();
+    const want = { x: v.x * dt, y: v.y * dt, z: v.z * dt };
+    b.controller.computeColliderMovement(b.collider, want, undefined, groups(GROUP.PLAYER, GROUP.WORLD));
+    const moved = b.controller.computedMovement();
+    this.position.x += moved.x;
+    this.position.y += moved.y;
+    this.position.z += moved.z;
+    this.onGround = b.controller.computedGrounded();
 
-  private moveAxis(axis: Axis, amount: number): void {
-    if (amount === 0) return;
-    const p = this.position;
-    const before = p[axis];
-    p[axis] += amount;
-    if (axis !== 'y') {
-      // A ramp's side (or its high end) is a wall unless we're already most of the way up it.
-      for (const r of this.ramps) {
-        if (!overRamp(r, p.x, p.z, RADIUS)) continue;
-        const surface = rampHeightAt(
-          r, THREE.MathUtils.clamp(p.x, r.box.min.x, r.box.max.x), THREE.MathUtils.clamp(p.z, r.box.min.z, r.box.max.z),
-        );
-        if (surface > p.y + STEP_UP && p.y + this.height > r.box.min.y) {
-          p[axis] = before;
-          this.velocity[axis] = 0;
+    // Lose the velocity going into what we hit: a wall stops that direction (we slide along it),
+    // a ceiling ends the jump. Floors, slopes and step edges cost nothing; the controller climbs them.
+    // (Stepping up onto a ledge touches its face too: a frame that lifted us isn't a wall.)
+    const steppedUp = moved.y > want.y + 1e-3;
+    for (let i = 0, n = b.controller.numComputedCollisions(); i < n; i++) {
+      const hit = b.controller.computedCollision(i, b.hit);
+      if (!hit) continue;
+      const { x, y, z } = hit.normal1;
+      if (y < -0.7) {
+        if (v.y > 0) v.y = 0;
+      } else if (Math.abs(y) < 0.3 && !steppedUp) {
+        // Only if it actually held us back: stepping up onto a ledge touches its face too.
+        const wanted = want.x * x + want.z * z;
+        const got = moved.x * x + moved.z * z;
+        const into = v.x * x + v.z * z;
+        if (into < 0 && got > wanted * 0.5) {
+          v.x -= x * into;
+          v.z -= z * into;
         }
       }
     }
-    for (const c of this.colliders) {
-      if (
-        p.x + RADIUS > c.min.x && p.x - RADIUS < c.max.x &&
-        p.z + RADIUS > c.min.z && p.z - RADIUS < c.max.z &&
-        p.y + this.height > c.min.y && p.y < c.max.y
-      ) {
-        if (axis === 'y') {
-          if (amount < 0) {
-            p.y = c.max.y;
-            this.onGround = true;
-          } else {
-            p.y = c.min.y - this.height;
-          }
-          this.velocity.y = 0;
-        } else if (this.wasOnGround && c.max.y - p.y <= STEP_UP && this.headroomAt(c.max.y)) {
-          // A low ledge (a step, the top of a ramp): walk up onto it.
-          p.y = c.max.y;
-          this.onGround = true;
-        } else {
-          p[axis] = amount > 0 ? c.min[axis] - RADIUS - 1e-4 : c.max[axis] + RADIUS + 1e-4;
-          this.velocity[axis] = 0;
-        }
-      }
-    }
+    if (this.onGround && v.y < 0) v.y = 0;
+    this.placeBody();
   }
+}
+
+const IDENTITY = { x: 0, y: 0, z: 0, w: 1 };
+
+/** Half the straight middle of a capsule `height` tall (Rapier capsules are measured that way). */
+function capsuleHalf(height: number): number {
+  return Math.max(0.01, height / 2 - RADIUS);
 }

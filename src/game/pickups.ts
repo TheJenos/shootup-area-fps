@@ -21,6 +21,8 @@ const SPACING = 4;
 const SCATTER_RADII = [1.3, 2, 2.8, 3.6];
 const SCATTER_SPACING = 1.5;
 const SCATTER_CLEARANCE = 0.5;
+/** Rings searched around a dropped item's spot when something already lies there (m) */
+const NEAR_RADII = [0.9, 1.5, 2.2, 3, 3.8];
 
 const ringGeo = new THREE.RingGeometry(0.45, 0.6, 32).rotateX(-Math.PI / 2);
 const pedestalGeo = new THREE.CylinderGeometry(0.62, 0.72, 0.12, 24).translate(0, 0.06, 0);
@@ -230,8 +232,10 @@ export class PickupField {
     if (!p) return;
     this.scene.remove(p.group);
     p.materials.forEach((m) => m.dispose());
-    // Icon geometries are per pickup; the ring and beam are shared.
-    p.icon.traverse((o) => { if (o instanceof THREE.Mesh) o.geometry.dispose(); });
+    // Icon geometries are per pickup; the ring and beam are shared. A gun icon is a copy of the gun
+    // model, whose geometry is shared with every gun in hand: disposing it would make the GPU
+    // upload it again.
+    if (kindOf(p.record.type) !== 'gun') p.icon.traverse((o) => { if (o instanceof THREE.Mesh) o.geometry.dispose(); });
     this.pickups.delete(id);
   }
 
@@ -275,13 +279,7 @@ export class PickupField {
   scatterAround(x: number, z: number, count: number): { x: number; z: number }[] {
     const limit = ARENA_HALF - 1;
     const spots: { x: number; z: number }[] = [];
-    const free = (sx: number, sz: number) =>
-      Math.abs(sx) < limit && Math.abs(sz) < limit &&
-      !this.colliders.some((c) =>
-        sx > c.min.x - SCATTER_CLEARANCE && sx < c.max.x + SCATTER_CLEARANCE &&
-        sz > c.min.z - SCATTER_CLEARANCE && sz < c.max.z + SCATTER_CLEARANCE) &&
-      ![...spots, ...[...this.pickups.values()].map((p) => p.record)]
-        .some((o) => Math.hypot(o.x - sx, o.z - sz) < SCATTER_SPACING);
+    const free = (sx: number, sz: number) => this.isOpen(sx, sz, spots);
     const start = Math.random() * Math.PI * 2;
     for (let i = 0; i < count; i++) {
       const base = start + (i / count) * Math.PI * 2;
@@ -303,6 +301,40 @@ export class PickupField {
       spots.push({ x: Math.round(spot.x * 100) / 100, z: Math.round(spot.z * 100) / 100 });
     }
     return spots;
+  }
+
+  /**
+   * Where to put one dropped item meant for (x, z): right there if it's clear, otherwise the nearest
+   * clear spot around it, so drops spread out instead of piling onto each other.
+   */
+  spotNear(x: number, z: number): { x: number; z: number } {
+    const limit = ARENA_HALF - 1;
+    const round = (v: number) => Math.round(v * 100) / 100;
+    if (this.isOpen(x, z)) return { x: round(x), z: round(z) };
+    const start = Math.random() * Math.PI * 2;
+    for (const r of NEAR_RADII) {
+      for (let k = 0; k < 12; k++) {
+        const a = start + (k / 12) * Math.PI * 2;
+        const sx = x + Math.sin(a) * r;
+        const sz = z + Math.cos(a) * r;
+        if (this.isOpen(sx, sz)) return { x: round(sx), z: round(sz) };
+      }
+    }
+    // Nowhere clear nearby: the spot asked for, then.
+    return { x: round(THREE.MathUtils.clamp(x, -limit, limit)), z: round(THREE.MathUtils.clamp(z, -limit, limit)) };
+  }
+
+  /** Open floor inside the arena, clear of cover, and not on top of another pickup (or `taken` spot). */
+  private isOpen(x: number, z: number, taken: readonly { x: number; z: number }[] = []): boolean {
+    const limit = ARENA_HALF - 1;
+    if (Math.abs(x) >= limit || Math.abs(z) >= limit) return false;
+    const blocked = this.colliders.some((c) =>
+      x > c.min.x - SCATTER_CLEARANCE && x < c.max.x + SCATTER_CLEARANCE &&
+      z > c.min.z - SCATTER_CLEARANCE && z < c.max.z + SCATTER_CLEARANCE);
+    if (blocked) return false;
+    for (const o of taken) if (Math.hypot(o.x - x, o.z - z) < SCATTER_SPACING) return false;
+    for (const p of this.pickups.values()) if (Math.hypot(p.record.x - x, p.record.z - z) < SCATTER_SPACING) return false;
+    return true;
   }
 
   dispose(): void {

@@ -1,10 +1,23 @@
 import * as THREE from 'three';
 import { grenadeTexture } from './textures';
+import { GROUP, activePhysics, groups, type PhysicsWorld } from './physics';
 
 const GRAVITY = 18;
 const STEP = 1 / 120;
 const FUSE = 2.5;
+/** A bouncing grenade goes off this long after the throw, wherever it has rolled to (s) */
+const GRENADE_FUSE = 1.8;
 const RADIUS = 0.12;
+/** Share of the speed into a surface that comes back out of it */
+const RESTITUTION = 0.4;
+/** Hits slower than this (m/s, into the surface) don't bounce: the canister settles and rolls */
+const BOUNCE_FROM = 1.5;
+/** Share of the sliding speed kept by each bounce */
+const IMPACT_GRIP = 0.7;
+/** How fast rolling on the ground bleeds speed (1/s) */
+const ROLL_FRICTION = 3.5;
+/** Below this speed (m/s) on the ground, it has come to rest */
+const REST_SPEED = 0.3;
 export const THROW_SPEED = 17;
 export const THROW_LIFT = 4;
 
@@ -18,11 +31,22 @@ export interface Trajectory {
 }
 
 /**
- * Integrates a grenade arc with a fixed step, so every client that receives the same
- * origin and velocity draws exactly the same flight. It explodes on first contact
- * with the floor or any cover, or when the fuse runs out.
+ * How a thrown thing behaves: `impact` goes off on first contact (molotov, flashbang); `grenade`
+ * bounces and rolls until its fuse runs out; `smoke` bounces and goes off once it comes to rest.
  */
-export function simulateGrenade(origin: THREE.Vector3, velocity: THREE.Vector3, colliders: THREE.Box3[]): Trajectory {
+export type FlightKind = 'impact' | 'grenade' | 'smoke';
+
+/**
+ * Integrates a thrown arc with a fixed step, so every client that receives the same origin and
+ * velocity draws exactly the same flight. With the physics engine loaded, it sweeps a ball through
+ * the map (boxes, ramps, deployed walls) and bounces off what it hits; that's a geometric query,
+ * not a simulation, so it comes out the same everywhere. Without it, it stops at the first box.
+ */
+export function simulateGrenade(
+  origin: THREE.Vector3, velocity: THREE.Vector3, colliders: THREE.Box3[], kind: FlightKind = 'impact',
+): Trajectory {
+  const physics = activePhysics();
+  if (physics) return sweptFlight(physics, origin, velocity, kind);
   const p = origin.clone();
   const v = velocity.clone();
   const points = [p.clone()];
@@ -44,6 +68,77 @@ export function simulateGrenade(origin: THREE.Vector3, velocity: THREE.Vector3, 
   }
   return { points, end: p.clone(), duration: t };
 }
+
+const _n = new THREE.Vector3();
+const _tan = new THREE.Vector3();
+
+function sweptFlight(physics: PhysicsWorld, origin: THREE.Vector3, velocity: THREE.Vector3, kind: FlightKind): Trajectory {
+  const { R, world } = physics;
+  const ball = new R.Ball(RADIUS);
+  const flags = R.QueryFilterFlags.EXCLUDE_DYNAMIC | R.QueryFilterFlags.EXCLUDE_KINEMATIC;
+  const filter = groups(GROUP.THROWN, GROUP.WORLD);
+  const fuse = kind === 'grenade' ? GRENADE_FUSE : FUSE;
+  const p = origin.clone();
+  const v = velocity.clone();
+  const points = [p.clone()];
+  let t = 0;
+  flight: while (t < fuse) {
+    v.y -= GRAVITY * STEP;
+    let left = STEP;
+    let grounded = false;
+    // A step can hit more than one surface (into a corner): a few sweeps at most.
+    for (let i = 0; i < 3 && left > 1e-7; i++) {
+      const hit = world.castShape(p, IDENTITY, v, ball, 0, left, false, flags, filter);
+      if (!hit) {
+        p.addScaledVector(v, left);
+        break;
+      }
+      const toi = hit.time_of_impact;
+      p.addScaledVector(v, toi);
+      left -= toi;
+      if (kind === 'impact') {
+        t += STEP - left;
+        points.push(p.clone());
+        break flight;
+      }
+      // The surface normal faces out of what we hit: the ball's own contact normal, reversed.
+      _n.set(-hit.normal2.x, -hit.normal2.y, -hit.normal2.z).normalize();
+      const into = v.dot(_n);
+      if (into < 0) {
+        const bounce = -into > BOUNCE_FROM ? RESTITUTION : 0;
+        _tan.copy(v).addScaledVector(_n, -into);
+        // A real bounce scrubs some sliding speed; settling onto a surface keeps it (rolling friction below).
+        if (bounce > 0) _tan.multiplyScalar(IMPACT_GRIP);
+        v.copy(_tan).addScaledVector(_n, -into * bounce);
+      }
+      // Back off the surface a hair so the next sweep doesn't start touching it.
+      p.addScaledVector(_n, 1e-3);
+    }
+    // Resting on something? (A short probe down: sweeps along the ground don't always touch it.)
+    const below = world.castShape(p, IDENTITY, DOWN, ball, 0, 0.01, false, flags, filter);
+    if (below && -below.normal2.y > 0.6) grounded = true;
+    if (grounded) {
+      const keep = Math.exp(-ROLL_FRICTION * STEP);
+      v.x *= keep;
+      v.z *= keep;
+    }
+    if (p.y < RADIUS) {
+      // Never below the floor, whatever happened.
+      p.y = RADIUS;
+      if (v.y < 0) v.y = 0;
+    }
+    t += STEP;
+    points.push(p.clone());
+    if (grounded && v.lengthSq() < REST_SPEED * REST_SPEED) {
+      if (kind === 'smoke') break;
+      v.set(0, 0, 0);
+    }
+  }
+  return { points, end: p.clone(), duration: t };
+}
+
+const IDENTITY = { x: 0, y: 0, z: 0, w: 1 };
+const DOWN = { x: 0, y: -1, z: 0 };
 
 const grenadeGeo = new THREE.SphereGeometry(RADIUS, 12, 8);
 let grenadeMat: THREE.MeshStandardMaterial | null = null;
@@ -74,7 +169,7 @@ const BLAST_LIFE = 450;
  * light changes the scene's light count, which makes every lit material recompile its shader — a
  * visible hitch on every explosion. With a fixed pool, the count never changes.
  */
-const LIGHT_POOL = 2;
+const LIGHT_POOL = 1;
 
 /** Flying grenades and explosion effects, for our own grenades and everyone else's. */
 export class GrenadeFx {

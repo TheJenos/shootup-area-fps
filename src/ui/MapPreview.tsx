@@ -153,7 +153,7 @@ export function MapPreview({ map, mode }: { map: MapLayout; mode: GameMode }) {
     }
     const scene = new THREE.Scene();
     const world = buildWorld(scene, map, { colliders: [], solids: [], ramps: [], obstacles: [] });
-    world.setShadowQuality('low');
+    world.setQuality('low');
     // Seen from outside, so push the fog back to just soften the far edge.
     scene.fog = new THREE.Fog(map.theme.sky, 110, 220);
     const markers = mode === 'ctf' ? flagMarkers() : null;

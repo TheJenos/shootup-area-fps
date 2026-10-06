@@ -26,19 +26,26 @@ export interface WorldLists {
   obstacles: THREE.Box3[];
 }
 
+export interface WorldOptions {
+  /** Prop models the caller will simulate as loose physics bodies: they're left out of the static map */
+  looseProps?: ReadonlySet<string>;
+}
+
 export interface World extends WorldLists {
   spawnPoints: THREE.Vector3[];
   /** Keep this centered on the camera so the horizon never gets closer */
   sky: THREE.Object3D;
   /** Everything the map added to the scene */
   root: THREE.Group;
+  /** The props left out for the caller to simulate (see WorldOptions.looseProps) */
+  looseProps: MapLayout['props'];
   /**
    * The top of whatever is under `p` (the floor is 0) and what footsteps on it sound like (null
    * means the map's floor). Boxes count if their top is at most 5 cm above p, ramps 30 cm.
    */
   groundAt(p: THREE.Vector3): { y: number; surface: StepSurface | null };
-  /** Shadow map resolution for the graphics quality setting */
-  setShadowQuality(quality: Quality): void;
+  /** Shadow map resolution and surface detail (bump maps) for the graphics quality setting */
+  setQuality(quality: Quality): void;
   /** Remove the map from the scene and free its geometry and materials (textures and models are shared) */
   dispose(): void;
 }
@@ -74,7 +81,7 @@ const GROUND_STEP: Partial<Record<string, StepSurface>> = { grass: 'sand', dirt:
  * Fills `colliders` (Box3, for movement) and `solids` (meshes, for bullet raycasts) in place,
  * so code holding on to those arrays sees the new map when it's rebuilt for the next round.
  */
-export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLists): World {
+export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLists, options: WorldOptions = {}): World {
   const { colliders, solids, ramps, obstacles } = lists;
   colliders.length = 0;
   solids.length = 0;
@@ -113,10 +120,10 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
     floorUv.setXY(i, (floorUv.getX(i) * ARENA_HALF * 2) / FLOOR_TILE, (floorUv.getY(i) * ARENA_HALF * 2) / FLOOR_TILE);
   }
   const floorMap = floorTexture(theme.floorTexture, theme);
-  const floor = new THREE.Mesh(
-    floorGeo,
-    new THREE.MeshStandardMaterial({ map: floorMap, bumpMap: floorMap, bumpScale: 0.6, roughness: 0.95 }),
-  );
+  const floorMat = new THREE.MeshStandardMaterial({ map: floorMap, bumpMap: floorMap, bumpScale: 0.6, roughness: 0.95 });
+  /** Materials whose colour texture doubles as a bump map; the bump is dropped below high quality. */
+  const bumped: THREE.MeshStandardMaterial[] = [floorMat];
+  const floor = new THREE.Mesh(floorGeo, floorMat);
   floor.rotation.x = -Math.PI / 2;
   floor.receiveShadow = true;
   root.add(floor);
@@ -138,6 +145,7 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
         metalness: shiny ? 0.35 : 0,
       });
       materials.set(key, mat);
+      bumped.push(mat);
     }
     return mat;
   };
@@ -310,6 +318,7 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
     if (disposed) return;
     const byId = new Map<string, MapLayout['props']>();
     for (const p of layout.props) {
+      if (options.looseProps?.has(p.id)) continue;
       const list = byId.get(p.id) ?? [];
       list.push(p);
       byId.set(p.id, list);
@@ -336,6 +345,7 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
         propsRoot.add(mesh);
       }
     }
+    freeze(propsRoot);
   };
   const unsubscribe = layout.props.length ? whenPropsReady(addProps) : () => {};
 
@@ -389,14 +399,27 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
     return { y, surface };
   };
 
-  const setShadowQuality = (quality: Quality) => {
+  const setQuality = (quality: Quality) => {
     const size = SHADOW_SIZE[quality];
-    if (sun.shadow.mapSize.x === size) return;
-    sun.shadow.mapSize.set(size, size);
-    // The map is allocated at the old size; drop it so it's rebuilt.
-    sun.shadow.map?.dispose();
-    sun.shadow.map = null;
+    if (sun.shadow.mapSize.x !== size) {
+      sun.shadow.mapSize.set(size, size);
+      // The map is allocated at the old size; drop it so it's rebuilt.
+      sun.shadow.map?.dispose();
+      sun.shadow.map = null;
+    }
+    // Bump mapping costs a few texture reads per pixel on nearly every surface.
+    const bump = quality === 'high';
+    for (const mat of bumped) {
+      if ((mat.bumpMap !== null) === bump) continue;
+      mat.bumpMap = bump ? mat.map : null;
+      mat.needsUpdate = true;
+    }
   };
+
+  // Nothing in the map moves (except the sky, which follows the camera): work out every matrix
+  // once instead of every frame.
+  freeze(root);
+  sky.matrixAutoUpdate = true;
 
   const dispose = () => {
     disposed = true;
@@ -419,5 +442,12 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
     sun.shadow.map?.dispose();
   };
 
-  return { colliders, solids, ramps, obstacles, spawnPoints, sky, root, groundAt, setShadowQuality, dispose };
+  const looseProps = layout.props.filter((p) => options.looseProps?.has(p.id));
+  return { colliders, solids, ramps, obstacles, spawnPoints, sky, root, looseProps, groundAt, setQuality, dispose };
+}
+
+/** Compute `root`'s matrices now and stop three.js recomputing them each frame (for things that never move). */
+function freeze(root: THREE.Object3D): void {
+  root.updateMatrixWorld(true);
+  root.traverse((o) => { o.matrixAutoUpdate = false; });
 }

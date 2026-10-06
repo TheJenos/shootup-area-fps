@@ -314,6 +314,7 @@ html.reduce-motion #cloak-tint { animation: none; }
   transform-origin: top right;
   transform: scale(var(--hud-scale));
 }
+#fps { white-space: pre; text-align: right; line-height: 1.35; }
 #fps.good { color: #7ddc8a; }
 #fps.ok { color: #ffd166; }
 #fps.bad { color: #ff6b6b; }
@@ -328,10 +329,10 @@ html.reduce-motion #cloak-tint { animation: none; }
 }
 #killfeed li.me { border: 1px solid var(--accent); }
 #killfeed .weapon { color: var(--muted); margin: 0 6px; }
-#killfeed .tag { display: inline-block; font-size: 12px; font-weight: 800; line-height: 1; padding: 2px 4px; margin-right: 4px; border-radius: 3px; color: #fff; }
+#killfeed .tag { display: inline-block; font-size: 14px; font-weight: 800; line-height: 1; padding: 2px 4px; margin-right: 4px; border-radius: 3px; color: #fff; }
 #killfeed .tag.red { background: #c23b3b; }
 #killfeed .tag.blue { background: #2f6fd1; }
-#killfeed .you { color: var(--accent); font-size: 12px; }
+#killfeed .you { color: var(--accent); }
 
 /* Status banners under the score bar (reconnecting, waiting for players) */
 .hud-banner {
@@ -415,7 +416,7 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 
 #ammo { right: 24px; font-size: 34px; text-align: right; }
 #ammo.low #ammo-value { color: var(--danger); }
-#reload-hint { font-size: 12px; color: var(--accent); letter-spacing: 2px; visibility: hidden; }
+#reload-hint { font-size: 15px; font-weight: 800; color: var(--accent); letter-spacing: 1.5px; visibility: hidden; }
 #reload-hint.show { visibility: visible; }
 #ammo.melee #ammo-value { font-size: 26px; letter-spacing: 2px; color: var(--accent); }
 #ammo.melee #reload-hint { color: var(--text); }
@@ -448,10 +449,10 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 }
 .slot.ready { border-color: rgba(255, 181, 71, 0.6); }
 .slot.empty { border-style: dashed; }
-.slot kbd { position: absolute; top: 4px; left: 4px; font-size: 12px; padding: 0 4px; }
+.slot kbd { position: absolute; top: 4px; left: 4px; font-size: 14px; padding: 0 4px; }
 .slot.empty kbd { position: static; opacity: 0.6; }
 .slot .icon { font-size: 26px; line-height: 1; }
-.slot .name { font-size: 12px; color: var(--muted); margin-top: 3px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.slot .name { font-size: 14px; color: var(--muted); margin-top: 3px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .slot .uses { display: flex; gap: 3px; margin-top: 4px; }
 .slot .uses i { width: 6px; height: 6px; border-radius: 50%; background: rgba(255, 255, 255, 0.18); }
 .slot .uses i.left { background: var(--accent); }
@@ -898,9 +899,9 @@ kbd {
   background: rgba(10, 12, 18, 0.6);
   pointer-events: none;
 }
-#spectate .label { font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); }
+#spectate .label { font-size: 14px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); }
 #spectate strong { font-size: 20px; }
-#spectate .muted { font-size: 12px; }
+#spectate .muted { font-size: 14px; }
 #match-summary tr.spectating td { color: var(--muted); font-style: italic; }
 
 #scorebar-wrap {
@@ -933,13 +934,13 @@ kbd {
   white-space: nowrap;
 }
 #scorebar strong { font-size: 18px; }
-#scorebar .mode { font-size: 12px; font-weight: 800; letter-spacing: 1px; color: var(--accent); }
+#scorebar .mode { font-size: 14px; font-weight: 800; letter-spacing: 1px; color: var(--accent); }
 #scorebar .center {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 14px;
   padding: 0 6px;
 }
 #scorebar .team {
@@ -955,9 +956,9 @@ kbd {
 #scorebar .team.red { --team: #ff4d4d; }
 #scorebar .team.blue { --team: #3d8bff; }
 #scorebar .team.mine { box-shadow: inset 0 0 0 1px var(--team); }
-#scorebar .team .name { font-size: 12px; font-weight: 700; color: var(--team); text-transform: uppercase; letter-spacing: 1px; }
+#scorebar .team .name { font-size: 14px; font-weight: 700; color: var(--team); text-transform: uppercase; letter-spacing: 1px; }
 #scorebar .team strong { font-size: 24px; line-height: 1.1; }
-#scorebar .flag { font-size: 12px; color: var(--muted); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#scorebar .flag { font-size: 14px; color: var(--muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #scorebar .flag.dropped { color: var(--accent); }
 #scorebar .flag.carried { color: var(--danger); font-weight: 700; }
 
@@ -1246,8 +1247,9 @@ kbd {
 /* Right cluster: nothing left of W-202px, so the centre column (abilities, health, toasts) fits a 667px phone */
 #touch-controls .crouch { width: 58px; height: 58px; right: calc(env(safe-area-inset-right) + 50px); bottom: 24px; }
 #touch-controls .reload { width: 52px; height: 52px; right: calc(env(safe-area-inset-right) + 54px); bottom: 204px; }
-#touch-controls .top-buttons { position: absolute; top: 12px; left: calc(env(safe-area-inset-left) + 12px); display: flex; gap: 8px; pointer-events: auto; }
-#touch-controls .tbtn.small { position: static; width: 40px; height: 40px; font-size: 14px; border-radius: 10px; }
+#touch-controls .top-buttons { position: absolute; top: 12px; left: calc(env(safe-area-inset-left) + 12px); display: flex; gap: 10px; pointer-events: auto; }
+/* 44px: the smallest a thumb hits reliably (Apple's minimum); a missed tap on Menu pauses the game */
+#touch-controls .tbtn.small { position: static; width: 44px; height: 44px; font-size: 15px; border-radius: 10px; }
 
 /* HUD rearranged around the thumbs */
 #hud.touch #room-tag { left: calc(env(safe-area-inset-left) + 112px); top: 18px; }
@@ -1266,12 +1268,12 @@ kbd {
 #hud.touch .pause-card .actions button { min-height: 44px; font-size: 15px; }
 #hud.touch .pause-card .help button { margin-top: 8px; }
 #hud.intro #touch-controls, #hud.intro #touch-controls * { pointer-events: none; }
-#hud.touch #toasts { bottom: 140px; max-width: 240px; font-size: 13px; text-align: center; }
+#hud.touch #toasts { bottom: 140px; max-width: 240px; font-size: 14px; text-align: center; }
 /* Phones: the room code lives in the menu (the top buttons sit where the tag was), and banners shrink to fit */
 #hud.touch #room-tag { display: none; }
 #hud.touch #announce { top: 100px; max-width: 70vw; text-align: center; }
 #hud.touch #announce strong { font-size: 24px; letter-spacing: 2px; white-space: normal; line-height: 1.1; }
-#hud.touch #announce span { font-size: 12px; letter-spacing: 1px; }
+#hud.touch #announce span { font-size: 14px; letter-spacing: 1px; }
 #hud.touch #toasts .toast { white-space: normal; }
 #hud.touch .slot { width: 54px; height: 54px; pointer-events: auto; }
 #hud.touch .slot .name { display: none; }

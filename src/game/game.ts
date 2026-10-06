@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { ARENA_HALF, buildWorld, type World } from './world';
 import type { Ramp } from './ramps';
-import { setRagdollWorld } from './ragdoll';
+import { loadPhysics, PhysicsWorld, setActivePhysics } from './physics';
+import { DebrisField, LOOSE_PROPS } from './debris';
 import { generateMap, layoutName, mapName, normalizeSeed, randomSeed, CLASSIC_SEED } from './mapgen';
 import { LocalPlayer } from './player';
 import { RemotePlayer, type HitboxData } from './remotePlayer';
@@ -40,12 +41,16 @@ import { setDiscordActivity } from '../discord/discord';
 import { TOUCH } from './device';
 import { StepTracker, type StepEvent } from './footsteps';
 import { hints, type HintId } from './hints';
+import { PERF_DEBUG, perfStats } from './perfStats';
 import type {
   GameEvent, GameMode, GameState, GunKind, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, Team, Vec3Tuple, WeaponKind,
 } from '../types';
 
 const SEND_INTERVAL = 1 / 15;
-const HEARTBEAT = 2;
+/** Even when nothing changed, the whole pose is resent this often (s) */
+const HEARTBEAT = 5;
+/** Stats change on every shot; they're sent at most this often (s), and right away once the round is over */
+const STATS_INTERVAL = 1;
 /** Most damage one hit of each kind can deal; anything above that from another client is clamped. */
 const maxDamage = (weapon: WeaponKind) =>
   (weapon === 'grenade' ? GRENADE_DAMAGE : weapon === 'mine' ? MINE_DAMAGE : weapon === 'flag' ? MELEE_HEAD_DAMAGE : weapon === 'molotov' ? FIRE_DAMAGE
@@ -60,8 +65,8 @@ const EMPTY_MY_MATCH: MyMatch = { pickups: 0, abilitiesUsed: 0, dropped: 0 };
 const REFEREE_GRACE_MS = 3_000;
 /** Other players' footsteps can't be heard further away than this (m) */
 const STEP_HEARING_RANGE = 35;
-/** How often we measure our ping (s) */
-const PING_INTERVAL = 2;
+/** How often we measure our ping (s). Each measurement is a write every other player receives. */
+const PING_INTERVAL = 5;
 /** How long a damage direction arc stays fully visible, then how long it takes to fade (s) */
 const INDICATOR_HOLD = 0.6;
 const INDICATOR_FADE = 1;
@@ -74,8 +79,11 @@ const KNOCKBACK: Partial<Record<WeaponKind, number>> = { rifle: 3, deagle: 4, sh
 
 /** Fraction of full health at or below which the screen darkens at the edges and the heart pounds */
 export const LOW_HEALTH = 0.3;
-/** Resolution cap per graphics quality setting (device pixel ratio) */
-const PIXEL_RATIO: Record<Quality, number> = { low: 1, medium: 1.5, high: 2 };
+/**
+ * Resolution cap per graphics quality setting (device pixel ratio). High stops at 1.5: on a 2x
+ * screen, full resolution plus MSAA is four times the pixels for little visible difference.
+ */
+const PIXEL_RATIO: Record<Quality, number> = { low: 1, medium: 1.5, high: 1.5 };
 /** How often to check whether teammates are hidden behind cover (s) */
 const ALLY_SIGHT_INTERVAL = 0.1;
 /** Radians of turn per pixel of finger drag, at sensitivity 1 */
@@ -144,9 +152,13 @@ export class Game {
   private readonly abort = new AbortController();
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
+  /** Traffic cones and rubble the physics throws around (local only) */
+  private readonly debris = new DebrisField(this.scene);
   private readonly camera: THREE.PerspectiveCamera;
   /** The current map; rebuilt every round. The two arrays are filled in place. */
   private world!: World;
+  /** Rapier: the map's collision, our body, ragdolls, loose props. Null until it has loaded. */
+  private physics: PhysicsWorld | null = null;
   private mapSeed = '';
   private readonly colliders: THREE.Box3[] = [];
   private readonly solids: THREE.Mesh[] = [];
@@ -177,7 +189,9 @@ export class Game {
   private joinedAt = 0;
   private sendTimer = 0;
   private heartbeat = 0;
-  private lastSent = '';
+  /** The pose as last sent: only fields that differ from it go out */
+  private lastPose: Pose | null = null;
+  private statsTimer = 0;
   private scoreTimer = 0;
   private disposed = false;
   private character: CharacterAsset | null = null;
@@ -317,7 +331,9 @@ export class Game {
     this.color = colorFor(playerId);
     const signal = this.abort.signal;
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    // MSAA only on high. It can't be switched on an existing renderer, so a quality change during
+    // a game takes effect for it on the next game.
+    this.renderer = new THREE.WebGLRenderer({ antialias: settings.get().quality === 'high' });
     this.renderer.setSize(host.clientWidth, host.clientHeight);
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.autoClear = false;
@@ -326,17 +342,18 @@ export class Game {
     const aspect = host.clientWidth / host.clientHeight;
     this.camera = new THREE.PerspectiveCamera(settings.get().fov, aspect, 0.05, 300);
     this.scene.add(this.camera);
+    // The scene root never moves. Left on, it would force every object's world matrix to be
+    // recomputed each frame, including the map's, which never changes (see buildWorld).
+    this.scene.matrixAutoUpdate = false;
 
     this.loadMap(seed);
     this.applyQuality();
     signal.addEventListener('abort', settings.subscribe(() => this.applyQuality()), { once: true });
-    this.player = new LocalPlayer(this.camera, this.colliders, this.ramps, signal);
+    this.player = new LocalPlayer(this.camera, signal);
     this.weapon = new Weapon(aspect);
     this.povWeapon = new Weapon(aspect);
     this.effects = new Effects(this.scene);
     this.pickups = new PickupField(this.scene, this.obstacles);
-    // Dead bodies land on the current map (these arrays are refilled in place for each new map).
-    setRagdollWorld(this.colliders, this.ramps);
     this.grenades = new GrenadeFx(this.scene);
     this.smoke = new SmokeField(this.scene);
     this.walls = new WallField(this.scene, this.colliders, this.solids);
@@ -372,11 +389,29 @@ export class Game {
     this.pendingThrown = [];
     this.world = buildWorld(this.scene, map, {
       colliders: this.colliders, solids: this.solids, ramps: this.ramps, obstacles: this.obstacles,
-    });
-    if (this.appliedQuality) this.world.setShadowQuality(this.appliedQuality);
+    }, { looseProps: LOOSE_PROPS });
+    if (this.appliedQuality) this.world.setQuality(this.appliedQuality);
+    this.physics?.setMap(this.colliders, this.ramps);
+    this.debris.setProps(this.world.looseProps);
     this.mapSeed = map.seed;
     this.floorSurface = map.theme.surface;
     this.hud.update({ map: { name: layoutName(map), seed: map.seed } });
+  }
+
+  /** The physics engine has loaded: build the map in it and give us (and dead bodies) a body. */
+  private startPhysics(): void {
+    const physics = new PhysicsWorld();
+    this.physics = physics;
+    physics.setMap(this.colliders, this.ramps);
+    // Deployed walls and turrets block movement too.
+    const mirror = (box: THREE.Box3, added: boolean) => (added ? physics.addBox(box, box) : physics.removeBox(box));
+    this.walls.onCollider = mirror;
+    this.turrets.onCollider = mirror;
+    this.player.attachPhysics(physics);
+    this.debris.setPhysics(physics);
+    this.debris.setProps(this.world.looseProps);
+    // Dead bodies and grenade arcs use it too.
+    setActivePhysics(physics);
   }
 
   /** Resolution and shadows from the quality setting; applied live when it changes. */
@@ -388,7 +423,7 @@ export class Game {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, PIXEL_RATIO[quality]));
     this.renderer.shadowMap.enabled = quality !== 'low';
     this.renderer.shadowMap.needsUpdate = true;
-    this.world.setShadowQuality(quality);
+    this.world.setQuality(quality);
   }
 
   /** Capture the mouse (and go fullscreen) to start playing. Must be called from a user gesture. */
@@ -566,9 +601,14 @@ export class Game {
     }, { signal });
     canvas.addEventListener('click', () => { if (!this.locked) this.requestPointerLock(); }, { signal });
 
-    // On a Mac, Ctrl+click is a right-click; crouching (Ctrl) and shooting must still shoot.
-    const isFire = (e: MouseEvent) => e.button === 0 || (e.button === 2 && e.ctrlKey);
+    // On a Mac, some browsers report Ctrl+click as a right-click; crouching (Ctrl) and shooting must
+    // still shoot. A real right-click while crouched must still aim, though: tell them apart by the
+    // button physically held (`buttons`: 1 is the left button, 2 the right).
+    const isFire = (e: MouseEvent) => e.button === 0 || (e.button === 2 && e.ctrlKey && (e.buttons & 3) === 1);
+    /** Whether the right-button press being held is a Ctrl+click shot (released by its mouseup) */
+    let rightFires = false;
     window.addEventListener('mousedown', (e) => {
+      if (e.button === 2) rightFires = isFire(e);
       if (this.spectating) {
         if (this.locked && (e.button === 0 || e.button === 2)) this.cycleSpectate(e.button === 0 ? 1 : -1);
         return;
@@ -588,8 +628,10 @@ export class Game {
     // Rebinding keys mid-game: lock the new set.
     signal.addEventListener('abort', settings.subscribe(() => this.syncKeyboardLock()), { once: true });
     window.addEventListener('mouseup', (e) => {
-      if (e.button === 2 && !e.ctrlKey && !settings.get().aimToggle) this.aimHeld = false;
-      if (isFire(e)) {
+      // Ends whatever its mousedown started: Ctrl may have been pressed or let go in between.
+      const fire = e.button === 0 || (e.button === 2 && rightFires);
+      if (e.button === 2 && !rightFires && !settings.get().aimToggle) this.aimHeld = false;
+      if (fire) {
         this.triggerHeld = false;
         this.weapon.releaseTrigger();
       }
@@ -652,7 +694,10 @@ export class Game {
       loadFpArms(),
       // Map models are only looks (their collision is already built), so don't hold up joining for them.
       loadPropModels().catch((err: unknown) => console.warn('Could not load map models', err)),
+      loadPhysics(),
     ]);
+    if (this.disposed) return;
+    this.startPhysics();
     this.character = character;
     this.weapon.setArms(arms);
     this.povWeapon.setArms(arms);
@@ -926,6 +971,7 @@ export class Game {
         const end = fromArr(e);
         this.effects.tracer(origin, end, 0xffa27a);
         this.effects.impact(end, evt.hit || evt.hits ? 0xff3b3b : 0xffc35c);
+        this.debris.shot(origin, end);
       }
       const dist = origin.distanceTo(this.camera.position);
       sfx.playShot(1 / (1 + dist / 10), gun);
@@ -937,7 +983,7 @@ export class Game {
       else if (evt.hit === this.playerId) this.takeDamage(evt.dmg, evt.from, !!evt.head, weapon, origin);
     } else if (evt.type === 'grenade') {
       if (evt.from === this.playerId) return;
-      this.grenades.launch(evt.id, simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders));
+      this.grenades.launch(evt.id, simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders, 'grenade'));
     } else if (evt.type === 'melee') {
       if (evt.from === this.playerId || !evt.o) return;
       const origin = fromArr(evt.o);
@@ -949,7 +995,7 @@ export class Game {
       }
     } else if (evt.type === 'smoke') {
       if (evt.from === this.playerId) return;
-      const arc = simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders);
+      const arc = simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders, 'smoke');
       this.grenades.launch(evt.id, arc);
       this.pendingSmokes.push({ id: evt.id, at: performance.now() + arc.duration * 1000, p: arc.end });
     } else if (evt.type === 'molotov' || evt.type === 'flash') {
@@ -1038,6 +1084,7 @@ export class Game {
 
   /** A grenade went off: bodies lying close by get thrown (the living ones are handled by damage). */
   private liftBodies(at: THREE.Vector3): void {
+    this.debris.blast(at, GRENADE_RADIUS);
     for (const r of this.remotes.values()) {
       if (!r.alive && r.position.distanceTo(at) < GRENADE_RADIUS * 1.2) r.knockback(at, 9, false, true);
     }
@@ -1056,6 +1103,8 @@ export class Game {
   private onConnection(connected: boolean): void {
     if (!this.joined || this.offline === !connected) return;
     this.offline = !connected;
+    // Resend the whole pose once we're back.
+    if (connected) this.lastPose = null;
     this.hud.update({ offline: this.offline });
     this.hud.pushInfo(connected ? 'Back online' : 'Connection lost');
   }
@@ -1902,6 +1951,7 @@ export class Game {
       const hitbox = hit?.object.userData as Partial<HitboxData> | undefined;
       const id = hitbox?.playerId;
       if (hit) this.effects.impact(end, id ? 0xff3b3b : 0xffc35c);
+      this.debris.shot(origin, end);
       const dep = hit && !id ? this.deployableOf(hit.object) : null;
       if (dep && this.canBreak(dep.owner, this.playerId)) {
         depDamage.set(dep.id, (depDamage.get(dep.id) ?? 0) + shotDamage(gun, false, hit!.distance));
@@ -1952,7 +2002,8 @@ export class Game {
       this.net.sendEvent({ type: 'shot', ...shot, ...extra, ...(damageTo.size ? { hits } : {}) });
     } else {
       const [hitId, dmg] = [...damageTo][0] ?? [null, 0];
-      this.net.sendEvent({ type: 'shot', ...shot, ...extra, hit: hitId, dmg, head: anyHead });
+      // A miss leaves out who was hit and for how much: most shots miss, and every client receives each one.
+      this.net.sendEvent({ type: 'shot', ...shot, ...extra, ...(hitId ? { hit: hitId, dmg, head: anyHead } : {}) });
     }
     this.recorder.event({ t: this.net.serverNow(), kind: 'shot', ...shot, ...extra, hit: damageTo.size > 0, from: this.playerId });
   }
@@ -2137,7 +2188,7 @@ export class Game {
     if (!this.alive || !this.joined) return;
     const item = this.inventory.remove(slot);
     if (!item) return;
-    const spot = this.dropSpot();
+    const spot = this.itemDropSpot();
     const id = this.net.spawnPickup({ type: item.type, uses: item.usesLeft, ...spot });
     if (id) this.ignorePickup = { id, ...spot };
     this.bumpMyMatch('dropped');
@@ -2151,7 +2202,7 @@ export class Game {
     const gun = this.weapon.takeSpecial();
     if (!gun || !isPickupGun(gun.kind)) return;
     if (gun.rounds > 0) {
-      const spot = this.dropSpot();
+      const spot = this.itemDropSpot();
       const id = this.net.spawnPickup({ type: gun.kind, uses: gun.rounds, ...spot });
       if (id) this.ignorePickup = { id, ...spot };
     }
@@ -2165,6 +2216,12 @@ export class Game {
     this.setTouchMove(null);
     this.setTouchFire(false);
     this.openInventory();
+  }
+
+  /** Where an item we drop lands: in front of us, or beside whatever already lies there (never stacked). */
+  private itemDropSpot(): { x: number; z: number } {
+    const { x, z } = this.dropSpot();
+    return this.pickups.spotNear(x, z);
   }
 
   private dropSpot(): { x: number; z: number } {
@@ -2204,7 +2261,7 @@ export class Game {
     // Simulate from the rounded values we send, so every client computes the identical arc.
     const o = toArr(start);
     const v = toArr(velocity);
-    const trajectory = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders);
+    const trajectory = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders, 'grenade');
     const id = randomId(8);
     this.grenades.launch(id, trajectory);
     this.net.sendEvent({ type: 'grenade', id, o, v });
@@ -2221,7 +2278,7 @@ export class Game {
     const velocity = dir.multiplyScalar(THROW_SPEED).add(new THREE.Vector3(0, THROW_LIFT, 0));
     const o = toArr(start);
     const v = toArr(velocity);
-    const arc = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders);
+    const arc = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders, 'smoke');
     const id = randomId(8);
     this.grenades.launch(id, arc);
     this.net.sendEvent({ type: 'smoke', id, o, v });
@@ -2428,6 +2485,7 @@ export class Game {
     const hitId = (hit?.object.userData as Partial<HitboxData> | undefined)?.playerId ?? null;
     this.effects.tracer(muzzle, end, 0xffd27a);
     if (hit) this.effects.impact(end, hitId ? 0xff3b3b : 0xffc35c);
+    this.debris.shot(muzzle, end);
     this.turrets.fired(t);
     sfx.playShot(0.5 / (1 + muzzle.distanceTo(this.camera.position) / 10), 'rifle');
     if (hitId) {
@@ -2435,7 +2493,7 @@ export class Game {
       if (target) this.stats.damage += Math.min(TURRET_DAMAGE, target.displayedHp);
     }
     this.net.sendEvent({
-      type: 'shot', o: toArr(muzzle), e: toArr(end), hit: hitId, dmg: hitId ? TURRET_DAMAGE : 0, head: false, tur: t.id,
+      type: 'shot', o: toArr(muzzle), e: toArr(end), ...(hitId ? { hit: hitId, dmg: TURRET_DAMAGE } : {}), tur: t.id,
     });
   }
 
@@ -2732,7 +2790,7 @@ export class Game {
     const total = rounds ?? def.mag + def.reserve;
     if (!this.weapon.giveGun(kind, total)) {
       // We picked up another gun while this claim was in flight: put this one back.
-      const spot = this.dropSpot();
+      const spot = this.itemDropSpot();
       const id = this.net.spawnPickup({ type: kind, uses: total, ...spot });
       if (id) this.ignorePickup = { id, ...spot };
       return;
@@ -2759,9 +2817,12 @@ export class Game {
   }
 
   private frame(): void {
+    const frameStart = PERF_DEBUG ? performance.now() : 0;
     this.timer.update();
     const dt = Math.min(this.timer.getDelta(), 0.05);
     this.update(dt);
+    if (PERF_DEBUG) this.renderer.info.autoReset = false;
+    this.renderer.info.reset();
     this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
     if (this.alive && !this.replay && !this.hud.get().scoped) {
@@ -2771,6 +2832,21 @@ export class Game {
       this.renderer.clearDepth();
       this.renderer.render(this.povWeapon.scene, this.povWeapon.camera);
     }
+    if (PERF_DEBUG) this.recordPerf(frameStart);
+  }
+
+  /** CPU time of this frame and what the renderer drew, for the `?debug` overlay. */
+  private recordPerf(frameStart: number): void {
+    const ms = performance.now() - frameStart;
+    const { render, memory, programs } = this.renderer.info;
+    perfStats.frameSum += ms;
+    perfStats.frameMax = Math.max(perfStats.frameMax, ms);
+    perfStats.frames++;
+    perfStats.calls = render.calls;
+    perfStats.triangles = render.triangles;
+    perfStats.programs = programs?.length ?? 0;
+    perfStats.geometries = memory.geometries;
+    perfStats.textures = memory.textures;
   }
 
   private update(dt: number): void {
@@ -2797,6 +2873,9 @@ export class Game {
     }
     // Nobody moves between rounds.
     this.player.update(dt, this.alive && !this.roundOver);
+    // Bodies and loose props, after we've moved (our body shoves props out of the way).
+    this.physics?.update(dt);
+    this.debris.update();
     // Backstop for the invisible boundary (world.ts): if anything still put us outside, step back in.
     const edge = ARENA_HALF - 0.9;
     const pos = this.player.position;
@@ -2879,18 +2958,27 @@ export class Game {
     if (this.joined) {
       this.sendTimer += dt;
       this.heartbeat += dt;
-      if (this.sendTimer >= SEND_INTERVAL) {
+      this.statsTimer += dt;
+      if (this.sendTimer >= SEND_INTERVAL && !this.offline) {
         this.sendTimer = 0;
         const pose = this.poseState();
-        const key = JSON.stringify(pose);
-        const moment = this.moments.get();
-        const statsKey = JSON.stringify([this.stats, moment]);
-        const statsChanged = statsKey !== this.lastStatsKey;
-        if (!this.offline && (key !== this.lastSent || statsChanged || this.heartbeat > HEARTBEAT)) {
-          this.lastSent = key;
-          this.lastStatsKey = statsKey;
-          this.heartbeat = 0;
-          void this.net.sendState(statsChanged ? { ...pose, ...this.stats, ...(moment ? { moment } : {}) } : pose);
+        // update() merges into our record, so everyone keeps the fields we leave out.
+        const full = !this.lastPose || this.heartbeat > HEARTBEAT;
+        const changes = full ? pose : poseChanges(this.lastPose!, pose);
+        let stats: Partial<PlayerState> | null = null;
+        if (this.statsTimer >= STATS_INTERVAL || this.roundOver) {
+          const moment = this.moments.get();
+          const statsKey = JSON.stringify([this.stats, moment]);
+          if (statsKey !== this.lastStatsKey) {
+            this.lastStatsKey = statsKey;
+            this.statsTimer = 0;
+            stats = { ...this.stats, ...(moment ? { moment } : {}) };
+          }
+        }
+        if (changes || stats) {
+          this.lastPose = pose;
+          if (full) this.heartbeat = 0;
+          void this.net.sendState({ ...changes, ...stats });
         }
       }
     }
@@ -3063,7 +3151,7 @@ export class Game {
     this.recorder.pose(this.playerId, { name: this.name, color: this.color, ...this.poseState(), alive: this.alive }, this.net.serverNow());
   }
 
-  /** Measure our ping every couple of seconds and publish it for everyone's scoreboard. */
+  /** Measure our ping every few seconds and publish it for everyone's scoreboard. */
   private updatePing(dt: number): void {
     this.pingTimer -= dt;
     if (this.pingTimer > 0 || this.pingInFlight) return;
@@ -3214,6 +3302,11 @@ export class Game {
     if (this.disposed) return;
     this.disposed = true;
     this.renderer.setAnimationLoop(null);
+    this.player.detachPhysics();
+    this.debris.dispose();
+    setActivePhysics(null);
+    this.physics?.dispose();
+    this.physics = null;
     this.abort.abort();
     this.stopRoundBed();
     if (document.pointerLockElement) document.exitPointerLock();
@@ -3241,4 +3334,13 @@ export class Game {
 
 function samePlacement(a: FlagPlacement, b: FlagPlacement): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** The fields of `next` that differ from `prev`, or null if none do. */
+function poseChanges(prev: Pose, next: Pose): Partial<Pose> | null {
+  let changes: Partial<Pose> | null = null;
+  for (const key of Object.keys(next) as (keyof Pose)[]) {
+    if (next[key] !== prev[key]) (changes ??= {})[key] = next[key] as never;
+  }
+  return changes;
 }

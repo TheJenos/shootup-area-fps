@@ -16,6 +16,7 @@
     "deploy:rules": "firebase deploy --only database --non-interactive"
   },
   "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.21.0",
     "@discord/embedded-app-sdk": "^2.5.0",
     "firebase": "^12.19.0",
     "react": "^19.3.0",

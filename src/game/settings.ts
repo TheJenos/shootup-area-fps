@@ -79,8 +79,8 @@ export const MOTION_OPTIONS: { value: MotionPref; label: string; hint: string }[
 ];
 export const QUALITIES: { value: Quality; label: string; hint: string }[] = [
   { value: 'low', label: 'Low', hint: 'No shadows, lower resolution' },
-  { value: 'medium', label: 'Medium', hint: 'Soft shadows, native resolution' },
-  { value: 'high', label: 'High', hint: 'Sharp shadows, full resolution' },
+  { value: 'medium', label: 'Medium', hint: 'Shadows, flat surfaces' },
+  { value: 'high', label: 'High', hint: 'Sharp shadows, surface detail, smooth edges (next game)' },
 ];
 
 export const DEFAULT_BINDINGS: Bindings = {

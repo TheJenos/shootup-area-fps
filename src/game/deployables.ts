@@ -157,6 +157,9 @@ export class WallField {
   private readonly walls = new Map<string, Wall>();
   private material: THREE.MeshStandardMaterial | null = null;
 
+  /** Told when a wall's box starts or stops blocking movement (the physics world mirrors it) */
+  onCollider?: (box: THREE.Box3, added: boolean) => void;
+
   constructor(scene: THREE.Scene, colliders: THREE.Box3[], solids: THREE.Mesh[]) {
     this.scene = scene;
     this.colliders = colliders;
@@ -187,6 +190,7 @@ export class WallField {
     mesh.updateMatrixWorld();
     this.scene.add(mesh);
     this.colliders.push(box);
+    this.onCollider?.(box, true);
     this.solids.push(mesh);
     this.walls.set(id, { mesh, box, until, material, owner, hp: WALL_HP, color: new THREE.Color(color), flashUntil: 0 });
   }
@@ -239,6 +243,7 @@ export class WallField {
     w.material.dispose();
     const c = this.colliders.indexOf(w.box);
     if (c >= 0) this.colliders.splice(c, 1);
+    this.onCollider?.(w.box, false);
     const s = this.solids.indexOf(w.mesh);
     if (s >= 0) this.solids.splice(s, 1);
     this.walls.delete(id);

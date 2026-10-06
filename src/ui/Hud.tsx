@@ -7,6 +7,7 @@ import type { Team, WeaponKind } from '../types';
 import { MatchSummary } from './MatchSummary';
 import { SettingsPanel, useSettings } from './SettingsPanel';
 import { keyLabel } from '../game/settings';
+import { PERF_DEBUG, perfStats } from '../game/perfStats';
 import { InventoryPanel } from './InventoryPanel';
 import { TouchControls } from './TouchControls';
 import { TouchIntro } from './TouchIntro';
@@ -140,7 +141,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
 
       <div id="room-tag">Room <strong>{roomCode}</strong></div>
       <ScoreBar hud={hud} />
-      {showFps && <FpsCounter />}
+      {(showFps || PERF_DEBUG) && <FpsCounter />}
       <KillFeed entries={hud.feed} />
       {hud.offline && !hud.connecting && (
         <div id="offline-banner" className="hud-banner danger" role="status">
@@ -519,7 +520,7 @@ function FpsCounter() {
       const elapsed = now - since;
       if (elapsed >= FPS_SAMPLE_MS && ref.current) {
         const fps = Math.round((frames * 1000) / elapsed);
-        ref.current.textContent = `${fps} FPS`;
+        ref.current.textContent = PERF_DEBUG ? `${fps} FPS\n${perfLine(elapsed)}` : `${fps} FPS`;
         ref.current.className = fps >= 50 ? 'good' : fps >= 30 ? 'ok' : 'bad';
         frames = 0;
         since = now;
@@ -529,6 +530,23 @@ function FpsCounter() {
     return () => cancelAnimationFrame(raf);
   }, []);
   return <div id="fps" ref={ref} aria-hidden="true">— FPS</div>;
+}
+
+/** `?debug` readout: CPU ms per frame (average/worst), draw calls, GPU resources, Firebase KB/s. */
+function perfLine(elapsedMs: number): string {
+  const p = perfStats;
+  const avg = p.frames ? p.frameSum / p.frames : 0;
+  const perSec = 1000 / elapsedMs / 1024;
+  const heap = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory;
+  const line = [
+    `cpu ${avg.toFixed(1)}/${p.frameMax.toFixed(1)}ms`,
+    `calls ${p.calls}  tris ${(p.triangles / 1000).toFixed(0)}k`,
+    `prog ${p.programs}  geo ${p.geometries}  tex ${p.textures}`,
+    `net ↑${(p.netUp * perSec).toFixed(1)} ↓${(p.netDown * perSec).toFixed(1)} KB/s`,
+    heap ? `heap ${(heap.usedJSHeapSize / 1048576).toFixed(0)}MB` : '',
+  ].filter(Boolean).join('\n');
+  p.frameSum = p.frameMax = p.frames = p.netUp = p.netDown = 0;
+  return line;
 }
 
 /** Standing on a gun: the key that takes it (on touch screens the prompt itself is the button). */

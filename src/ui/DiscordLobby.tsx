@@ -6,6 +6,7 @@ import { loadCharacter } from '../game/character';
 import { loadGunModels } from '../game/guns';
 import { loadFpArms } from '../game/fpArms';
 import { loadPropModels } from '../game/props';
+import { loadPhysics } from '../game/physics';
 import { ModePicker } from './ModePicker';
 import { PRESETS, type ModeRules } from '../game/rules';
 import { generateMap, layoutName, mapName, normalizeSeed, randomSeed, SEED_MAX_LENGTH } from '../game/mapgen';
@@ -62,6 +63,8 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
     loadGunModels().catch(() => {});
     loadFpArms().catch(() => {});
     loadPropModels().catch(() => {});
+    // The physics engine too (its own ~1.7 MB download; the game can't start without it).
+    loadPhysics().catch(() => {});
     connectDiscord()
       .then(async (d) => {
         const setup = await getRoomSetup(roomCodeFor(d.instanceId));

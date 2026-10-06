@@ -168,6 +168,8 @@ const eye = new THREE.MeshBasicMaterial({ color: 0xff3b3b });
 /** Deployed turrets: a solid you can hide behind, with a swivelling gun head. */
 export class TurretField {
   private readonly turrets = new Map<string, Turret>();
+  /** Told when a turret's box starts or stops blocking movement (the physics world mirrors it) */
+  onCollider?: (box: THREE.Box3, added: boolean) => void;
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -229,6 +231,7 @@ export class TurretField {
     solid.position.set(x, y + TURRET_SIZE.h / 2, z);
     solid.updateMatrixWorld();
     this.colliders.push(box);
+    this.onCollider?.(box, true);
     this.solids.push(solid);
     this.turrets.set(id, {
       id, owner, until, group, head, muzzle, box, solid, yaw, targetYaw: yaw, pitch: 0, targetPitch: 0, cooldown: 0.6, flash, flashLeft: 0,
@@ -300,6 +303,7 @@ export class TurretField {
     this.scene.remove(t.group);
     const c = this.colliders.indexOf(t.box);
     if (c >= 0) this.colliders.splice(c, 1);
+    this.onCollider?.(t.box, false);
     const s = this.solids.indexOf(t.solid);
     if (s >= 0) this.solids.splice(s, 1);
     t.group.traverse((o) => {

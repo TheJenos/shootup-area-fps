@@ -245,13 +245,13 @@ export class ReplayDirector {
         const killer = this.ghosts.get(e.killer);
         if (killer && e.killer !== e.victim) this.ghosts.get(e.victim)?.knockback(killer.position, 4, e.head);
       } else if (e.kind === 'grenade') {
-        grenades.launch(`replay:${e.id}`, simulateGrenade(fromArr(e.o), fromArr(e.v), colliders));
+        grenades.launch(`replay:${e.id}`, simulateGrenade(fromArr(e.o), fromArr(e.v), colliders, 'grenade'));
       } else if (e.kind === 'blast') {
         const p = fromArr(e.p);
         grenades.explode(`replay:${e.id}`, p, GRENADE_RADIUS);
         sfx.playExplosion(0.8 / (1 + p.distanceTo(camera.position) / 12));
       } else if (e.kind === 'smoke') {
-        const arc = simulateGrenade(fromArr(e.o), fromArr(e.v), colliders);
+        const arc = simulateGrenade(fromArr(e.o), fromArr(e.v), colliders, 'smoke');
         grenades.launch(`replay:${e.id}`, arc);
         smoke?.spawn(`replay:${e.id}`, arc.end);
       } else if (e.kind === 'flag') {
