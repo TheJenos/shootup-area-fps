@@ -1,5 +1,6 @@
 import { rules, seedRoom, deleteRoom } from './support/db';
 import { expect, test, uniqueName } from './support/fixtures';
+import { GENERATOR_VERSION } from '../src/game/mapgen/index';
 
 test.describe('lobby', () => {
   test('tabs switch between rooms, create and leaderboard', async ({ players }) => {
@@ -39,6 +40,22 @@ test.describe('lobby', () => {
     // The list updates live when the room goes away
     await deleteRoom(code);
     await expect(row).toHaveCount(0);
+  });
+
+  test('lists a generated map with its size; rooms from another version can\'t be joined', async ({ players, rooms }) => {
+    const sized = uniqueName('Sized room ');
+    const newer = uniqueName('Future room ');
+    await rooms.seed(rules('ffa'), { name: sized, seed: 'E2ELIST', size: 's', gen: GENERATOR_VERSION });
+    await rooms.seed(rules('ffa'), { name: newer, seed: 'E2ELIST', size: 'm', gen: GENERATOR_VERSION + 1 });
+
+    const p = await players.open('Versions');
+    await p.gotoLobby();
+    const sizedRow = p.page.locator('#room-list li', { hasText: sized });
+    await expect(sizedRow.locator('.meta')).toContainText('(Small)');
+    await expect(sizedRow.getByRole('button', { name: 'Join' })).toBeEnabled();
+    const newerRow = p.page.locator('#room-list li', { hasText: newer });
+    await expect(newerRow.locator('.meta')).toContainText('Newer version');
+    await expect(newerRow.getByRole('button', { name: 'Join' })).toBeDisabled();
   });
 
   test('search filters by name, code, mode and host', async ({ players, rooms }) => {

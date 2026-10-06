@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { RigidBody } from '@dimforge/rapier3d-compat';
 import { GROUP, groups, toQuat, toVec3, type PhysicsWorld } from './physics';
 import { propParts, whenPropsReady } from './props';
-import type { MapProp } from './levelgen/types';
+import type { MapProp } from './mapgen';
 
 /*
  * Loose things that physics throws around: small map props (traffic cones) that players shove, shots

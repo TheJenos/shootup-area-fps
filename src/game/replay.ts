@@ -134,6 +134,8 @@ export interface ReplayOptions {
   effects: Effects;
   grenades: GrenadeFx;
   colliders: THREE.Box3[];
+  /** The map's ground height, for grenade arcs */
+  terrainAt(x: number, z: number): number;
   solids: THREE.Object3D[];
   flagField: FlagField | null;
   smoke?: SmokeField;
@@ -224,7 +226,7 @@ export class ReplayDirector {
 
   private playEvents(from: number, to: number): void {
     const { events } = this.opts.recorder;
-    const { effects, grenades, colliders, flagField, camera, onKill, smoke } = this.opts;
+    const { effects, grenades, colliders, terrainAt, flagField, camera, onKill, smoke } = this.opts;
     while (this.eventIndex < events.length) {
       const e = events[this.eventIndex];
       if (!e || e.t > to) break;
@@ -245,13 +247,13 @@ export class ReplayDirector {
         const killer = this.ghosts.get(e.killer);
         if (killer && e.killer !== e.victim) this.ghosts.get(e.victim)?.knockback(killer.position, 4, e.head);
       } else if (e.kind === 'grenade') {
-        grenades.launch(`replay:${e.id}`, simulateGrenade(fromArr(e.o), fromArr(e.v), colliders, 'grenade'));
+        grenades.launch(`replay:${e.id}`, simulateGrenade(fromArr(e.o), fromArr(e.v), colliders, 'grenade', terrainAt));
       } else if (e.kind === 'blast') {
         const p = fromArr(e.p);
         grenades.explode(`replay:${e.id}`, p, GRENADE_RADIUS);
         sfx.playExplosion(0.8 / (1 + p.distanceTo(camera.position) / 12));
       } else if (e.kind === 'smoke') {
-        const arc = simulateGrenade(fromArr(e.o), fromArr(e.v), colliders, 'smoke');
+        const arc = simulateGrenade(fromArr(e.o), fromArr(e.v), colliders, 'smoke', terrainAt);
         grenades.launch(`replay:${e.id}`, arc);
         smoke?.spawn(`replay:${e.id}`, arc.end);
       } else if (e.kind === 'flag') {

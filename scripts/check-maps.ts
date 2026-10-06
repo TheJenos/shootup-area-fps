@@ -1,112 +1,161 @@
 /**
- * Generates many seeds and checks every map: reachability (levelgen/check.ts), the terrain (walkable
- * slopes, flat under everything placed, mirrored), determinism, and that the classic arena hasn't changed. Run with `npm run check:maps`.
+ * Generates many maps and checks them all (mapgen/validate.ts): reachability, slopes, symmetry,
+ * plus how many rolls each map took, sightlines and timing per size. Also checks determinism,
+ * that the classic arena hasn't changed, that the generator never calls engine-dependent maths,
+ * and (with --golden) that no map changed without a GENERATOR_VERSION bump.
+ *
+ *   npm run check:maps -- [--count 200] [--size s,m,l] [--seed X] [--dump SEED] [--golden] [--update-golden]
  */
-import { CLASSIC_SEED, STYLE_NAMES, generateMap, layoutName, mapName, terrainHeight, type MapLayout } from '../src/game/mapgen';
-import { checkLayout } from '../src/game/levelgen/check';
-import { rngFor } from '../src/game/levelgen/core';
-import { settledFootprints } from '../src/game/levelgen/terrain';
+import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { PNG } from 'pngjs';
+import { CLASSIC_SEED, GENERATOR_VERSION, generateMap, groundHeight, mapName, toSpec, type MapData, type MapSize } from '../src/game/mapgen/index';
+import { generateWithReport } from '../src/game/mapgen/generate';
+import { Rng } from '../src/game/mapgen/rng';
 
-const COUNT = Number(process.argv[2] ?? 300);
-const CLASSIC_BOXES = 50; // the hand-made arena, checked against its box count and a checksum of the original
-const CLASSIC_SUM = 406.6;
-
-const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const rand = rngFor('check-maps');
-const seeds = Array.from({ length: COUNT }, () => Array.from({ length: 6 }, () => chars[Math.floor(rand() * chars.length)]).join(''));
+const args = process.argv.slice(2);
+const flag = (name: string) => args.includes(`--${name}`);
+const opt = (name: string, fallback: string) => {
+  const i = args.indexOf(`--${name}`);
+  return i >= 0 && args[i + 1] ? args[i + 1]! : fallback;
+};
+const COUNT = Number(opt('count', '120'));
+const SIZES = opt('size', 's,m,l').split(',') as MapSize[];
+const GOLDEN_FILE = 'src/game/mapgen/golden.json';
+const GOLDEN_SEEDS = 30;
 
 let failures = 0;
-const styles = new Map<string, number>();
-const fallbacks: string[] = [];
-let boxes = 0;
-let props = 0;
-let worstWalk = 1;
-let hilly = 0;
-let tallest = 0;
+const fail = (msg: string) => { failures++; console.log(`✗ ${msg}`); };
 
-/**
- * Problems with a layout's terrain: too steep, raised where things need flat ground, or a natural
- * thing floating above it. (Not checked for mirroring: models turn rather than reflect in mirrored
- * copies, so the flat ground around a lopsided one isn't an exact mirror image.)
- */
-function checkTerrain(l: MapLayout): string[] {
-  const t = l.terrain;
-  if (!t) return [];
-  const out: string[] = [];
-  const side = t.n + 1;
-  const h = (ix: number, iz: number) => t.heights[iz * side + ix]!;
-  for (let iz = 0; iz <= t.n; iz++) {
-    for (let ix = 0; ix <= t.n; ix++) {
-      if (ix < t.n && Math.abs(h(ix + 1, iz) - h(ix, iz)) > 0.45 * t.cell + 0.011) out.push(`too steep at ${ix},${iz}`);
-      if (iz < t.n && Math.abs(h(ix, iz + 1) - h(ix, iz)) > 0.45 * t.cell + 0.011) out.push(`too steep at ${ix},${iz}`);
-    }
-  }
-  const ground = (x: number, z: number) => terrainHeight(t, l.half, x, z);
-  for (const [x, z] of [...l.spawnPoints, ...l.flags, ...l.doors]) if (ground(x, z) > 0) out.push(`ground raised at ${x},${z}`);
-  for (const b of l.boxes) {
-    if (b.blocks === 'shots' || b.y > 0.5 + (b.rest ? 4 : 0)) continue;
-    const corners = [[b.x, b.z], [b.x - b.w / 2, b.z - b.d / 2], [b.x + b.w / 2, b.z + b.d / 2], [b.x - b.w / 2, b.z + b.d / 2], [b.x + b.w / 2, b.z - b.d / 2]] as const;
-    for (const [x, z] of corners) {
-      if (!b.rest && ground(x, z) > 0) { out.push(`ground raised under a box at ${b.x},${b.z}`); break; }
-      // A settled model's ground-level boxes may sink into the hillside but never hang above it.
-      if (b.rest && b.y > ground(x, z) + 0.01 && b.y - ground(x, z) < 1) { out.push(`floating box at ${b.x},${b.z}`); break; }
-    }
-  }
-  // Natural things stand on flat pads: no ground above their base anywhere under them.
-  const pads = settledFootprints(l);
-  for (const p of l.props) {
-    const f = p.settle ? pads.get(`${p.x},${p.z}`) : undefined;
-    if (!f) continue;
-    let clips = false;
-    for (let x = f.minX; x <= f.maxX + 1e-6 && !clips; x += 0.25) {
-      for (let z = f.minZ; z <= f.maxZ + 1e-6; z += 0.25) if (ground(x, z) > p.y + 0.011) { clips = true; break; }
-    }
-    if (clips) out.push(`${p.id} at ${p.x},${p.z} clips into the ground`);
-  }
-  return out.slice(0, 4);
-}
-const t0 = performance.now();
-for (const seed of seeds) {
-  const a = generateMap(seed);
-  const report = checkLayout(a);
-  const name = layoutName(a);
-  styles.set(name, (styles.get(name) ?? 0) + 1);
-  if (a.style === 'arena') fallbacks.push(seed);
-  else if (!name.startsWith(mapName(seed).split(' · ')[0] ?? '')) { console.log(`✗ ${seed}: mapName ${mapName(seed)} vs ${name}`); failures++; }
-  if (!report.ok) { failures++; console.log(`✗ ${seed} (${name}): ${report.problems.slice(0, 4).join('; ')}`); }
-  const terrain = checkTerrain(a);
-  if (terrain.length) { failures++; console.log(`✗ ${seed} (${name}) terrain: ${terrain.join('; ')}`); }
-  if (a.terrain) {
-    hilly += a.terrain.heights.filter((v) => v > 0.2).length / a.terrain.heights.length;
-    tallest = Math.max(tallest, ...a.terrain.heights);
-  }
-  worstWalk = Math.min(worstWalk, report.walkable);
-  boxes += a.boxes.length;
-  props += a.props.length;
-}
-const ms = (performance.now() - t0) / COUNT;
-
-// Same seed, same map (bypassing the cache by generating more seeds in between).
-for (const seed of seeds.slice(0, 5)) {
-  const one = JSON.stringify(generateMap(seed));
-  for (const other of seeds.slice(10, 20)) generateMap(other);
-  if (JSON.stringify(generateMap(seed)) !== one) { failures++; console.log(`✗ ${seed}: not deterministic`); }
+// ---------------------------------------------------------------- engine-dependent maths
+const BANNED = /Math\.(hypot|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|asinh|acosh|atanh|exp|expm1|log|log2|log10|log1p|pow|cbrt|random)\b|\*\*/;
+for (const file of readdirSync('src/game/mapgen')) {
+  if (!file.endsWith('.ts')) continue;
+  readFileSync(join('src/game/mapgen', file), 'utf8').split('\n').forEach((line, i) => {
+    const code = line.replace(/\/\*.*?\*\//g, '').replace(/\/\/.*$/, '').replace(/^\s*(\/\*\*|\*).*$/, '');
+    if (BANNED.test(code) && !line.includes('det-ok')) fail(`mapgen/${file}:${i + 1} uses engine-dependent maths: ${line.trim()}`);
+  });
 }
 
-const classic = generateMap(CLASSIC_SEED);
+// ---------------------------------------------------------------- the classic arena
+const CLASSIC_BOXES = 50;
+const CLASSIC_SUM = 406.6;
+const classic = generateMap(toSpec(CLASSIC_SEED));
 const sum = Math.round(classic.boxes.reduce((s, b) => s + b.x * 3 + b.z * 7 + b.w + b.h + b.d + b.y, 0) * 10) / 10;
-if (classic.boxes.length !== CLASSIC_BOXES || sum !== CLASSIC_SUM) {
-  failures++;
-  console.log(`✗ classic changed: ${classic.boxes.length} boxes, checksum ${sum}`);
+if (classic.boxes.length !== CLASSIC_BOXES || sum !== CLASSIC_SUM) fail(`classic changed: ${classic.boxes.length} boxes, checksum ${sum}`);
+
+// ---------------------------------------------------------------- one map as a picture
+function dump(map: MapData, file: string, lines: { ax: number; az: number; bx: number; bz: number }[] = []): void {
+  const S = 6;
+  const W = Math.round(map.half * 2 * S);
+  const png = new PNG({ width: W, height: W });
+  const put = (px: number, py: number, [r, g, b]: [number, number, number]) => {
+    if (px < 0 || py < 0 || px >= W || py >= W) return;
+    const i = (py * W + px) * 4;
+    png.data[i] = r; png.data[i + 1] = g; png.data[i + 2] = b; png.data[i + 3] = 255;
+  };
+  const toPx = (x: number, z: number) => [Math.round((x + map.half) * S), Math.round((map.half - z) * S)] as const;
+  for (let py = 0; py < W; py++) {
+    for (let px = 0; px < W; px++) {
+      const x = px / S - map.half;
+      const z = map.half - py / S;
+      const h = groundHeight(map.ground, x, z);
+      const l = Math.min(255, 70 + h * 28);
+      put(px, py, [l * 0.8, l, l * 0.7]);
+    }
+  }
+  const rect = (x: number, z: number, w: number, d: number, c: [number, number, number]) => {
+    const [x0, y0] = toPx(x - w / 2, z + d / 2);
+    const [x1, y1] = toPx(x + w / 2, z - d / 2);
+    for (let py = y0; py <= y1; py++) for (let px = x0; px <= x1; px++) put(px, py, c);
+  };
+  for (const b of map.boxes) {
+    const top = b.y + b.h - groundHeight(map.ground, b.x, b.z);
+    const c: [number, number, number] = b.blocks === 'shots' ? [40, 110, 40] : b.ramp ? [220, 200, 80] : top > 2.2 ? [150, 40, 40] : top > 1.4 ? [210, 100, 60] : [230, 170, 120];
+    rect(b.x, b.z, b.w, b.d, c);
+  }
+  for (const l of map.graph?.lanes ?? []) for (const [x, z] of l.points) { const [px, py] = toPx(x, z); put(px, py, [255, 255, 255]); }
+  for (const s of map.spawns) rect(s.x, s.z, 1, 1, s.team === 'red' ? [255, 0, 0] : s.team === 'blue' ? [0, 80, 255] : [255, 0, 255]);
+  for (const p of map.pickupSpots) rect(p.x, p.z, 0.8, 0.8, [0, 255, 255]);
+  for (const l of lines) {
+    const n = Math.ceil(Math.hypot(l.bx - l.ax, l.bz - l.az) * S);
+    for (let i = 0; i <= n; i++) { const [px, py] = toPx(l.ax + ((l.bx - l.ax) * i) / n, l.az + ((l.bz - l.az) * i) / n); put(px, py, [255, 0, 255]); }
+  }
+  rect(map.flags.red[0], map.flags.red[2], 2, 2, [255, 255, 0]);
+  rect(map.flags.blue[0], map.flags.blue[2], 2, 2, [255, 255, 0]);
+  writeFileSync(file, PNG.sync.write(png));
 }
 
-console.log(`${COUNT} seeds, ${ms.toFixed(1)} ms each, ${Math.round(boxes / COUNT)} boxes and ${Math.round(props / COUNT)} props on average, least walkable ${(worstWalk * 100).toFixed(0)}%`);
-console.log(`Terrain: ${((hilly / COUNT) * 100).toFixed(0)}% of the ground raised on average, tallest ${tallest.toFixed(1)} m`);
-console.log('Styles:', [...styles].map(([k, v]) => `${k} ${v}`).join(', '));
-if (fallbacks.length) console.log(`Fell back to the arena: ${fallbacks.length} (${fallbacks.slice(0, 8).join(' ')})`);
-void STYLE_NAMES;
+const dumpSeed = opt('dump', '');
+if (dumpSeed) {
+  const dir = opt('out', 'node_modules/.cache/maps');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  for (const size of SIZES) {
+    const g = generateWithReport(toSpec(dumpSeed, size));
+    const file = join(dir, `${dumpSeed}-${size}.png`);
+    dump(g.map, file, g.sight.lines);
+    console.log(`${file}: ${g.map.name}, roll ${g.roll}, ${g.map.graph?.symmetry}, ${g.map.graph?.lanes.length} lanes, mid ${g.map.graph?.mid.kind}`);
+    console.log('  report', JSON.stringify(g.report), 'sight', JSON.stringify({ ...g.sight, lines: g.sight.lines.length }));
+  }
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------- many seeds per size
+const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const rand = new Rng('check-maps');
+const only = opt('seed', '');
+const seeds = only ? [only] : Array.from({ length: COUNT }, () => Array.from({ length: 6 }, () => chars[Math.floor(rand.next() * chars.length)]).join(''));
+const pct = (list: number[], p: number) => { const s = [...list].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(p * s.length))] ?? 0; };
+const stat = (label: string, list: number[], digits = 1) =>
+  `${label} p50 ${pct(list, 0.5).toFixed(digits)} p95 ${pct(list, 0.95).toFixed(digits)} max ${Math.max(...list).toFixed(digits)}`;
+
+const biomes = new Map<string, number>();
+for (const size of SIZES) {
+  const ms: number[] = []; const rolls: number[] = []; const laneOver: number[] = []; const flagSeen: number[] = []; const spawnSeen: number[] = [];
+  const f2f: number[] = []; const clutter: number[] = []; const boxes: number[] = []; const breakers: number[] = [];
+  let failed = 0;
+  for (const seed of seeds) {
+    const t0 = performance.now();
+    const g = generateWithReport(toSpec(seed, size));
+    ms.push(performance.now() - t0);
+    rolls.push(g.roll);
+    laneOver.push(g.sight.laneOver); flagSeen.push(g.sight.flagSeen); spawnSeen.push(g.sight.spawnSeen); breakers.push(g.sight.breakers);
+    f2f.push(g.report.metrics.flagToFlag); clutter.push(g.report.metrics.clutter * 100); boxes.push(g.map.boxes.length);
+    biomes.set(g.map.biome, (biomes.get(g.map.biome) ?? 0) + 1);
+    if (g.map.name !== mapName(seed)) fail(`${seed} ${size}: mapName ${mapName(seed)} vs ${g.map.name}`);
+    if (!g.report.ok) { failed++; fail(`${seed} ${size} (${g.map.name}): ${g.report.problems.slice(0, 4).join('; ')}`); }
+  }
+  console.log(`\n[${size}] ${seeds.length} seeds, ${failed} failed`);
+  console.log(`  ${stat('ms', ms, 0)}; ${stat('roll', rolls, 0)}; ${stat('boxes', boxes, 0)}`);
+  console.log(`  ${stat('flag-to-flag m', f2f, 0)}; ${stat('clutter %', clutter)}`);
+  console.log(`  sight: ${stat('lane over m', laneOver)}; ${stat('flag seen', flagSeen, 0)}; ${stat('spawn seen', spawnSeen, 0)}; ${stat('breakers', breakers, 0)}`);
+}
+console.log('\nBiomes:', [...biomes].map(([k, v]) => `${k} ${v}`).join(', '));
+
+// ---------------------------------------------------------------- determinism and golden hashes
+for (const seed of seeds.slice(0, 4)) {
+  const spec = toSpec(seed, 'm');
+  const a = generateWithReport(spec).map.hash;
+  generateWithReport(toSpec(`${seed}X`, 's'));
+  if (generateWithReport(spec).map.hash !== a) fail(`${seed}: not deterministic`);
+}
+if (flag('golden') || flag('update-golden')) {
+  const golden: Record<string, number> = {};
+  for (const seed of seeds.slice(0, GOLDEN_SEEDS)) for (const size of ['s', 'm', 'l'] as const) golden[`${size}:${seed}`] = generateWithReport(toSpec(seed, size)).map.hash;
+  const file: Record<string, Record<string, number>> = existsSync(GOLDEN_FILE) ? JSON.parse(readFileSync(GOLDEN_FILE, 'utf8')) : {};
+  if (flag('update-golden')) {
+    file[String(GENERATOR_VERSION)] = golden;
+    writeFileSync(GOLDEN_FILE, `${JSON.stringify(file, null, 1)}\n`);
+    console.log(`Golden hashes for version ${GENERATOR_VERSION} written`);
+  } else {
+    const want = file[String(GENERATOR_VERSION)];
+    if (!want) fail(`no golden hashes for version ${GENERATOR_VERSION} (run with --update-golden)`);
+    else for (const [k, v] of Object.entries(golden)) if (want[k] !== v) fail(`${k} changed without a GENERATOR_VERSION bump`);
+  }
+}
+
 if (failures) {
-  console.log(`${failures} problem(s)`);
+  console.log(`\n${failures} problem(s)`);
   process.exit(1);
 }
-console.log('All maps OK');
+console.log('\nAll maps OK');

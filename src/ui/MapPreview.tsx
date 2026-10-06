@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { buildWorld } from '../game/world';
-import { layoutName, type MapLayout } from '../game/mapgen';
+import { PAINT, type MapData } from '../game/mapgen';
 import { TEAM_INFO } from '../game/modes';
 import type { GameMode } from '../types';
 
@@ -12,12 +12,12 @@ const ORBIT_PERIOD = 40;
 const hex = (n: number) => `#${n.toString(16).padStart(6, '0')}`;
 
 /** Ground patch colors in the preview */
-const GROUND_COLORS: Record<MapLayout['ground'][number]['kind'], string> = {
+const GROUND_COLORS: Record<MapData['patches'][number]['kind'], string> = {
   road: '#3e4046', sidewalk: '#8f8d88', grass: '#567e3e', dirt: '#78603f', concrete: '#8a8a86', hazard: '#b8962a',
 };
 
 /** Top-down drawing of a generated map; taller cover is drawn brighter. The fallback when WebGL isn't available. */
-function draw2D(canvas: HTMLCanvasElement, map: MapLayout, mode: GameMode): void {
+function draw2D(canvas: HTMLCanvasElement, map: MapData, mode: GameMode): void {
   const g = canvas.getContext('2d');
   if (!g) return;
   const ratio = window.devicePixelRatio || 1;
@@ -31,18 +31,20 @@ function draw2D(canvas: HTMLCanvasElement, map: MapLayout, mode: GameMode): void
   g.fillStyle = map.theme.floor;
   g.fillRect(0, 0, SIZE, SIZE);
 
-  // Hills: lit from the north-west, so slopes read as relief.
-  const t = map.terrain;
+  // The land: higher is lighter, lanes painted, slopes lit from the north-west so they read as relief.
+  const t = map.ground;
   if (t) {
     const side = t.n + 1;
     const h = (c: number, r: number) => t.heights[Math.min(t.n, r) * side + Math.min(t.n, c)]!;
     for (let r = 0; r < t.n; r++) {
       for (let c = 0; c < t.n; c++) {
-        const top = h(c, r);
-        if (top <= 0 && h(c + 1, r + 1) <= 0) continue;
-        const shade = (h(c, r) - h(c + 1, r + 1)) * 0.6 + top * 0.05;
-        g.fillStyle = shade >= 0 ? `rgba(255, 255, 255, ${Math.min(0.35, shade)})` : `rgba(0, 0, 0, ${Math.min(0.35, -shade)})`;
+        const shade = (h(c, r) - h(c + 1, r + 1)) * 0.5 + (h(c, r) - 1) * 0.04;
+        g.fillStyle = shade >= 0 ? `rgba(255, 255, 255, ${Math.min(0.4, shade)})` : `rgba(0, 0, 0, ${Math.min(0.4, -shade)})`;
         g.fillRect(px(-map.half + c * t.cell), px(-map.half + r * t.cell), t.cell * scale + 0.5, t.cell * scale + 0.5);
+        if (t.paint[r * side + c] === PAINT.path) {
+          g.fillStyle = 'rgba(120, 96, 70, 0.35)';
+          g.fillRect(px(-map.half + c * t.cell), px(-map.half + r * t.cell), t.cell * scale + 0.5, t.cell * scale + 0.5);
+        }
       }
     }
   }
@@ -50,8 +52,8 @@ function draw2D(canvas: HTMLCanvasElement, map: MapLayout, mode: GameMode): void
   g.lineWidth = scale * 1.5;
   g.strokeRect(g.lineWidth / 2, g.lineWidth / 2, SIZE - g.lineWidth, SIZE - g.lineWidth);
 
-  // Streets, lawns and pads under everything; roads get a dashed centre line.
-  for (const p of map.ground) {
+  // Yards and plazas under everything; roads get a dashed centre line.
+  for (const p of map.patches) {
     g.fillStyle = GROUND_COLORS[p.kind];
     g.fillRect(px(p.x - p.w / 2), px(p.z - p.d / 2), p.w * scale, p.d * scale);
     if (p.kind === 'road') {
@@ -96,16 +98,16 @@ function draw2D(canvas: HTMLCanvasElement, map: MapLayout, mode: GameMode): void
   }
   g.globalAlpha = 1;
 
-  g.fillStyle = 'rgba(255, 255, 255, 0.75)';
-  for (const [x, z] of map.spawnPoints) {
+  for (const s of map.spawns) {
+    g.fillStyle = mode === 'ffa' || !s.team ? 'rgba(255, 255, 255, 0.75)' : TEAM_INFO[s.team].color;
     g.beginPath();
-    g.arc(px(x), px(z), 1.6, 0, Math.PI * 2);
+    g.arc(px(s.x), px(s.z), 1.6, 0, Math.PI * 2);
     g.fill();
   }
 
   if (mode === 'ctf') {
-    for (const [i, team] of (['red', 'blue'] as const).entries()) {
-      const [x, z] = map.flags[i] ?? [0, 0];
+    for (const team of ['red', 'blue'] as const) {
+      const [x, , z] = map.flags[team];
       g.strokeStyle = TEAM_INFO[team].color;
       g.lineWidth = 2;
       g.beginPath();
@@ -134,25 +136,25 @@ function previewRenderer(): THREE.WebGLRenderer | null {
 }
 
 /** A team-coloured ring and pole where each CTF flag stands. */
-function flagMarkers(map: MapLayout): THREE.Group {
+function flagMarkers(map: MapData): THREE.Group {
   const g = new THREE.Group();
-  for (const [i, team] of (['red', 'blue'] as const).entries()) {
-    const [x, z] = map.flags[i] ?? [0, 0];
-    const base = { x, z };
+  for (const team of ['red', 'blue'] as const) {
+    const [x, y, z] = map.flags[team];
+    const base = { x, y, z };
     const mat = new THREE.MeshBasicMaterial({ color: TEAM_INFO[team].color, fog: false });
     const ring = new THREE.Mesh(new THREE.RingGeometry(1.6, 2.2, 32).rotateX(-Math.PI / 2), mat);
-    ring.position.set(base.x, 0.05, base.z);
+    ring.position.set(base.x, base.y + 0.05, base.z);
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 4, 8), mat);
-    pole.position.set(base.x, 2, base.z);
+    pole.position.set(base.x, base.y + 2, base.z);
     const flag = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.9, 0.08), mat);
-    flag.position.set(base.x + 0.7, 3.5, base.z);
+    flag.position.set(base.x + 0.7, base.y + 3.5, base.z);
     g.add(ring, pole, flag);
   }
   return g;
 }
 
 /** A small 3D view of a generated map, slowly orbiting; drag to turn it. */
-export function MapPreview({ map, mode }: { map: MapLayout; mode: GameMode }) {
+export function MapPreview({ map, mode }: { map: MapData; mode: GameMode }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [flat, setFlat] = useState(false);
@@ -244,7 +246,7 @@ export function MapPreview({ map, mode }: { map: MapLayout; mode: GameMode }) {
     };
   }, [map, mode, flat]);
 
-  const label = `Map preview: ${layoutName(map)}${mode === 'ctf' ? ', flag bases marked' : ''}`;
+  const label = `Map preview: ${map.name}${mode === 'ctf' ? ', flag bases marked' : ''}`;
   if (flat) {
     return <canvas ref={canvasRef} className="map-preview" role="img" aria-label={label} style={{ width: SIZE, height: SIZE }} />;
   }

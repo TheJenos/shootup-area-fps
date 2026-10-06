@@ -73,11 +73,10 @@ export const FLAG_BASES: Record<Team, THREE.Vector3> = {
   blue: new THREE.Vector3(0, 0, 32 * SIDE.blue),
 };
 
-/** Move the flag bases to a map's flag spots ([x, z], red's first; see MapLayout.flags). */
-export function setFlagBases(flags: readonly [number, number][]): void {
-  const [red, blue] = flags;
-  if (red) FLAG_BASES.red.set(red[0], 0, red[1]);
-  if (blue) FLAG_BASES.blue.set(blue[0], 0, blue[1]);
+/** Move the flag bases to a map's flag spots (see MapData.flags). */
+export function setFlagBases(flags: { red: readonly [number, number, number]; blue: readonly [number, number, number] }): void {
+  FLAG_BASES.red.set(...flags.red);
+  FLAG_BASES.blue.set(...flags.blue);
 }
 
 /**
@@ -96,7 +95,7 @@ export const FLAG_RADIUS = 1.5;
 /** A dropped flag goes back to its base after this long */
 export const FLAG_RETURN_TIME = 20;
 
-/** Spawn points on the team's own half (points on the center line are left out). */
-export function teamSpawns(points: THREE.Vector3[], team: Team): THREE.Vector3[] {
-  return points.filter((p) => Math.sign(p.z) === SIDE[team]);
+/** A team's spawn points (the map marks whose each is; free-for-all ones are left out). */
+export function teamSpawns(points: readonly { pos: THREE.Vector3; team: Team | null }[], team: Team): THREE.Vector3[] {
+  return points.filter((p) => p.team === team).map((p) => p.pos);
 }

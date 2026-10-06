@@ -6,7 +6,7 @@ import {
 import { db } from './firebase';
 import { countNet } from '../game/perfStats';
 import { rulesOfRoom, type ModeRules } from '../game/rules';
-import { CLASSIC_SEED, normalizeSeed } from '../game/mapgen';
+import { toSpec, type MapSpec } from '../game/mapgen';
 import type {
   GameEvent, GameMode, GameRecord, GameState, LobbyRecord, OutgoingEvent, PickupRecord, PlayerState, RoomSummary,
 } from '../types';
@@ -14,9 +14,9 @@ import type {
 /*
  * Database layout
  *
- *   lobby/{code}                 { name, mode, seed, host, createdAt, members: { pid: name } }
+ *   lobby/{code}                 { name, mode, rules, seed, size, gen, host, createdAt, members: { pid: name } }
  *   rooms/{code}/players/{pid}   { name, color, team, x, y, z, yaw, pitch, hp, alive, kills, deaths }
- *   rooms/{code}/game            { round, ended, score, flags }  round state, only changed by transaction
+ *   rooms/{code}/game            { round, seed, size, gen, mapHash, ended, score, flags }  round state, only changed by transaction
  *   rooms/{code}/events/{eid}    { type: 'shot' | 'kill' | 'grenade' | 'blast', ... }  (auto-removed after a few seconds)
  *   rooms/{code}/pickups/{id}    { type, x, z }  abilities on the map; spawned by one player, claimed by transaction
  *
@@ -53,7 +53,7 @@ export function watchRooms(callback: (rooms: RoomSummary[]) => void, onError?: (
 }
 
 export async function createRoom(
-  name: string, rules: ModeRules, seed: string, host: string, playerId: string,
+  name: string, rules: ModeRules, map: MapSpec, host: string, playerId: string,
 ): Promise<string> {
   let code: string;
   do {
@@ -63,13 +63,13 @@ export async function createRoom(
     name,
     mode: rules.base,
     rules,
-    seed,
+    ...mapFields(map),
     host,
     createdAt: serverTimestamp(),
     members: { [playerId]: host },
   });
   // The first round starts now, on the chosen map.
-  await set(ref(db(), `rooms/${code}/game`), { round: 0, seed, startedAt: serverTimestamp() });
+  await set(ref(db(), `rooms/${code}/game`), { round: 0, ...mapFields(map), startedAt: serverTimestamp() });
   return code;
 }
 
@@ -79,31 +79,37 @@ export async function createRoom(
  * we created it (otherwise just join).
  */
 export async function createRoomWithCode(
-  code: string, name: string, rules: ModeRules, seed: string, host: string, playerId: string,
+  code: string, name: string, rules: ModeRules, map: MapSpec, host: string, playerId: string,
 ): Promise<boolean> {
   const result = await runTransaction(ref(db(), `lobby/${code}`), (current: LobbyRecord | null) => {
     // A record without members is a leftover from an abandoned room: take it over.
     if (current && Object.keys(current.members || {}).length > 0) return undefined;
-    return { name, mode: rules.base, rules, seed, host, createdAt: Date.now(), members: { [playerId]: host } };
+    return { name, mode: rules.base, rules, ...mapFields(map), host, createdAt: Date.now(), members: { [playerId]: host } };
   }, { applyLocally: false });
   if (!result.committed) return false;
-  await set(ref(db(), `rooms/${code}/game`), { round: 0, seed, startedAt: serverTimestamp() });
+  await set(ref(db(), `rooms/${code}/game`), { round: 0, ...mapFields(map), startedAt: serverTimestamp() });
   return true;
 }
 
-/** Mode rules and map seed of an existing room, or null if there's no such room. */
-export async function getRoomSetup(code: string): Promise<{ mode: GameMode; rules: ModeRules; seed: string } | null> {
+/** A map spec as stored on a room */
+const mapFields = (map: MapSpec) => ({ seed: map.seed, size: map.size, gen: map.gen });
+
+/**
+ * The map spec stored on a room. Rooms from before sizes are medium; rooms from before generator
+ * versions were made by version 1.
+ */
+export const roomMap = (r: { seed?: unknown; size?: unknown; gen?: unknown }): MapSpec =>
+  toSpec(typeof r.seed === 'string' ? r.seed : '', r.size, typeof r.gen === 'number' ? r.gen : 1);
+
+/** Mode rules and map of an existing room, or null if there's no such room. */
+export async function getRoomSetup(code: string): Promise<{ mode: GameMode; rules: ModeRules; map: MapSpec } | null> {
   const room = (await get(ref(db(), `lobby/${code}`))).val() as LobbyRecord | null;
   return room ? roomSetup(room) : null;
 }
 
-function roomSetup(room: LobbyRecord): { mode: GameMode; rules: ModeRules; seed: string } {
+function roomSetup(room: LobbyRecord): { mode: GameMode; rules: ModeRules; map: MapSpec } {
   const rules = rulesOfRoom(room.rules, room.mode);
-  return {
-    mode: rules.base,
-    rules,
-    seed: (typeof room.seed === 'string' && normalizeSeed(room.seed)) || CLASSIC_SEED,
-  };
+  return { mode: rules.base, rules, map: roomMap(room) };
 }
 
 function deleteRoom(code: string) {
@@ -282,8 +288,8 @@ export class RoomConnection {
   }
 
   /** Keep the lobby list showing the map that's currently being played. */
-  setLobbySeed(seed: string): Promise<void> {
-    return set(ref(db(), `lobby/${this.code}/seed`), seed);
+  setLobbyMap(map: MapSpec): Promise<void> {
+    return update(ref(db(), `lobby/${this.code}`), mapFields(map));
   }
 
   /** Room name, mode and creation time. */

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type RAPIER_NS from '@dimforge/rapier3d-compat';
 import type { Ramp } from './ramps';
-import type { TerrainMesh } from './world';
+import { rapierHeights, type Ground } from './mapgen';
 
 /*
  * Rapier rigid-body physics, shared by ragdolls, loose props, thrown items and the player.
@@ -95,8 +95,8 @@ export class PhysicsWorld {
     this.world.timestep = PHYSICS_STEP;
   }
 
-  /** Replace the map geometry. Boxes are axis-aligned; ramps become wedge-shaped hulls; hills a triangle mesh. */
-  setMap(colliders: readonly THREE.Box3[], ramps: readonly Ramp[], terrain: TerrainMesh | null = null): void {
+  /** Replace the map geometry. Boxes are axis-aligned; ramps become wedge-shaped hulls; the ground a heightfield. */
+  setMap(colliders: readonly THREE.Box3[], ramps: readonly Ramp[], ground: Ground | null = null): void {
     const { R, world } = this;
     if (this.mapBody) world.removeRigidBody(this.mapBody);
     // Deployed walls and turrets hung off the old map body; they went with it.
@@ -104,11 +104,16 @@ export class PhysicsWorld {
     const body = world.createRigidBody(R.RigidBodyDesc.fixed());
     this.mapBody = body;
     const solid = groups(GROUP.WORLD, ALL);
-    // The floor: a thick slab whose top is y = 0.
+    // The floor: a thick slab whose top is y = 0 (the ground never dips below it).
     world.createCollider(R.ColliderDesc.cuboid(500, 1, 500).setTranslation(0, -1, 0).setCollisionGroups(solid).setFriction(0.9), body);
-    // The hills on top of it (flat parts of the mesh lie on the slab).
-    if (terrain) {
-      world.createCollider(R.ColliderDesc.trimesh(terrain.positions, terrain.indices).setCollisionGroups(solid).setFriction(0.9), body);
+    // The terrain on top of it: a heightfield (the same triangles as the drawn floor), with internal
+    // edges fixed so nothing snags on the seams between triangles.
+    if (ground) {
+      const desc = R.ColliderDesc.heightfield(
+        ground.n, ground.n, rapierHeights(ground), { x: ground.n * ground.cell, y: 1, z: ground.n * ground.cell },
+        R.HeightFieldFlags.FIX_INTERNAL_EDGES,
+      );
+      world.createCollider(desc.setCollisionGroups(solid).setFriction(0.9), body);
     }
     const center = new THREE.Vector3();
     const size = new THREE.Vector3();

@@ -3,7 +3,9 @@ import { buildWorld, type World } from './world';
 import type { Ramp } from './ramps';
 import { loadPhysics, PhysicsWorld, setActivePhysics } from './physics';
 import { DebrisField, LOOSE_PROPS } from './debris';
-import { generateMap, layoutName, mapName, normalizeSeed, randomSeed, CLASSIC_SEED } from './mapgen';
+import { generateMap, isPlayableSpec, mapName, normalizeSeed, randomSeed, sameMap, CLASSIC_SEED, GENERATOR_VERSION, type MapData, type MapSpec } from './mapgen';
+import { prefetchMap } from './mapgen/client';
+import { roomMap } from '../net/network';
 import { LocalPlayer } from './player';
 import { RemotePlayer, type HitboxData } from './remotePlayer';
 import { loadCharacter, type CharacterAsset } from './character';
@@ -57,6 +59,8 @@ const maxDamage = (weapon: WeaponKind) =>
     : weapon === 'turret' ? TURRET_DAMAGE : maxShotDamage(weapon));
 /** Dropped items land this far in front of the player */
 const DROP_DISTANCE = 1.6;
+/** A turret or barrier can't go where the ground under it rises and falls more than this (m) */
+const DEPLOY_MAX_SLOPE = 0.6;
 const ABILITY_ACTIONS: Action[] = ['ability1', 'ability2', 'ability3'];
 const UNKNOWN_PLAYER = { name: '?', color: '#888888' };
 const EMPTY_STATS: PlayerStats = { damage: 0, shots: 0, hits: 0, headshots: 0, streak: 0, best: 0, captures: 0 };
@@ -130,8 +134,8 @@ export interface GameOptions {
   roomCode: string;
   playerId: string;
   name: string;
-  /** Map seed; every client generates the same arena from it */
-  seed: string;
+  /** The room's map; every client generates the same map from it */
+  map: MapSpec;
   /** Leaderboard identity (finished rounds are added to it) */
   profileId: string;
   /** The Discord server we're playing in, if any: rounds also count on its leaderboard */
@@ -159,7 +163,11 @@ export class Game {
   private world!: World;
   /** Rapier: the map's collision, our body, ragdolls, loose props. Null until it has loaded. */
   private physics: PhysicsWorld | null = null;
-  private mapSeed = '';
+  /** The map being played */
+  private mapSpec: MapSpec = { seed: CLASSIC_SEED, size: 'm', gen: GENERATOR_VERSION };
+  private map: MapData | null = null;
+  /** Warned once per map that ours differs from the room's */
+  private hashWarned = '';
   private readonly colliders: THREE.Box3[] = [];
   private readonly solids: THREE.Mesh[] = [];
   private readonly ramps: Ramp[] = [];
@@ -322,7 +330,7 @@ export class Game {
   /** The last round we added to the leaderboard, so a round is never counted twice */
   private rankedRound = -1;
 
-  constructor({ host, roomCode, playerId, name, seed, profileId, guildId }: GameOptions) {
+  constructor({ host, roomCode, playerId, name, map, profileId, guildId }: GameOptions) {
     this.profileId = profileId;
     this.guildId = guildId ?? null;
     this.roomCode = roomCode;
@@ -346,10 +354,11 @@ export class Game {
     // recomputed each frame, including the map's, which never changes (see buildWorld).
     this.scene.matrixAutoUpdate = false;
 
-    this.loadMap(seed);
+    this.loadMap(map);
     this.applyQuality();
     signal.addEventListener('abort', settings.subscribe(() => this.applyQuality()), { once: true });
     this.player = new LocalPlayer(this.camera, signal);
+    this.player.setTerrain(this.world.terrainAt);
     this.weapon = new Weapon(aspect);
     this.povWeapon = new Weapon(aspect);
     this.effects = new Effects(this.scene);
@@ -377,9 +386,14 @@ export class Game {
     this.bindInput(signal);
   }
 
-  /** Build the arena for `seed`, replacing the current one. */
-  private loadMap(seed: string): void {
-    const map = generateMap(seed);
+  /** Build the map for `spec`, replacing the current one. */
+  private loadMap(spec: MapSpec): void {
+    if (!isPlayableSpec(spec)) {
+      // Another version of the game made this room's map: we'd be playing on a different one.
+      this.hud.update({ mapError: spec.gen > GENERATOR_VERSION ? 'This room uses a newer version of the game. Reload to update.' : 'This room was made with an older version of the game. Start a new room to play.' });
+      return;
+    }
+    const map = generateMap(spec);
     this.world?.dispose();
     this.walls?.clear();
     // Fires, turrets and mines belong to the old map (the collider list is rebuilt for the new one).
@@ -391,20 +405,50 @@ export class Game {
       colliders: this.colliders, solids: this.solids, ramps: this.ramps, obstacles: this.obstacles,
     }, { looseProps: LOOSE_PROPS });
     if (this.appliedQuality) this.world.setQuality(this.appliedQuality);
-    this.physics?.setMap(this.colliders, this.ramps, this.world.terrainMesh);
+    this.physics?.setMap(this.colliders, this.ramps, this.world.ground);
+    this.player?.setTerrain(this.world.terrainAt);
     this.debris.setProps(this.world.looseProps);
     setFlagBases(map.flags);
     this.flagField?.moveBases();
-    this.mapSeed = map.seed;
+    this.mapSpec = map.spec;
+    this.map = map;
     this.floorSurface = map.theme.surface;
-    this.hud.update({ map: { name: layoutName(map), seed: map.seed } });
+    this.hud.update({ map: { name: map.name, seed: map.spec.seed, size: map.spec.size, spec: map.spec }, mapError: null });
+    this.checkMapHash();
+  }
+
+  /**
+   * Every client builds the map itself, so make sure we built the same one: the first to load a
+   * round's map records its fingerprint, and anyone who gets a different one is told.
+   */
+  private checkMapHash(): void {
+    const map = this.map;
+    const g = this.game;
+    if (!map || !this.gameLoaded || !sameMap(this.roomSpec(g), map.spec)) return;
+    if (g.mapHash === undefined) {
+      const seed = map.spec.seed;
+      this.net.mutateGame((next) => {
+        if (next.mapHash !== undefined || (normalizeSeed(next.seed ?? '') || CLASSIC_SEED) !== seed) return false;
+        next.mapHash = map.hash;
+        return true;
+      }).catch((err: unknown) => console.warn('Could not record the map fingerprint', err));
+    } else if (g.mapHash !== map.hash && this.hashWarned !== map.spec.seed) {
+      this.hashWarned = map.spec.seed;
+      console.warn(`Map ${map.spec.seed} differs from the room's (${map.hash} vs ${g.mapHash})`);
+      this.hud.toast('Your map differs from the other players\'. Please report this.');
+    }
+  }
+
+  /** The map the room's game record says this round is on */
+  private roomSpec(g: GameState): MapSpec {
+    return roomMap({ seed: g.seed, size: g.size ?? this.mapSpec.size, gen: g.gen ?? this.mapSpec.gen });
   }
 
   /** The physics engine has loaded: build the map in it and give us (and dead bodies) a body. */
   private startPhysics(): void {
     const physics = new PhysicsWorld();
     this.physics = physics;
-    physics.setMap(this.colliders, this.ramps, this.world.terrainMesh);
+    physics.setMap(this.colliders, this.ramps, this.world.ground);
     // Deployed walls and turrets block movement too.
     const mirror = (box: THREE.Box3, added: boolean) => (added ? physics.addBox(box, box) : physics.removeBox(box));
     this.walls.onCollider = mirror;
@@ -601,7 +645,10 @@ export class Game {
         carryingFlag: this.carryingFlag(),
         shield: this.shieldHp,
         slots: this.inventory.view(performance.now()).map((s) => s?.type ?? null),
-        mapSeed: this.mapSeed,
+        mapSeed: this.mapSpec.seed,
+        mapSize: this.mapSpec.size,
+        mapGen: this.mapSpec.gen,
+        mapHash: this.map?.hash ?? null,
         game: this.game,
         rules: this.rules,
       }),
@@ -1085,7 +1132,7 @@ export class Game {
       else if (evt.hit === this.playerId) this.takeDamage(evt.dmg, evt.from, !!evt.head, weapon, origin);
     } else if (evt.type === 'grenade') {
       if (evt.from === this.playerId) return;
-      this.grenades.launch(evt.id, simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders, 'grenade'));
+      this.grenades.launch(evt.id, simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders, 'grenade', this.world.terrainAt));
     } else if (evt.type === 'melee') {
       if (evt.from === this.playerId || !evt.o) return;
       const origin = fromArr(evt.o);
@@ -1097,12 +1144,12 @@ export class Game {
       }
     } else if (evt.type === 'smoke') {
       if (evt.from === this.playerId) return;
-      const arc = simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders, 'smoke');
+      const arc = simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders, 'smoke', this.world.terrainAt);
       this.grenades.launch(evt.id, arc);
       this.pendingSmokes.push({ id: evt.id, at: performance.now() + arc.duration * 1000, p: arc.end });
     } else if (evt.type === 'molotov' || evt.type === 'flash') {
       if (evt.from === this.playerId || !evt.o || !evt.v) return;
-      const arc = simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders);
+      const arc = simulateGrenade(fromArr(evt.o), fromArr(evt.v), this.world.colliders, 'impact', this.world.terrainAt);
       this.grenades.launch(evt.id, arc);
       this.pendingThrown.push({ id: evt.id, kind: evt.type, owner: evt.from, at: performance.now() + arc.duration * 1000, p: arc.end });
     } else if (evt.type === 'turret') {
@@ -1273,7 +1320,13 @@ export class Game {
     const newRound = !first && next.round > prev.round;
 
     // Every round has its own map. A late joiner may also find the room has moved on from the lobby's seed.
-    if (next.seed && (normalizeSeed(next.seed) || CLASSIC_SEED) !== this.mapSeed) this.loadMap(next.seed);
+    if (next.seed) {
+      const spec = this.roomSpec(next);
+      if (!sameMap(spec, this.mapSpec) || !this.map) this.loadMap(spec);
+      else if (first || next.mapHash !== prev.mapHash) this.checkMapHash();
+    }
+    // Build the next round's map while the results are up.
+    if (next.ended?.nextSeed) prefetchMap({ ...this.mapSpec, seed: normalizeSeed(next.ended.nextSeed) || CLASSIC_SEED });
 
     if (next.ended && (first || !prev.ended || newRound)) {
       this.endedAt = next.ended.at ?? this.net.serverNow();
@@ -1430,6 +1483,9 @@ export class Game {
       seed = g.ended.nextSeed || randomSeed();
       g.round = round + 1;
       g.seed = seed;
+      g.size ??= this.mapSpec.size;
+      g.gen ??= this.mapSpec.gen;
+      delete g.mapHash;
       g.startedAt = this.net.serverNow();
       delete g.ended;
       g.score = {};
@@ -1440,7 +1496,7 @@ export class Game {
         if (!committed) return;
         // Pickups were placed for the old walls, and the lobby should list the new map.
         void this.net.clearPickups();
-        void this.net.setLobbySeed(seed);
+        void this.net.setLobbyMap({ ...this.mapSpec, seed: normalizeSeed(seed) || CLASSIC_SEED });
       })
       .catch((err: unknown) => console.warn('Could not start the next round', err));
   }
@@ -1450,7 +1506,7 @@ export class Game {
    * so every client shows the same ones.
    */
   private finishRound(g: GameState, winner: string, name: string, reason: 'time' | 'score'): void {
-    const current = g.seed ?? this.mapSeed;
+    const current = g.seed ?? this.mapSpec.seed;
     let nextSeed = randomSeed();
     while (nextSeed === current) nextSeed = randomSeed();
     const mvp = this.pickMvp();
@@ -1517,11 +1573,13 @@ export class Game {
     if (g.startedAt || this.roundOver || !this.isLeader() || this.clockFixRequested === g.round) return;
     this.clockFixRequested = g.round;
     const round = g.round;
-    const seed = this.mapSeed;
+    const spec = this.mapSpec;
     this.net.mutateGame((next) => {
       if (next.round !== round || next.startedAt) return false;
       next.startedAt = this.net.serverNow();
-      next.seed ??= seed;
+      next.seed ??= spec.seed;
+      next.size ??= spec.size;
+      next.gen ??= spec.gen;
       return true;
     }).catch((err: unknown) => console.warn('Could not start the round clock', err));
   }
@@ -1583,6 +1641,7 @@ export class Game {
         effects: this.effects,
         grenades: this.grenades,
         colliders: this.colliders,
+        terrainAt: this.world.terrainAt,
         solids: this.solids,
         flagField: this.flagField,
         smoke: this.smoke,
@@ -2008,7 +2067,7 @@ export class Game {
     const enemies = [...this.remotes]
       .filter(([id, r]) => r.alive && !this.isAlly(id))
       .map(([, r]) => r.target);
-    const points = this.team ? teamSpawns(this.world.spawnPoints, this.team) : this.world.spawnPoints;
+    const points = this.team ? teamSpawns(this.world.spawns, this.team) : this.world.spawns.map((s) => s.pos);
     const scored = points.map((p) => ({
       p,
       d: enemies.length ? Math.min(...enemies.map((e) => e.distanceTo(p))) : Math.random() * 100,
@@ -2219,8 +2278,9 @@ export class Game {
         this.throwThrown(type);
         break;
       case 'turret':
-        if (!this.placeTurret()) {
-          this.hud.toast('No room for a turret here');
+        const turret = this.placeTurret();
+        if (turret !== true) {
+          this.hud.toast(turret === 'steep' ? 'Too steep for a turret here' : 'No room for a turret here');
           sfx.playDenied();
           return;
         }
@@ -2252,8 +2312,9 @@ export class Game {
         this.throwSmoke();
         break;
       case 'wall':
-        if (!this.placeWall()) {
-          this.hud.toast('No room for a barrier here');
+        const wall = this.placeWall();
+        if (wall !== true) {
+          this.hud.toast(wall === 'steep' ? 'Too steep for a barrier here' : 'No room for a barrier here');
           sfx.playDenied();
           return;
         }
@@ -2329,8 +2390,7 @@ export class Game {
   private dropSpot(): { x: number; z: number } {
     const p = this.player.position;
     const ahead = { x: p.x - Math.sin(this.player.yaw) * DROP_DISTANCE, z: p.z - Math.cos(this.player.yaw) * DROP_DISTANCE };
-    const inside = (x: number, z: number) => this.world.colliders.some((c) =>
-      x > c.min.x - 0.3 && x < c.max.x + 0.3 && z > c.min.z - 0.3 && z < c.max.z + 0.3 && c.max.y > p.y + 0.2);
+    const inside = (x: number, z: number) => this.world.blockedBy(new THREE.Box3(new THREE.Vector3(x, p.y + 0.2, z), new THREE.Vector3(x, p.y + 50, z)), 0.3);
     // Facing a wall: drop it at our feet instead (we'll ignore it until we step away).
     const spot = inside(ahead.x, ahead.z) ? { x: p.x, z: p.z } : ahead;
     return { x: Math.round(spot.x * 100) / 100, z: Math.round(spot.z * 100) / 100 };
@@ -2363,7 +2423,7 @@ export class Game {
     // Simulate from the rounded values we send, so every client computes the identical arc.
     const o = toArr(start);
     const v = toArr(velocity);
-    const trajectory = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders, 'grenade');
+    const trajectory = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders, 'grenade', this.world.terrainAt);
     const id = randomId(8);
     this.grenades.launch(id, trajectory);
     this.net.sendEvent({ type: 'grenade', id, o, v });
@@ -2380,7 +2440,7 @@ export class Game {
     const velocity = dir.multiplyScalar(THROW_SPEED).add(new THREE.Vector3(0, THROW_LIFT, 0));
     const o = toArr(start);
     const v = toArr(velocity);
-    const arc = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders, 'smoke');
+    const arc = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders, 'smoke', this.world.terrainAt);
     const id = randomId(8);
     this.grenades.launch(id, arc);
     this.net.sendEvent({ type: 'smoke', id, o, v });
@@ -2397,7 +2457,7 @@ export class Game {
     const velocity = dir.multiplyScalar(THROW_SPEED).add(new THREE.Vector3(0, THROW_LIFT, 0));
     const o = toArr(start);
     const v = toArr(velocity);
-    const arc = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders);
+    const arc = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders, 'impact', this.world.terrainAt);
     const id = randomId(8);
     this.grenades.launch(id, arc);
     this.net.sendEvent({ type: kind, id, o, v });
@@ -2443,17 +2503,18 @@ export class Game {
     for (const r of this.remotes.values()) r.setScanned(false);
   }
 
-  /** Put a turret down in front of us. Refused (false) when there's no room. */
-  private placeTurret(): boolean {
+  /** Put a turret down in front of us. Refused when there's no room ('steep': the ground's too steep). */
+  private placeTurret(): boolean | 'steep' {
     const p = this.player.position;
     const yaw = this.player.yaw;
     const x = r2(p.x - Math.sin(yaw) * 1.6);
     const z = r2(p.z - Math.cos(yaw) * 1.6);
-    const y = r2(this.groundBelow(new THREE.Vector3(x, p.y + 0.1, z)));
+    const y = this.deployHeight(x, z, p.y, (h) => TurretField.boxFor(x, h, z));
+    if (y === 'steep') return y;
     const box = TurretField.boxFor(x, y, z);
     const limit = this.world.half - 0.8;
     if (Math.abs(x) > limit || Math.abs(z) > limit) return false;
-    if (this.world.colliders.some((c) => c.intersectsBox(box))) return false;
+    if (this.world.blockedBy(box)) return false;
     const padded = box.clone().expandByScalar(0.3);
     for (const r of this.remotes.values()) {
       if (r.alive && padded.containsPoint(r.position.clone().setY(r.position.y + 0.5))) return false;
@@ -2508,6 +2569,20 @@ export class Game {
       if (owner === this.playerId) this.hud.toast(turret ? 'Your turret was destroyed' : 'Your barrier was destroyed');
       else if (from === this.playerId) this.hud.toast(turret ? 'Turret destroyed' : 'Barrier destroyed');
     }
+  }
+
+  /**
+   * How high to stand a deployable at (x, z): on whatever is under it (a roof, a box), or on a
+   * hillside set into the slope at its lowest point, so it never floats. 'steep' if the ground under
+   * it rises and falls too much.
+   */
+  private deployHeight(x: number, z: number, fromY: number, boxAt: (y: number) => THREE.Box3): number | 'steep' {
+    const y = r2(this.groundBelow(new THREE.Vector3(x, fromY + 0.1, z)));
+    if (Math.abs(y - this.world.terrainAt(x, z)) > 0.05) return y;
+    const box = boxAt(y);
+    const under = this.world.terrainUnder(box.min.x, box.max.x, box.min.z, box.max.z);
+    if (under.hi - under.lo > DEPLOY_MAX_SLOPE) return 'steep';
+    return r2(under.lo);
   }
 
   /** Put a land mine down at our feet. Refused (false) in mid-air or at the arena edge. */
@@ -2625,9 +2700,9 @@ export class Game {
 
   /**
    * Put a barrier down in front of us, square to whichever axis we're facing most. Refused
-   * (returns false) when it would cut into cover, another player or the arena edge.
+   * (false) when it would cut into cover, another player or the arena edge ('steep': the ground's too steep).
    */
-  private placeWall(): boolean {
+  private placeWall(): boolean | 'steep' {
     const p = this.player.position;
     const yaw = this.player.yaw;
     const fx = -Math.sin(yaw);
@@ -2636,12 +2711,12 @@ export class Game {
     const axis: WallAxis = Math.abs(fz) >= Math.abs(fx) ? 'x' : 'z';
     const x = r2(p.x + fx * WALL_DISTANCE);
     const z = r2(p.z + fz * WALL_DISTANCE);
-    const foot = new THREE.Vector3(x, p.y + 0.1, z);
-    const y = r2(this.groundBelow(foot));
+    const y = this.deployHeight(x, z, p.y, (h) => WallField.boxFor(x, h, z, axis));
+    if (y === 'steep') return y;
     const box = WallField.boxFor(x, y, z, axis);
     const limit = this.world.half - 0.8;
     if (Math.abs(box.min.x) > limit || Math.abs(box.max.x) > limit || Math.abs(box.min.z) > limit || Math.abs(box.max.z) > limit) return false;
-    if (this.world.colliders.some((c) => c.intersectsBox(box))) return false;
+    if (this.world.blockedBy(box)) return false;
     const padded = box.clone().expandByScalar(0.4);
     for (const r of this.remotes.values()) {
       if (r.alive && padded.containsPoint(r.position.clone().setY(r.position.y + 0.5))) return false;

@@ -3,6 +3,9 @@ import { keyFor, settings } from './settings';
 import { GROUP, groups, type PhysicsWorld, type RapierCollider, type RapierBody } from './physics';
 import type { CharacterCollision, KinematicCharacterController, Capsule } from '@dimforge/rapier3d-compat';
 import type { Stance } from '../types';
+import { EYE_HEIGHT, HEIGHT, MAX_SLOPE, RADIUS, STEP_UP } from './playerDims';
+
+export { EYE_HEIGHT };
 
 const GRAVITY = 22;
 const JUMP_SPEED = 7.6;
@@ -10,10 +13,7 @@ const WALK_SPEED = 6;
 const SPRINT_SPEED = 9;
 const CROUCH_SPEED = 3.2;
 const AIM_SPEED = 3.8;
-const RADIUS = 0.35;
-const HEIGHT = 1.75;
 const CROUCH_HEIGHT = 1.15;
-export const EYE_HEIGHT = 1.6;
 const CROUCH_EYE = 1.05;
 const SLIDE_EYE = 0.85;
 /** Slide: a burst of speed that bleeds off, then you're crouching */
@@ -28,12 +28,8 @@ const SLIDE_TILT = 0.07;
 /** Radians per pixel at sensitivity 1 */
 const MOUSE_SENSITIVITY = 0.0022;
 const MAX_PITCH = Math.PI / 2 - 0.01;
-/** Highest ledge (or ramp side) you can walk straight onto without jumping */
-const STEP_UP = 0.7;
 /** Walking downhill sticks to the ramp instead of bouncing off it, up to this gap */
 const STICK_DOWN = 0.35;
-/** Steepest slope you can walk up (ramps are well under this) */
-const MAX_SLOPE = THREE.MathUtils.degToRad(55);
 /** Gap the character controller keeps between the body and the world (m) */
 const SKIN = 0.02;
 
@@ -86,6 +82,8 @@ export class LocalPlayer {
   private readonly camera: THREE.PerspectiveCamera;
   private body: Body | null = null;
   private eyeHeight = EYE_HEIGHT;
+  /** Height of the map's ground at (x, z), for the safety net under it */
+  private terrainAt: (x: number, z: number) => number = () => 0;
   private tilt = 0;
   private slideLeft = 0;
   private slideCooldown = 0;
@@ -107,6 +105,11 @@ export class LocalPlayer {
   }
 
   /** Give the player a body in the physics world (once it has loaded). Until then it can't move. */
+  /** The map changed: its ground, for the safety net under it. */
+  setTerrain(terrainAt: (x: number, z: number) => number): void {
+    this.terrainAt = terrainAt;
+  }
+
   attachPhysics(physics: PhysicsWorld): void {
     this.detachPhysics();
     const { R, world } = physics;
@@ -300,8 +303,10 @@ export class LocalPlayer {
     this.velocity.y -= GRAVITY * this.gravityScale * dt;
     this.collide(dt);
 
-    if (this.position.y < 0) {
-      this.position.y = 0;
+    // A safety net under the map: never sink through the ground (the physics keeps us on it).
+    const floor = this.terrainAt(this.position.x, this.position.z);
+    if (this.position.y < floor - 0.3) {
+      this.position.y = floor;
       this.velocity.y = 0;
       this.onGround = true;
     }

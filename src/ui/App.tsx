@@ -3,13 +3,14 @@ import { Lobby } from './Lobby';
 import { GameView } from './GameView';
 import { DiscordLobby } from './DiscordLobby';
 import { IN_DISCORD } from '../discord/patch';
+import type { MapSpec } from '../game/mapgen';
 
 export interface Session {
   roomCode: string;
   playerId: string;
   name: string;
-  /** The room's map seed */
-  seed: string;
+  /** The room's map */
+  map: MapSpec;
   /** Something to tell the player once they're in (e.g. the mode they picked wasn't used) */
   notice?: string;
   /** Leaderboard identity: stays the same between visits (or Discord accounts) */

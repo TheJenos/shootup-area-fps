@@ -632,7 +632,7 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 
 #death-overlay { background: rgba(120, 0, 0, 0.35); }
 
-#pause-overlay, #connecting-overlay {
+#pause-overlay, #connecting-overlay, #map-error-overlay {
   /* Menus sit over everything in the HUD (prompts, toasts, flash and cloak effects) */
   z-index: 40;
   background: rgba(8, 10, 14, 0.75);
@@ -1047,6 +1047,12 @@ kbd {
 .map-controls .row { margin: 0; }
 .map-controls small { font-size: 12px; line-height: 1.4; }
 .seed-input { text-transform: uppercase; letter-spacing: 2px; font-variant-numeric: tabular-nums; }
+.map-controls .choices { display: flex; gap: 6px; }
+.map-controls .choice { flex: 1; padding: 6px 8px; font-size: 13px; }
+.map-controls .choice.selected { border-color: var(--accent); color: var(--accent); background: rgba(255, 181, 71, 0.1); }
+.map-controls .choice:disabled { opacity: 0.45; cursor: not-allowed; }
+.map-preview.empty .spinner { margin-right: 6px; }
+.version-badge { color: var(--danger, #ff6b6b); font-weight: 600; }
 @media (max-width: 440px) {
   .map-picker { flex-direction: column; align-items: center; }
   .map-controls { width: 100%; }
@@ -1367,3 +1373,9 @@ html.reduce-motion #mvp .card,
 html.reduce-motion .slot.shake { animation: none; }
 html.reduce-motion #rotate-hint .phone { animation: none; transform: rotate(-90deg); }
 html.reduce-motion .spinner { animation: none; border-right-color: currentColor; opacity: 0.6; }
+
+/* Shown while the room's map is built, before the game starts */
+.building-map {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px;
+  color: var(--muted, #9aa3ad); font-size: 15px; pointer-events: none;
+}

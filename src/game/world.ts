@@ -1,17 +1,18 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { terrainHeight, type MapBox, type MapLayout, type StepSurface, type Terrain } from './mapgen';
+import { PAINT, groundHeight, groundRange, type Ground, type MapBox, type MapData, type StepSurface } from './mapgen';
 import type { Quality } from './settings';
 import { overRamp, rampHeightAt, wedgeGeometry, type Ramp } from './ramps';
+import { SpatialGrid } from './spatialGrid';
 import {
   FLOOR_TILE, GROUND_TILE, SURFACE_TILE, boxTexture, floorTexture, groundTexture, scaleBoxUVs, skyTexture, spawnMarkerTexture,
   type BoxSurface,
 } from './textures';
 import { propParts, whenPropsReady } from './props';
+import type { Team } from '../types';
 
 /** The sky dome sits inside the camera's far plane (300 m) and follows the camera. */
 const SKY_RADIUS = 250;
-
 
 /** The lists a world fills in place, so everything holding them sees each new map. */
 export interface WorldLists {
@@ -30,30 +31,37 @@ export interface WorldOptions {
   looseProps?: ReadonlySet<string>;
 }
 
-/** The terrain as one triangle mesh, for the physics engine */
-export interface TerrainMesh {
-  positions: Float32Array;
-  indices: Uint32Array;
+export interface SpawnPoint {
+  pos: THREE.Vector3;
+  /** Who spawns here in team modes (null: free-for-all only) */
+  team: Team | null;
 }
 
 export interface World extends WorldLists {
   /** Half the map's width: the outer walls stand at ±half */
   half: number;
-  /** The hills' surface for the physics engine; null on a flat map */
-  terrainMesh: TerrainMesh | null;
-  spawnPoints: THREE.Vector3[];
+  /** The terrain (null on a flat map), for the physics engine */
+  ground: Ground | null;
+  spawns: SpawnPoint[];
+  /** Where the map's designer wants pickups (lanes, the middle, overlooks); none on the classic map */
+  pickupSpots: MapData['pickupSpots'];
   /** Keep this centered on the camera so the horizon never gets closer */
   sky: THREE.Object3D;
   /** Everything the map added to the scene */
   root: THREE.Group;
   /** The props left out for the caller to simulate (see WorldOptions.looseProps) */
-  looseProps: MapLayout['props'];
+  looseProps: MapData['props'];
   /**
-   * The top of whatever is under `p` (the floor, which rises over the terrain's hills) and what
-   * footsteps on it sound like (null means the map's floor). Boxes count if their top is at most
-   * 5 cm above p, ramps 30 cm.
+   * The top of whatever is under `p` (the ground, a box, a ramp) and what footsteps on it sound like
+   * (null means the map's floor). Boxes count if their top is at most 5 cm above p, ramps 30 cm.
    */
   groundAt(p: THREE.Vector3): { y: number; surface: StepSurface | null };
+  /** The terrain's height at (x, z), ignoring anything standing on it */
+  terrainAt(x: number, z: number): number;
+  /** Lowest and highest terrain under a footprint */
+  terrainUnder(minX: number, maxX: number, minZ: number, maxZ: number): { lo: number; hi: number };
+  /** Whether `box` overlaps any collider (the map's or one added since, like a deployed wall) */
+  blockedBy(box: THREE.Box3, pad?: number): boolean;
   /** Shadow map resolution and surface detail (bump maps) for the graphics quality setting */
   setQuality(quality: Quality): void;
   /** Remove the map from the scene and free its geometry and materials (textures and models are shared) */
@@ -69,10 +77,12 @@ const CYLINDER_FIT = [[0.46, 0.19], [0.19, 0.46], [0.3535, 0.3535]] as const;
 /** The invisible boundary around the map: how high it goes and how thick it is (m) */
 const BOUNDARY_HEIGHT = 200;
 const BOUNDARY_THICKNESS = 4;
+/** The visible perimeter walls stand this high above the highest ground along the edge */
+const PERIMETER_HEIGHT = 6;
 
 const SHADOW_SIZE: Record<Quality, number> = { low: 512, medium: 1024, high: 2048 };
 
-/** Footsteps on a box's top, from its texture unless the layout says otherwise. */
+/** Footsteps on a box's top, from its texture unless the map says otherwise. */
 const stepFor = (b: { surface: BoxSurface; step?: StepSurface }): StepSurface =>
   b.step ?? (b.surface === 'crate' || b.surface === 'planks' ? 'wood' : b.surface === 'grass' ? 'sand' : 'hard');
 
@@ -80,26 +90,27 @@ const stepFor = (b: { surface: BoxSurface; step?: StepSurface }): StepSurface =>
 const GROUND_STEP: Partial<Record<string, StepSurface>> = { grass: 'sand', dirt: 'sand' };
 
 /**
- * Builds the map from a generated layout (see mapgen.ts). Every client generates
- * the same layout from the room's seed, so they all see the same map.
+ * Builds the map (see mapgen). Every client generates the same map from the room's map spec, so
+ * they all see the same map.
  *
- * Boxes are merged into one mesh per texture and colour (per quarter of the map, so frustum
- * culling still works), with an invisible box per obstacle in `solids` for bullets. Models
- * (layout.props) are drawn as InstancedMeshes once props.glb has loaded; their collision is
- * the invisible boxes the generator placed with them.
+ * The terrain is drawn in chunks with the floor texture, blended toward the lane paint along the
+ * lanes and tinted by slope and shade. Boxes are merged into one mesh per texture and colour (per
+ * quarter of the map, so frustum culling still works), with an invisible box per obstacle in
+ * `solids` for bullets. Models (map.props) are drawn as InstancedMeshes once props.glb has loaded;
+ * their collision is the invisible boxes the generator placed with them.
  *
  * Fills `colliders` (Box3, for movement) and `solids` (meshes, for bullet raycasts) in place,
  * so code holding on to those arrays sees the new map when it's rebuilt for the next round.
  */
-export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLists, options: WorldOptions = {}): World {
+export function buildWorld(scene: THREE.Scene, map: MapData, lists: WorldLists, options: WorldOptions = {}): World {
   const { colliders, solids, ramps, obstacles } = lists;
   colliders.length = 0;
   solids.length = 0;
   ramps.length = 0;
   obstacles.length = 0;
-  const { theme, half } = layout;
+  const { theme, half, ground } = map;
   const root = new THREE.Group();
-  root.name = `map:${layout.seed}`;
+  root.name = `map:${map.spec.seed}`;
   scene.add(root);
 
   // Flat color behind the sky dome, in case anything peeks past it.
@@ -112,11 +123,11 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
   root.add(sky);
   scene.fog = new THREE.Fog(theme.sky, 45, Math.max(130, half * 2.6));
 
-  // Indoor maps lean on the sky light: rooms only get the sun through windows and skylights.
-  const indoor = layout.style === 'industrial' || layout.style === 'town';
-  root.add(new THREE.HemisphereLight(theme.hemiSky, theme.hemiGround, indoor ? 1.45 : 1.1));
+  // Maps with a lot of roofs lean on the sky light: rooms only get the sun through windows.
+  root.add(new THREE.HemisphereLight(theme.hemiSky, theme.hemiGround, map.indoor ? 1.45 : 1.1));
   const sun = new THREE.DirectionalLight(theme.sun, 2.2);
-  sun.position.set(30, 60, 20);
+  // Over the side of the map (x), so neither team attacks into the sun.
+  sun.position.set(42, 60, 6);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   const reach = half + 10;
@@ -125,15 +136,15 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
   root.add(sun);
 
   const floorMap = floorTexture(theme.floorTexture, theme);
-  const floorMat = new THREE.MeshStandardMaterial({ map: floorMap, bumpMap: floorMap, bumpScale: 0.6, roughness: 0.95 });
+  const floorMat = new THREE.MeshStandardMaterial({ map: floorMap, bumpMap: floorMap, bumpScale: 0.6, roughness: 0.95, vertexColors: ground !== null });
+  if (ground) paintLanes(floorMat, groundTexture(map.path), FLOOR_TILE / GROUND_TILE[map.path]);
   /** Materials whose colour texture doubles as a bump map; the bump is dropped below high quality. */
   const bumped: THREE.MeshStandardMaterial[] = [floorMat];
-  const terrainMesh = layout.terrain ? terrainTriangles(layout.terrain, half) : null;
-  for (const geo of floorGeometries(layout.terrain, half)) {
+  for (const geo of floorGeometries(ground, half)) {
     const floor = new THREE.Mesh(geo, floorMat);
     floor.receiveShadow = true;
     // Hills throw shadows across the low ground; flat floor has nothing to shadow.
-    floor.castShadow = geo.userData.hilly === true;
+    floor.castShadow = ground !== null;
     root.add(floor);
     solids.push(floor);
   }
@@ -143,12 +154,12 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
     const key = `${surface}:${color}`;
     let mat = materials.get(key);
     if (!mat) {
-      const map = boxTexture(surface);
+      const tex = boxTexture(surface);
       const shiny = surface === 'metal' || surface === 'container';
       mat = new THREE.MeshStandardMaterial({
         color,
-        map,
-        bumpMap: map,
+        map: tex,
+        bumpMap: tex,
         bumpScale: shiny ? 1.2 : surface === 'plaster' ? 0.3 : 0.8,
         roughness: shiny ? 0.55 : 0.85,
         metalness: shiny ? 0.35 : 0,
@@ -176,6 +187,9 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
 
   /** Footsteps on each collider or ramp, for groundAt */
   const stepOf = new WeakMap<THREE.Box3, StepSurface>();
+  /** The map's colliders and ramps by area, for groundAt and blockedBy */
+  const grid = new SpatialGrid<THREE.Box3>(half + BOUNDARY_THICKNESS);
+  const rampGrid = new SpatialGrid<Ramp>(half);
 
   // Visible boxes are gathered per material and quarter, then merged.
   const batches = new Map<string, { surface: BoxSurface; color: number; geos: THREE.BufferGeometry[] }>();
@@ -211,6 +225,13 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
     solids.push(mesh);
   };
 
+  const addCollider = (box: THREE.Box3, step: StepSurface | null, floorSpace = true) => {
+    colliders.push(box);
+    if (floorSpace) obstacles.push(box);
+    if (step) stepOf.set(box, step);
+    grid.insert(box.min.x, box.max.x, box.min.z, box.max.z, box);
+  };
+
   const addBox = (b: MapBox) => {
     const blocks = b.blocks ?? 'all';
     if (b.visible !== false) addVisual(b);
@@ -219,13 +240,10 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
       // their box: no invisible corners to bump into.
       const parts = b.shape === 'cylinder' ? CYLINDER_FIT : [[0.5, 0.5] as const];
       for (const [fx, fz] of parts) {
-        const box = new THREE.Box3(
+        addCollider(new THREE.Box3(
           new THREE.Vector3(b.x - b.w * fx, b.y, b.z - b.d * fz),
           new THREE.Vector3(b.x + b.w * fx, b.y + b.h, b.z + b.d * fz),
-        );
-        colliders.push(box);
-        obstacles.push(box);
-        stepOf.set(box, stepFor(b));
+        ), stepFor(b));
       }
     }
     if (blocks !== 'move') {
@@ -251,15 +269,18 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
       new THREE.Vector3(b.x - b.w / 2, b.y, b.z - b.d / 2),
       new THREE.Vector3(b.x + b.w / 2, b.y + b.h, b.z + b.d / 2),
     );
-    ramps.push({ box, dir: b.ramp! });
+    const ramp = { box, dir: b.ramp! };
+    ramps.push(ramp);
+    rampGrid.insert(box.min.x, box.max.x, box.min.z, box.max.z, ramp);
     obstacles.push(box);
     stepOf.set(box, stepFor(b));
     solids.push(mesh);
   };
 
-  // Perimeter walls
+  // Perimeter walls, standing clear of the highest ground along the edge.
   const W = half;
-  const wall = (x: number, z: number, w: number, d: number): MapBox => ({ x, z, w, h: 6, d, y: 0, color: theme.wall, surface: 'perimeter' });
+  const wallH = PERIMETER_HEIGHT + map.edge.height;
+  const wall = (x: number, z: number, w: number, d: number): MapBox => ({ x, z, w, h: wallH, d, y: 0, color: theme.wall, surface: 'perimeter' });
   for (const b of [wall(0, -W, W * 2 + 1, 1), wall(0, W, W * 2 + 1, 1), wall(-W, 0, 1, W * 2 + 1), wall(W, 0, 1, W * 2 + 1)]) addBox(b);
 
   // Invisible boundary: tall walls over the perimeter so nobody gets out of the map, however high
@@ -270,13 +291,15 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
     [-W - T, -W - T, W + T, -W + 0.5], [-W - T, W - 0.5, W + T, W + T],
     [-W - T, -W - T, -W + 0.5, W + T], [W - 0.5, -W - T, W + T, W + T],
   ] as const) {
-    colliders.push(new THREE.Box3(new THREE.Vector3(x0, -10, z0), new THREE.Vector3(x1, BOUNDARY_HEIGHT, z1)));
+    addCollider(new THREE.Box3(new THREE.Vector3(x0, -10, z0), new THREE.Vector3(x1, BOUNDARY_HEIGHT, z1)), null, false);
   }
 
-  for (const b of layout.boxes) {
+  for (const b of map.boxes) {
     if (b.ramp) addRamp(b);
     else addBox(b);
   }
+  /** Colliders after these were added while playing (deployed walls, turrets) */
+  const staticColliders = colliders.length;
 
   for (const batch of batches.values()) {
     const merged = mergeGeometries(batch.geos, false);
@@ -287,9 +310,9 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
     root.add(mesh);
   }
 
-  // Ground patches: flat overlays (streets, lawns...), merged per kind.
+  // Ground patches: flat overlays on flat pads (yards, plazas), merged per kind.
   const groundGeos = new Map<string, THREE.BufferGeometry[]>();
-  for (const g of layout.ground) {
+  for (const g of map.patches) {
     const geo = new THREE.PlaneGeometry(g.w, g.d).rotateX(-Math.PI / 2);
     const tile = GROUND_TILE[g.kind];
     const uv = geo.getAttribute('uv') as THREE.BufferAttribute;
@@ -301,7 +324,7 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
       if (g.kind === 'road') uv.setXY(i, along ? u : v * (g.d / tile), along ? v * (g.d / tile) : u);
       else uv.setXY(i, (u * g.w) / tile, (v * g.d) / tile);
     }
-    geo.translate(g.x, 0, g.z);
+    geo.translate(g.x, g.y + 0.02, g.z);
     const list = groundGeos.get(g.kind) ?? [];
     list.push(geo);
     groundGeos.set(g.kind, list);
@@ -310,11 +333,10 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
     const merged = mergeGeometries(geos, false);
     geos.forEach((g) => g.dispose());
     if (!merged) continue;
-    const map = groundTexture(kind as MapLayout['ground'][number]['kind']);
+    const tex = groundTexture(kind as MapData['patches'][number]['kind']);
     const mesh = new THREE.Mesh(merged, new THREE.MeshStandardMaterial({
-      map, roughness: 0.92, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+      map: tex, roughness: 0.92, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
     }));
-    mesh.position.y = 0.004;
     mesh.receiveShadow = true;
     root.add(mesh);
   }
@@ -325,8 +347,8 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
   let disposed = false;
   const addProps = () => {
     if (disposed) return;
-    const byId = new Map<string, MapLayout['props']>();
-    for (const p of layout.props) {
+    const byId = new Map<string, MapData['props']>();
+    for (const p of map.props) {
       if (options.looseProps?.has(p.id)) continue;
       const list = byId.get(p.id) ?? [];
       list.push(p);
@@ -356,10 +378,10 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
     }
     freeze(propsRoot);
   };
-  const unsubscribe = layout.props.length ? whenPropsReady(addProps) : () => {};
+  const unsubscribe = map.props.length ? whenPropsReady(addProps) : () => {};
 
-  const ground = (x: number, z: number) => terrainHeight(layout.terrain, half, x, z);
-  const spawnPoints = layout.spawnPoints.map(([x, z]) => new THREE.Vector3(x, ground(x, z), z));
+  const terrainAt = (x: number, z: number) => groundHeight(ground, x, z);
+  const spawns: SpawnPoint[] = map.spawns.map((s) => ({ pos: new THREE.Vector3(s.x, s.y, s.z), team: s.team }));
 
   // Painted markers on the floor at each spawn, pointing toward the middle of the map.
   // Decoration only: not colliders, not hit by bullets.
@@ -373,9 +395,9 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
   });
-  for (const p of spawnPoints) {
+  for (const { pos: p } of spawns) {
     const marker = new THREE.Mesh(markerGeo, markerMat);
-    marker.position.set(p.x, p.y + 0.01, p.z);
+    marker.position.set(p.x, p.y + 0.03, p.z);
     // The arrow points along the texture's top, which is -z before rotating; face the center.
     marker.rotation.y = Math.atan2(p.x, p.z);
     marker.receiveShadow = true;
@@ -383,15 +405,17 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
   }
 
   const groundAt = (p: THREE.Vector3): { y: number; surface: StepSurface | null } => {
-    let y = ground(p.x, p.z);
+    let y = terrainAt(p.x, p.z);
     let surface: StepSurface | null = null;
-    for (const c of colliders) {
+    const top = (c: THREE.Box3) => {
       if (p.x > c.min.x && p.x < c.max.x && p.z > c.min.z && p.z < c.max.z && c.max.y <= p.y + 0.05 && c.max.y > y) {
         y = c.max.y;
         surface = stepOf.get(c) ?? 'wood';
       }
-    }
-    for (const r of ramps) {
+    };
+    for (const c of grid.at(p.x, p.z)) top(c);
+    for (let i = staticColliders; i < colliders.length; i++) top(colliders[i]!);
+    for (const r of rampGrid.at(p.x, p.z)) {
       if (!overRamp(r, p.x, p.z)) continue;
       const h = rampHeightAt(r, p.x, p.z);
       if (h <= p.y + 0.3 && h > y) {
@@ -401,13 +425,23 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
     }
     if (surface === null) {
       // On the floor: a lawn or a dirt patch changes the sound.
-      for (const g of layout.ground) {
+      for (const g of map.patches) {
         const s = GROUND_STEP[g.kind];
         if (s && Math.abs(p.x - g.x) < g.w / 2 && Math.abs(p.z - g.z) < g.d / 2) surface = s;
       }
     }
     return { y, surface };
   };
+
+  const blockedBy = (box: THREE.Box3, pad = 0) => {
+    const hit = (c: THREE.Box3) => box.min.x < c.max.x + pad && box.max.x > c.min.x - pad && box.min.z < c.max.z + pad
+      && box.max.z > c.min.z - pad && box.min.y < c.max.y && box.max.y > c.min.y;
+    if (grid.some(box.min.x - pad, box.max.x + pad, box.min.z - pad, box.max.z + pad, hit)) return true;
+    for (let i = staticColliders; i < colliders.length; i++) if (hit(colliders[i]!)) return true;
+    return false;
+  };
+
+  const terrainUnder = (minX: number, maxX: number, minZ: number, maxZ: number) => groundRange(ground, minX, maxX, minZ, maxZ);
 
   const setQuality = (quality: Quality) => {
     const size = SHADOW_SIZE[quality];
@@ -452,47 +486,98 @@ export function buildWorld(scene: THREE.Scene, layout: MapLayout, lists: WorldLi
     sun.shadow.map?.dispose();
   };
 
-  const looseProps = layout.props.filter((p) => options.looseProps?.has(p.id));
-  return { colliders, solids, ramps, obstacles, half, terrainMesh, spawnPoints, sky, root, looseProps, groundAt, setQuality, dispose };
+  const looseProps = map.props.filter((p) => options.looseProps?.has(p.id));
+  return {
+    colliders, solids, ramps, obstacles, half, ground, spawns, pickupSpots: map.pickupSpots, sky, root, looseProps,
+    groundAt, terrainAt, terrainUnder, blockedBy, setQuality, dispose,
+  };
 }
 
-/** Floor tiles per side: separate meshes so bullet raycasts and culling skip most of the hills */
+/**
+ * Blend a second texture into a floor material along the lanes (the `pathMix` vertex attribute),
+ * before the vertex colours tint both.
+ */
+function paintLanes(mat: THREE.MeshStandardMaterial, path: THREE.Texture, scale: number): void {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.pathMap = { value: path };
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float pathMix;\nvarying float vPathMix;')
+      .replace('#include <uv_vertex>', '#include <uv_vertex>\nvPathMix = pathMix;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform sampler2D pathMap;\nvarying float vPathMix;')
+      .replace(
+        '#include <map_fragment>',
+        `#include <map_fragment>\n#ifdef USE_MAP\n  vec4 pathColor = texture2D(pathMap, vMapUv * ${scale.toFixed(3)});\n  diffuseColor.rgb = mix(diffuseColor.rgb, pathColor.rgb, smoothstep(0.3, 0.7, vPathMix));\n#endif`,
+      );
+  };
+  mat.customProgramCacheKey = () => `lanes:${scale}`;
+}
+
+/** Floor chunks per side: separate meshes so bullet raycasts and culling skip most of the hills */
 const FLOOR_CHUNK = 16;
 
+/** Vertex tint for each kind of ground paint */
+const TINT: Record<number, [number, number, number]> = {
+  [PAINT.floor]: [1, 1, 1],
+  [PAINT.path]: [1, 1, 1],
+  [PAINT.rough]: [0.92, 0.9, 0.84],
+  [PAINT.rock]: [0.78, 0.76, 0.74],
+};
+
 /**
- * The floor: flat squares where the ground is flat, and the terrain's triangles (the same split as
- * terrainHeight) where it isn't. Textured in world units, so the tiling is seamless across chunks.
- * The texture is shared between games, so tiling goes through the UVs rather than its repeat setting.
+ * The floor: the terrain's triangles (the same split as groundHeight and the physics heightfield),
+ * or one flat square on a flat map. Textured in world units, so the tiling is seamless across chunks.
+ * Hollows are shaded a little darker and crests a little lighter, so the land reads at a glance.
  */
-function floorGeometries(t: Terrain | undefined, half: number): THREE.BufferGeometry[] {
-  const flatSquare = (x0: number, z0: number, x1: number, z1: number) => {
-    const geo = new THREE.PlaneGeometry(x1 - x0, z1 - z0).rotateX(-Math.PI / 2).translate((x0 + x1) / 2, 0, (z0 + z1) / 2);
+function floorGeometries(g: Ground | null, half: number): THREE.BufferGeometry[] {
+  if (!g) {
+    const geo = new THREE.PlaneGeometry(half * 2, half * 2).rotateX(-Math.PI / 2);
     const pos = geo.getAttribute('position') as THREE.BufferAttribute;
     const uv = geo.getAttribute('uv') as THREE.BufferAttribute;
     for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) / FLOOR_TILE, -pos.getZ(i) / FLOOR_TILE);
-    return geo;
-  };
-  if (!t) return [flatSquare(-half, -half, half, half)];
-  const side = t.n + 1;
+    return [geo];
+  }
+  const side = g.n + 1;
+  const h = (ix: number, iz: number) => g.heights[Math.min(g.n, Math.max(0, iz)) * side + Math.min(g.n, Math.max(0, ix))]!;
   const out: THREE.BufferGeometry[] = [];
-  for (let c0 = 0; c0 < t.n; c0 += FLOOR_CHUNK) {
-    for (let r0 = 0; r0 < t.n; r0 += FLOOR_CHUNK) {
-      const c1 = Math.min(t.n, c0 + FLOOR_CHUNK);
-      const r1 = Math.min(t.n, r0 + FLOOR_CHUNK);
-      const x = (i: number) => -half + i * t.cell;
-      let hilly = false;
-      for (let r = r0; r <= r1 && !hilly; r++) for (let c = c0; c <= c1; c++) if (t.heights[r * side + c]! > 0) { hilly = true; break; }
-      if (!hilly) {
-        out.push(flatSquare(x(c0), x(r0), x(c1), x(r1)));
-        continue;
-      }
+  for (let c0 = 0; c0 < g.n; c0 += FLOOR_CHUNK) {
+    for (let r0 = 0; r0 < g.n; r0 += FLOOR_CHUNK) {
+      const c1 = Math.min(g.n, c0 + FLOOR_CHUNK);
+      const r1 = Math.min(g.n, r0 + FLOOR_CHUNK);
+      const x = (i: number) => -g.half + i * g.cell;
       const cols = c1 - c0 + 1;
       const positions: number[] = [];
       const uvs: number[] = [];
+      const colors: number[] = [];
+      const normals: number[] = [];
+      const mix: number[] = [];
       for (let r = r0; r <= r1; r++) {
         for (let c = c0; c <= c1; c++) {
-          positions.push(x(c), t.heights[r * side + c]!, x(r));
+          const here = h(c, r);
+          positions.push(x(c), here, x(r));
+          // From the heights either side (not per chunk), so the lighting has no seams between chunks.
+          const nx = -(h(c + 1, r) - h(c - 1, r)) / (2 * g.cell);
+          const nz = -(h(c, r + 1) - h(c, r - 1)) / (2 * g.cell);
+          const nl = Math.sqrt(nx * nx + 1 + nz * nz);
+          normals.push(nx / nl, 1 / nl, nz / nl);
           uvs.push(x(c) / FLOOR_TILE, -x(r) / FLOOR_TILE);
+          const paint = g.paint[r * side + c]!;
+          // Shade: hollows darker, crests lighter (against the average two cells around).
+          const around = (h(c - 2, r) + h(c + 2, r) + h(c, r - 2) + h(c, r + 2)) / 4;
+          const shade = Math.min(1.06, Math.max(0.78, 1 + (here - around) * 0.12));
+          const [tr, tg, tb] = TINT[paint] ?? TINT[PAINT.floor]!;
+          colors.push(tr * shade, tg * shade, tb * shade);
+          // Lane paint fades out over a couple of metres rather than stepping cell by cell.
+          let path = 0;
+          let weight = 0;
+          for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+            const w = 3 - Math.max(Math.abs(dx), Math.abs(dz));
+            const rr = Math.min(g.n, Math.max(0, r + dz));
+            const cc = Math.min(g.n, Math.max(0, c + dx));
+            if (g.paint[rr * side + cc] === PAINT.path) path += w;
+            weight += w;
+          }
+          mix.push(path / weight);
         }
       }
       const index: number[] = [];
@@ -502,46 +587,21 @@ function floorGeometries(t: Terrain | undefined, half: number): THREE.BufferGeom
           const b = a + 1; // (x1, z0)
           const d = a + cols; // (x0, z1)
           const e = d + 1; // (x1, z1)
-          // Split along a–e, counter-clockwise seen from above.
-          index.push(a, e, b, a, d, e);
+          // Split along b–d like groundHeight and the physics heightfield, counter-clockwise seen from above.
+          index.push(a, d, b, b, d, e);
         }
       }
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
       geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      geo.setAttribute('pathMix', new THREE.Float32BufferAttribute(mix, 1));
+      geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
       geo.setIndex(index);
-      geo.computeVertexNormals();
-      geo.userData.hilly = true;
       out.push(geo);
     }
   }
   return out;
-}
-
-/** The terrain's hills as one triangle mesh (same split as terrainHeight and the drawn floor). */
-function terrainTriangles(t: Terrain, half: number): TerrainMesh {
-  const side = t.n + 1;
-  const positions = new Float32Array(side * side * 3);
-  for (let r = 0; r < side; r++) {
-    for (let c = 0; c < side; c++) {
-      const i = (r * side + c) * 3;
-      positions[i] = -half + c * t.cell;
-      positions[i + 1] = t.heights[r * side + c]!;
-      positions[i + 2] = -half + r * t.cell;
-    }
-  }
-  // Only the raised triangles: the flat ones would lie on the physics floor slab.
-  const h = t.heights;
-  const list: number[] = [];
-  for (let r = 0; r < t.n; r++) {
-    for (let c = 0; c < t.n; c++) {
-      const a = r * side + c;
-      const e = a + side + 1;
-      if (h[a]! > 0 || h[e]! > 0 || h[a + 1]! > 0) list.push(a, e, a + 1);
-      if (h[a]! > 0 || h[a + side]! > 0 || h[e]! > 0) list.push(a, a + side, e);
-    }
-  }
-  return { positions, indices: new Uint32Array(list) };
 }
 
 /** Compute `root`'s matrices now and stop three.js recomputing them each frame (for things that never move). */

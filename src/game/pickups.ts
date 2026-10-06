@@ -159,12 +159,12 @@ export class PickupField {
   /** Everything taking up floor space (cover, ramps), so pickups don't land inside it */
   private readonly colliders: THREE.Box3[];
   /** The current map: its size, and the ground to stand pickups on */
-  private readonly map: () => Pick<World, 'half' | 'groundAt'>;
+  private readonly map: () => Pick<World, 'half' | 'groundAt' | 'pickupSpots'>;
   private readonly pickups = new Map<string, PickupView>();
 
   private pedestal: THREE.MeshStandardMaterial | null = null;
 
-  constructor(scene: THREE.Scene, obstacles: THREE.Box3[], map: () => Pick<World, 'half' | 'groundAt'>) {
+  constructor(scene: THREE.Scene, obstacles: THREE.Box3[], map: () => Pick<World, 'half' | 'groundAt' | 'pickupSpots'>) {
     this.scene = scene;
     this.colliders = obstacles;
     this.map = map;
@@ -264,8 +264,13 @@ export class PickupField {
     return null;
   }
 
-  /** A random spot on open floor, away from cover and other pickups. */
+  /** A spot for a new pickup: one the map set aside if any is free, else random open floor. */
   randomSpot(): { x: number; z: number } | null {
+    const spots = this.map().pickupSpots;
+    for (let i = 0, start = Math.floor(Math.random() * spots.length); i < spots.length; i++) {
+      const s = spots[(start + i) % spots.length]!;
+      if (![...this.pickups.values()].some((p) => Math.hypot(p.record.x - s.x, p.record.z - s.z) < SPACING)) return { x: s.x, z: s.z };
+    }
     const limit = this.map().half - 2;
     for (let attempt = 0; attempt < 40; attempt++) {
       const x = (Math.random() * 2 - 1) * limit;

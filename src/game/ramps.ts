@@ -1,7 +1,7 @@
 import * as THREE from 'three';
+import { mirrorRampDir, rampHeightAt as heightOnRamp, type RampDir } from './rampMath';
 
-/** Which way a ramp rises: its high end is on the + or - side of that axis. */
-export type RampDir = 'x+' | 'x-' | 'z+' | 'z-';
+export { mirrorRampDir, type RampDir };
 
 /** A sloped surface players walk up. `box` is its full footprint and height range. */
 export interface Ramp {
@@ -12,23 +12,13 @@ export interface Ramp {
 /** Height of the ramp's surface at (x, z), clamped to its footprint. */
 export function rampHeightAt(r: Ramp, x: number, z: number): number {
   const { min, max } = r.box;
-  const along = r.dir[0] === 'x' ? (x - min.x) / (max.x - min.x) : (z - min.z) / (max.z - min.z);
-  const t = THREE.MathUtils.clamp(r.dir[1] === '+' ? along : 1 - along, 0, 1);
-  return min.y + (max.y - min.y) * t;
+  return heightOnRamp(r.dir, min.x, max.x, min.z, max.z, min.y, max.y, x, z);
 }
 
 /** Whether (x, z) is over the ramp (optionally grown by `pad`). */
 export function overRamp(r: Ramp, x: number, z: number, pad = 0): boolean {
   const { min, max } = r.box;
   return x > min.x - pad && x < max.x + pad && z > min.z - pad && z < max.z + pad;
-}
-
-/** Mirror a ramp direction across an axis (sx / sz are 1 or -1). */
-export function mirrorRampDir(dir: RampDir, sx: number, sz: number): RampDir {
-  const axis = dir[0] as 'x' | 'z';
-  const sign = dir[1] as '+' | '-';
-  const flip = axis === 'x' ? sx < 0 : sz < 0;
-  return `${axis}${flip ? (sign === '+' ? '-' : '+') : sign}` as RampDir;
 }
 
 /**

@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { isConfigured } from '../net/firebase';
 import { createRoom, getRoomSetup, randomId } from '../net/network';
-import { generateMap, layoutName, normalizeSeed, randomSeed, SEED_MAX_LENGTH } from '../game/mapgen';
-import { MapPreview } from './MapPreview';
+import { isPlayableSpec } from '../game/mapgen';
+import { MapPicker, useMapChoice } from './MapPicker';
 import { initAudio } from '../game/audio';
 import { loadCharacter } from '../game/character';
 import { loadGunModels } from '../game/guns';
@@ -12,7 +12,7 @@ import { loadPhysics } from '../game/physics';
 import { ModePicker } from './ModePicker';
 import { PRESETS, type ModeRules } from '../game/rules';
 import type { Session } from './App';
-import { RoomBrowser, useRooms } from './RoomBrowser';
+import { RoomBrowser, useRooms, versionMessage } from './RoomBrowser';
 import { Brand } from './Brand';
 import { friendlyError } from './errors';
 import { Leaderboard } from './Leaderboard';
@@ -55,9 +55,8 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
   const [tab, setTab] = useState<Tab>('rooms');
   const [roomName, setRoomName] = useState('');
   const [rules, setRules] = useState<ModeRules>(PRESETS[0]!.rules);
-  const [seed, setSeed] = useState(randomSeed);
-  // Blank means "surprise me": a fresh random seed is used when the room is created.
-  const map = useMemo(() => (seed ? generateMap(seed) : null), [seed]);
+  // A blank seed means "surprise me": a fresh random seed is used when the room is created.
+  const mapChoice = useMapChoice();
   const [error, setError] = useState(initialError);
   /** What we're doing, and which listed room's button should spin */
   const [busy, setBusy] = useState<'join' | 'create' | null>(null);
@@ -128,16 +127,17 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
         }
         throw new Error(`Room ${normalized} doesn't exist.`);
       }
-      onEnter({ roomCode: normalized, playerId: randomId(), name: playerName, seed: setup.seed, profileId });
+      if (!isPlayableSpec(setup.map)) throw new Error(versionMessage(setup.map.gen));
+      onEnter({ roomCode: normalized, playerId: randomId(), name: playerName, map: setup.map, profileId });
     });
   };
 
   const create = () => run('create', async (playerName) => {
     const playerId = randomId();
     const title = roomName.trim().slice(0, 24) || `${playerName}'s room`;
-    const roomSeed = seed || randomSeed();
-    const roomCode = await createRoom(title, rules, roomSeed, playerName, playerId);
-    onEnter({ roomCode, playerId, name: playerName, seed: roomSeed, profileId });
+    const map = mapChoice.spec();
+    const roomCode = await createRoom(title, rules, map, playerName, playerId);
+    onEnter({ roomCode, playerId, name: playerName, map, profileId });
   });
 
   const submit = (action: () => Promise<void>) => (e: FormEvent) => {
@@ -259,25 +259,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
                   <div className="create-side">
                     <div className="field">
                       <span>Map</span>
-                      <div className="map-picker stacked">
-                        {map ? <MapPreview map={map} mode={rules.base} /> : <div className="map-preview empty">Random map</div>}
-                        <div className="map-controls">
-                          <strong>{map ? layoutName(map) : 'Surprise me'}</strong>
-                          <div className="row">
-                            <input
-                              className="seed-input"
-                              value={seed}
-                              onChange={(e) => setSeed(normalizeSeed(e.target.value))}
-                              maxLength={SEED_MAX_LENGTH}
-                              placeholder="Seed"
-                              aria-label="Map seed"
-                              autoComplete="off"
-                            />
-                            <button type="button" title="New random map" aria-label="New random map" onClick={() => setSeed(randomSeed())}>🎲</button>
-                          </div>
-                          <small className="muted">Same seed, same map. <code>classic</code> is the original arena.</small>
-                        </div>
-                      </div>
+                      <MapPicker choice={mapChoice} mode={rules.base} hint={<>Same seed, same map. <code>classic</code> is the original arena.</>} />
                     </div>
                     <form className="create-form" onSubmit={submit(create)}>
                       <label className="field">

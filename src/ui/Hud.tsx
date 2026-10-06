@@ -231,6 +231,18 @@ export function Hud({ game, roomCode, onLeave }: Props) {
           )}
         </div>
       )}
+
+      {hud.mapError && !hud.connecting && (
+        // Another version of the game made this room's map: playing on would mean a different map.
+        <div id="map-error-overlay" className="overlay" role="alert">
+          <h2>Can't load this map</h2>
+          <p className="muted">{hud.mapError}</p>
+          <div className="row">
+            <button type="button" className="primary" onClick={() => location.reload()}>Reload</button>
+            <button type="button" onClick={onLeave}>Back to lobby</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

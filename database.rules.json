@@ -11,6 +11,12 @@
         "seed": {
           ".validate": "newData.isString() && newData.val().length <= 16"
         },
+        "size": {
+          ".validate": "newData.val() === 's' || newData.val() === 'm' || newData.val() === 'l'"
+        },
+        "gen": {
+          ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 1000"
+        },
         "mode": {
           ".validate": "newData.val() === 'ffa' || newData.val() === 'tdm' || newData.val() === 'ctf' || newData.val() === 'gungame' || newData.val() === 'sniper' || newData.val() === 'snipertdm'"
         },
@@ -81,6 +87,20 @@
             "hp": {
               ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 200"
             }
+          }
+        },
+        "game": {
+          "seed": {
+            ".validate": "newData.isString() && newData.val().length <= 16"
+          },
+          "size": {
+            ".validate": "newData.val() === 's' || newData.val() === 'm' || newData.val() === 'l'"
+          },
+          "gen": {
+            ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 1000"
+          },
+          "mapHash": {
+            ".validate": "newData.isNumber()"
           }
         }
       }

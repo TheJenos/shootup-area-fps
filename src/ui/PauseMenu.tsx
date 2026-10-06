@@ -1,9 +1,9 @@
-import { useMemo, type MouseEvent } from 'react';
+import { type MouseEvent } from 'react';
 import type { Game } from '../game/game';
 import type { HudState } from '../game/hudStore';
 import { TEAM_INFO, otherTeam } from '../game/modes';
 import { GUNS } from '../game/guns';
-import { generateMap } from '../game/mapgen';
+import { SIZE_LABEL, cachedMap, isClassic } from '../game/mapgen';
 import { goalOf } from '../game/rules';
 import { keyLabel, type Bindings } from '../game/settings';
 import { MapPreview } from './MapPreview';
@@ -49,7 +49,8 @@ interface Props {
 export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onIntro }: Props) {
   const { bindings } = useSettings();
   const { copy, copied } = useCopyInvite(game, roomCode);
-  const layout = useMemo(() => (hud.map ? generateMap(hud.map.seed) : null), [hud.map?.seed]);
+  // The game built this map already: it's in the cache.
+  const layout = hud.map ? cachedMap(hud.map.spec) : null;
   const { rules } = hud;
   const team = hud.team;
 
@@ -117,7 +118,7 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onIntro }:
               {layout && <MapPreview map={layout} mode={hud.mode} />}
               <div>
                 <strong>{hud.map.name}</strong>
-                <span className="muted">seed {hud.map.seed}</span>
+                <span className="muted">seed {hud.map.seed}{isClassic(hud.map.spec) ? '' : ` · ${SIZE_LABEL[hud.map.size]}`}</span>
                 <span className="muted">{hud.playerCount} {hud.playerCount === 1 ? 'player' : 'players'} in the match</span>
               </div>
             </div>

@@ -85,6 +85,31 @@ test.describe('create room', () => {
     await expect(page.getByRole('img', { name: /Map preview/ })).toBeVisible();
   });
 
+  test('map size is chosen with the seed and stored with the room', async ({ players, rooms }) => {
+    const p = await players.open(uniqueName('Sizer'));
+    await p.gotoLobby();
+    await p.page.getByRole('tab', { name: 'Create room' }).click();
+    const sizes = p.page.getByRole('radiogroup', { name: 'Map size' });
+    // The classic arena has one size.
+    await p.page.getByLabel('Map seed').fill('classic');
+    await expect(sizes.getByRole('radio', { name: 'Large' })).toBeDisabled();
+    // A generated map's name doesn't depend on its size.
+    await p.page.getByLabel('Map seed').fill('E2ESIZE');
+    const name = await p.page.locator('.map-controls strong').innerText();
+    await sizes.getByRole('radio', { name: 'Small' }).click();
+    await expect(sizes.getByRole('radio', { name: 'Small' })).toHaveAttribute('aria-checked', 'true');
+    await expect(p.page.locator('.map-controls strong')).toHaveText(name);
+
+    const code = rooms.track(await p.createRoom({ seed: 'E2ESIZE', size: 'Large' }));
+    const state = await p.state();
+    const lobby = await db.get(`lobby/${code}`);
+    expect(lobby).toMatchObject({ seed: 'E2ESIZE', size: 'l', gen: state.mapGen });
+    expect(await db.get(`rooms/${code}/game`)).toMatchObject({ seed: 'E2ESIZE', size: 'l', gen: state.mapGen });
+    expect(state).toMatchObject({ mapSeed: 'E2ESIZE', mapSize: 'l' });
+    // The first client to build the map records its fingerprint, and it's ours.
+    await expect.poll(async () => (await db.get(`rooms/${code}/game`)).mapHash).toBe(state.mapHash);
+  });
+
   test('a blank room name becomes "<name>\'s room", and a blank seed a random map', async ({ players, rooms }) => {
     const p = await players.open(uniqueName('Blank'));
     await p.gotoLobby();

@@ -1,4 +1,5 @@
 import type { ModeRules } from './game/rules';
+import type { MapSize, MapSpec } from './game/mapgen/spec';
 
 /** A player's record at rooms/{code}/players/{id}. */
 export interface PlayerState {
@@ -78,7 +79,7 @@ export interface RoundEnd {
   reason?: 'time' | 'score';
   /** When the round ended (server ms) */
   at?: number;
-  /** The map for the next round */
+  /** The map for the next round (same size and generator version as this one) */
   nextSeed?: string;
   mvp?: MvpInfo;
 }
@@ -230,8 +231,8 @@ export interface RoomSummary {
   mode: GameMode;
   /** The room's mode rules (prebuilt or custom) */
   rules: ModeRules;
-  /** Map seed (see mapgen.ts) */
-  seed: string;
+  /** The map (see game/mapgen) */
+  map: MapSpec;
   host: string;
   players: string[];
 }
@@ -244,6 +245,10 @@ export interface LobbyRecord {
   rules?: ModeRules;
   /** Map seed; missing on rooms made before seeds existed, which use the classic map */
   seed?: string;
+  /** Map size; missing on rooms made before sizes existed (medium) */
+  size?: MapSize;
+  /** Map generator version (GENERATOR_VERSION); missing on rooms made before versions existed (1) */
+  gen?: number;
   host: string;
   createdAt: number;
   members?: Record<string, string>;
@@ -271,6 +276,11 @@ export interface GameRecord {
   round: number;
   /** This round's map; changes every round */
   seed?: string;
+  /** Map size and generator version, fixed for the room (see LobbyRecord) */
+  size?: MapSize;
+  gen?: number;
+  /** Fingerprint of this round's map as the first client built it, to catch clients that differ */
+  mapHash?: number;
   /** When this round started (server ms), for the time limit */
   startedAt?: number;
   /** Set at the time or score limit; results, the MVP replay, then the next round follow */

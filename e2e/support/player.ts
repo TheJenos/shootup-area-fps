@@ -32,6 +32,10 @@ export interface GameStateView {
   shield: number;
   slots: (string | null)[];
   mapSeed: string;
+  mapSize: 's' | 'm' | 'l';
+  mapGen: number;
+  /** Fingerprint of the map this client built (null before one is built) */
+  mapHash: number | null;
   game: {
     round: number;
     seed?: string;
@@ -103,11 +107,12 @@ export class Player {
   }
 
   /** Create a room from the Create room tab with a preset mode (by its name) and return its code. */
-  async createRoom(opts: { mode?: string | RegExp; seed?: string; roomName?: string } = {}): Promise<string> {
+  async createRoom(opts: { mode?: string | RegExp; seed?: string; size?: 'Small' | 'Medium' | 'Large'; roomName?: string } = {}): Promise<string> {
     const page = this.page;
     await page.getByRole('tab', { name: 'Create room' }).click();
     if (opts.mode) await page.getByRole('radio', { name: opts.mode }).first().click();
     await page.getByLabel('Map seed').fill(opts.seed ?? 'classic');
+    if (opts.size) await page.getByRole('radiogroup', { name: 'Map size' }).getByRole('radio', { name: opts.size }).click();
     if (opts.roomName !== undefined) await page.getByLabel('Room name').fill(opts.roomName);
     await page.locator('button.create-button').click();
     await this.waitJoined();

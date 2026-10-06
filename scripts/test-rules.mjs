@@ -53,6 +53,13 @@ const cases = [
   ['server: first round', 'guildboard/123456789012345678/d_player0001', entry(), true],
   ['server: bad server id', 'guildboard/not-a-server/d_player0001', entry(), false],
   ['server: score not matching the formula', 'guildboard/123456789012345678/d_player0002', entry({ score: 5000 }), false],
+  ['lobby: room with a map spec', 'lobby/ROOM1', { name: 'Room', createdAt: 1, seed: 'ABC123', size: 'l', gen: 2, host: 'Tester' }, true],
+  ['lobby: unknown map size', 'lobby/ROOM1/size', 'xl', false],
+  ['lobby: generator version not a number', 'lobby/ROOM1/gen', '2', false],
+  ['lobby: seed too long', 'lobby/ROOM1/seed', 'ABCDEFGHIJKLMNOPQ', false],
+  ['game: round on a map', 'rooms/ROOM1/game', { round: 0, seed: 'ABC123', size: 'm', gen: 2, mapHash: 123456 }, true],
+  ['game: unknown map size', 'rooms/ROOM1/game/size', 'huge', false],
+  ['game: map fingerprint not a number', 'rooms/ROOM1/game/mapHash', 'abc', false],
   ['unknown top-level path', 'admin/flag', true, false],
 ];
 

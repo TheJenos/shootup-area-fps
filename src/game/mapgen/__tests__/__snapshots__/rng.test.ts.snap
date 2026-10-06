@@ -1,0 +1,9 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Rng > pins the first numbers of a seed 1`] = `
+[
+  48596082,
+  32844125,
+  966196046,
+]
+`;

@@ -221,51 +221,79 @@ Limits and team colors are in `src/game/modes.ts`.
 
 ## Maps
 
-Every room gets its own map, generated from a **seed**. The lobby shows a 3D preview of the map for the
-current seed (it slowly turns; drag to turn it yourself): press 🎲 for a new one, type a seed a friend shared to get the same map, or type `classic` for
-the original hand-built arena (rooms made before seeds existed also use it). The pause menu and the Tab
-summary show the room's map and seed; the name reads "Theme · Style".
+Every room gets its own map, generated from a **seed** and a **size** (Small, Medium or Large). The lobby
+shows a 3D preview of the map for the current seed (it slowly turns; drag to turn it yourself): press 🎲 for a
+new one, type a seed a friend shared to get the same map, or type `classic` for the original hand-built arena
+(rooms made before seeds existed also use it). The map's name ("Red Cut · Quarry") depends only on the seed,
+so it stays the same at every size. The pause menu and the Tab summary show the room's map, seed and size.
 
-A seed picks one of three **styles** and a theme to go with it:
+### How a map is made
 
-| Style | Themes | What's in it |
+Generation is pure, seeded code in `src/game/mapgen/` (no three.js), run in a Web Worker so the page never
+stalls (`client.ts`; it falls back to the page if workers are blocked). Every client builds the same map from
+the room's map spec: seed, size and generator version. The pipeline (`generate.ts`):
+
+1. **Meta**: the seed picks a biome, a theme and a name (cheap, so the room list names maps without building them).
+2. **Lane graph** (`graph.ts`): two bases, two or three **lanes** from each base to the middle line, swinging
+   side to side so no stretch runs straight for long, with a **chokepoint** on each, **connectors** between
+   neighbouring lanes, **overlooks** beside some lanes and a **middle** (plaza, hill or sunken). Only red's half
+   is designed; blue's is its copy under the map's **symmetry**: a half turn (most maps: both teams get the
+   same left and right) or a mirror. Lanes meet the middle line at fixed points, so every route has a twin of
+   the same length on the other side.
+3. **Terrain** (`terrain.ts`): the land is shaped from the design. Lanes are valleys, the bases sit on plateaus
+   walled in by ridges, the ridges between lanes stand taller than eye height so each lane is hidden from the
+   others, lanes get crests you can't see over from the dip either side, and a rim rises along the walls.
+   Pinned heights (plateaus, lane floors, the pad under every structure) are kept exactly and no slope is
+   steeper than you can walk (~40° at most, under the 55° you can climb).
+4. **Dressing** (`dress.ts`, kits in `kits.ts`, biomes in `biomes.ts`): structures on flat pads first (the
+   middle's landmark, overlook platforms with a ramp and a parapet, footbridges over chokes, buildings and big
+   models on the ridges, houses with a ramp up to a walkable roof, a raised post at each base), then cover
+   along every lane at a steady rhythm (alternating sides, never in the lane's middle strip), landing cover past
+   each choke, cover round the middle and the bases, and rocks, trees or buildings on the ridges.
+5. **Sightlines** (`sightlines.ts`): long sightlines along each lane (base to base), at the flags from the
+   enemy half and at the spawns are measured, and the worst get a tall piece of cover across them.
+6. **Checks** (`validate.ts`, `navgrid.ts`): on a layered walk grid sized to the player (`playerDims.ts`), every
+   spawn, both flags, every pickup spot, door, platform top and bridge must be reachable, and a carrier must be
+   able to get home; slopes must be walkable and the halves exact copies. A map that fails is rebuilt from the
+   next roll of the seed.
+
+| Biome | Themes | What's in it |
 | --- | --- | --- |
-| **Industrial** | Toxic Works, Dusk Yard, Training Yard | A gantry bridge, tank farm or shed in the middle; a **warehouse** per quarter (big doors, a catwalk with a railing up a ramp stair, high windows to shoot out of, a skylight); rows of **shipping containers** you climb with crate steps (some stacked two high, some joined by a bridge); a water tower, chimneys, tanks or a factory block; barrels, pallets and barriers |
-| **Town** | Training Yard, Dusk Yard, Dust Bowl, Frostbite | Streets on both axes plus a cross street and side street per quarter, with lamps; blocks of **shops and houses** facing the street; one **enterable building** per quarter (doors on several sides, windows, half the time an upstairs reached by a stair); barriers, dumpsters and planters in the streets |
-| **Outdoor** | Greenwood, Frostbite, Dust Bowl | **Hills** (rock with a turf top, ramps up, some with a second tier); patches of **forest** (trunks block you; canopies stop bullets but you walk under them); big rocks; a **cabin**; logs, log piles, tents, fences and bushes |
+| **Quarry** | Dust Bowl, Training Yard | Deep canyon lanes between rocky ridges, a water tower derrick or a gantry in the middle, containers you climb, sandbags, rocks |
+| **Old Town** | Training Yard, Dusk Yard, Frostbite, Dust Bowl | Low ridges lined with shops and houses facing the streets, a clock tower or a fountain, houses with walkable roofs, lamps, barriers, dumpsters |
+| **Highlands** | Greenwood, Frostbite | Rolling ridges with forests on top (canopies stop bullets, you walk under them), a fire lookout or standing stones, cabins, logs, tents |
+| **Refinery** | Toxic Works, Dusk Yard, Training Yard | Factories, chimneys and tanks on the ridges, a tank farm or a gantry in the middle, barrels, pallets, containers, catwalk platforms |
 
-- **Buildings** (`src/game/levelgen/building.ts`) are made of boxes, so they collide, stop bullets and show on
-  the preview. Doors are at least 2 m wide; windows have a 1 m sill and are 1 m tall, so you shoot through them
-  but can't climb through. Upstairs floors and catwalks are reached by ramp stairs; roofs can't be reached.
+- **Sizes**: Small 80 m across (usually two lanes, 6 spawns a team), Medium 108 m, Large 140 m (three lanes,
+  10 spawns a team).
+- **Buildings** (`kits.ts`) are made of boxes, so they collide, stop bullets and show on the preview. Doors are
+  at least 2 m wide; windows have a 1 m sill and are 1 m tall, so you shoot through them but can't climb through.
 - **Models** (shops, houses, factories, street lights, trees, rocks...) are Kenney CC0 kits converted into one
   file (`public/models/props.glb`, see Assets). They're only looks: each comes with invisible boxes the
-  generator places with it (the whole footprint for buildings, a trunk and a canopy for trees, a slightly
-  smaller box for rocks, boxes fitted by hand for the water tower's legs and the lying tank), and those are
-  what players, bullets and grenades hit. Off-centre boxes are re-placed with their model in the mirrored half
-  (models are turned there, not reflected). Round tanks and barrels collide as an eight-sided shape inside the
-  cylinder, and bullets hit the cylinder itself, so there are no invisible corners. The map is playable before
-  the models finish loading; they appear as soon as they have.
-- **Ramps** (`src/game/ramps.ts`) are real slopes: you walk up and down them, their sides block you like a wall
-  until the slope is low enough to step onto, and running downhill sticks to the surface. Ledges up to 0.7 m
-  (steps, the top of a ramp) are walked straight onto without jumping. Bullets hit ramps like any cover.
-- **The outline isn't a square**: walls are pushed in from the edges (`src/game/levelgen/outline.ts`). Each side
-  of the map picks its own corner (a staircase that reads as a cut or rounded corner, a big block that makes a
-  plus-shaped map, or a smaller L), plus notches and bends along the walls and sometimes a pinched waist across
-  the middle. Industrial maps use concrete walls, Town brick and Outdoor rock cliffs with trees along the top.
-  All walls meet at right angles, and walls either touch or leave at least 1.6 m, so there are no slots to get
-  stuck in. Spawns the outline would cover move inward.
-- Maps are mirrored only between the two team halves (north and south), so both teams and both CTF bases face
-  the same layout, while the east and west sides of each half are generated separately and look different.
-- Cover never blocks a spawn point or a flag base, and every gap between obstacles is at least 1.6 m wide.
-  Each map is then checked (`src/game/levelgen/check.ts`): a flood fill over the floor must reach every spawn,
-  both flag bases and the outside of every door. A map that fails is regenerated with a variation of the seed,
-  and as a last resort the original box arena is used. `npm run check:maps` runs this over hundreds of seeds,
-  checks the same seed always gives the same map, and that the classic arena hasn't changed.
+  generator places with it, and those are what players, bullets and grenades hit. Off-centre boxes are
+  re-placed with their model in the other half (models are turned there, not reflected). Round tanks and
+  barrels collide as an eight-sided shape inside the cylinder, and bullets hit the cylinder itself.
+- **Ramps** (`src/game/ramps.ts`) are real slopes, at most 1 m up per 2 m along.
+- **The ground** is one heightfield (`mapgen/heightField.ts`): the drawn floor, the physics engine's heightfield
+  collider and the generator's checks all use the same triangles, so what you see is what you stand on.
+  Turrets and barriers on a hillside are set into the slope; on ground too steep they're refused.
+- **Pickups** appear at spots the map sets aside (along the lanes, the middle, the connectors, the foot of
+  overlook ramps) before anywhere else.
+- **Versions**: rooms store the generator version (`GENERATOR_VERSION` in `mapgen/index.ts`) with the seed and
+  size. A client on another version can't join (the room list marks the room "Older version" or "Newer
+  version"), since it would build a different map. The first client to build a round's map records its
+  fingerprint in the round record, and anyone who builds a different one is told. Bump the version whenever
+  any seed's map changes; CI fails if a map changes without it (golden hashes in `mapgen/golden.json`).
+- **Determinism**: the generator uses its own seeded RNG (`rng.ts`), Fisher-Yates shuffles, and only maths that
+  every browser engine computes identically (no `Math.sin`, `Math.hypot`...; `npm run check:maps` fails if any
+  creep in).
+- `npm run check:maps` builds hundreds of maps per size and reports failures, how many rolls each took,
+  sightlines, clutter and timing; `--dump SEED` writes a top-down picture of a map (with its worst sightlines)
+  to `node_modules/.cache/maps/`. `npm test` runs the unit tests (`vitest`), including one that checks the
+  physics heightfield against the generator's ground.
 - Footsteps follow what you stand on: wood on floorboards and crates, metal and concrete on catwalks,
-  containers and decks, grass on turf and lawns, otherwise the map's floor.
+  containers and decks, otherwise the map's floor.
 - Boxes are merged into a few meshes per texture and models are instanced, so a map draws in a few dozen calls.
-- Generation is pure, seeded code (`src/game/mapgen.ts` and `src/game/levelgen/`), so every client builds the
-  identical map. Seeds made before the styles existed now give a different map (except `classic`).
 
 ### Textures
 
@@ -282,8 +310,9 @@ without seams, and they tile at real-world scale instead of stretching across lo
 | Toxic Works | diamond plate | corrugated metal | concrete |
 | Greenwood | grass | planks | rock |
 
-Buildings, containers and hills add their own: plaster and brick walls, floorboards, container steel, rock and
-turf. Streets, sidewalks, lawns, concrete pads and hazard stripes are flat patches drawn over the floor.
+Buildings, containers and platforms add their own: plaster and brick walls, floorboards, container steel and
+rock. Lanes are painted with dirt or concrete blended into the floor, steep slopes look rocky, and hollows are
+shaded darker than crests. Yards, plazas and hazard stripes are flat patches drawn over flat pads.
 
 - Crates are wooden, with planks and a brace.
 - The outer wall is concrete panels with grime at the bottom.

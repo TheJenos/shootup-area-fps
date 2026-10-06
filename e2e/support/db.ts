@@ -70,20 +70,23 @@ export function randomCode(): string {
 }
 
 /** A room as createRoom() makes it, written straight to the database. */
-export async function seedRoom(r: RoomRules, opts: { name?: string; seed?: string; host?: string } = {}): Promise<string> {
+export async function seedRoom(
+  r: RoomRules, opts: { name?: string; seed?: string; host?: string; size?: 's' | 'm' | 'l'; gen?: number } = {},
+): Promise<string> {
   const code = randomCode();
-  const seed = opts.seed ?? 'CLASSIC';
+  // The classic arena by default: flat, and the same on every generator version.
+  const map = { seed: opts.seed ?? 'CLASSIC', ...(opts.size ? { size: opts.size } : {}), ...(opts.gen ? { gen: opts.gen } : {}) };
   const now = serverNow();
   await db.put(`lobby/${code}`, {
     name: opts.name ?? `E2E ${code}`,
     mode: r.base,
     rules: r,
-    seed,
+    ...map,
     host: opts.host ?? 'E2E',
     createdAt: now,
     members: { [PLACEHOLDER]: opts.host ?? 'E2E' },
   });
-  await db.put(`rooms/${code}/game`, { round: 0, seed, startedAt: now });
+  await db.put(`rooms/${code}/game`, { round: 0, ...map, startedAt: now });
   return code;
 }
 

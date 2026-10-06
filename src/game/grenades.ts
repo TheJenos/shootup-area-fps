@@ -40,13 +40,15 @@ export type FlightKind = 'impact' | 'grenade' | 'smoke';
  * Integrates a thrown arc with a fixed step, so every client that receives the same origin and
  * velocity draws exactly the same flight. With the physics engine loaded, it sweeps a ball through
  * the map (boxes, ramps, deployed walls) and bounces off what it hits; that's a geometric query,
- * not a simulation, so it comes out the same everywhere. Without it, it stops at the first box.
+ * not a simulation, so it comes out the same everywhere. Without it, it stops at the first box or
+ * the ground.
  */
 export function simulateGrenade(
   origin: THREE.Vector3, velocity: THREE.Vector3, colliders: THREE.Box3[], kind: FlightKind = 'impact',
+  ground: (x: number, z: number) => number = () => 0,
 ): Trajectory {
   const physics = activePhysics();
-  if (physics) return sweptFlight(physics, origin, velocity, kind);
+  if (physics) return sweptFlight(physics, origin, velocity, kind, ground);
   const p = origin.clone();
   const v = velocity.clone();
   const points = [p.clone()];
@@ -56,8 +58,9 @@ export function simulateGrenade(
     p.addScaledVector(v, STEP);
     t += STEP;
     points.push(p.clone());
-    if (p.y <= RADIUS) {
-      p.y = RADIUS;
+    const floor = ground(p.x, p.z) + RADIUS;
+    if (p.y <= floor) {
+      p.y = floor;
       break;
     }
     const hit = colliders.some((c) =>
@@ -72,7 +75,9 @@ export function simulateGrenade(
 const _n = new THREE.Vector3();
 const _tan = new THREE.Vector3();
 
-function sweptFlight(physics: PhysicsWorld, origin: THREE.Vector3, velocity: THREE.Vector3, kind: FlightKind): Trajectory {
+function sweptFlight(
+  physics: PhysicsWorld, origin: THREE.Vector3, velocity: THREE.Vector3, kind: FlightKind, ground: (x: number, z: number) => number,
+): Trajectory {
   const { R, world } = physics;
   const ball = new R.Ball(RADIUS);
   const flags = R.QueryFilterFlags.EXCLUDE_DYNAMIC | R.QueryFilterFlags.EXCLUDE_KINEMATIC;
@@ -122,9 +127,10 @@ function sweptFlight(physics: PhysicsWorld, origin: THREE.Vector3, velocity: THR
       v.x *= keep;
       v.z *= keep;
     }
-    if (p.y < RADIUS) {
-      // Never below the floor, whatever happened.
-      p.y = RADIUS;
+    const floor = ground(p.x, p.z) + RADIUS;
+    if (p.y < floor) {
+      // Never below the ground, whatever happened.
+      p.y = floor;
       if (v.y < 0) v.y = 0;
     }
     t += STEP;

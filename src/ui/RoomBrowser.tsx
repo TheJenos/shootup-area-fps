@@ -1,11 +1,19 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { isConfigured } from '../net/firebase';
 import { watchRooms } from '../net/network';
-import { mapName } from '../game/mapgen';
+import { GENERATOR_VERSION, SIZE_LABEL, isClassic, isPlayableSpec, mapName, type MapSpec } from '../game/mapgen';
 import type { RoomSummary } from '../types';
 import { ROOM_CODE_MAX } from './App';
 
 export { mapName };
+
+/** A room's map for the list: its name, and its size unless it's the classic arena */
+export const mapLabel = (map: MapSpec): string => (isClassic(map) ? mapName(map.seed) : `${mapName(map.seed)} (${SIZE_LABEL[map.size]})`);
+
+/** Why we can't join a room made by another version of the game */
+export const versionMessage = (gen: number): string => (gen > GENERATOR_VERSION
+  ? 'That room uses a newer version of the game. Reload to update, then join.'
+  : 'That room was made with an older version of the game. Start a new room instead.');
 
 /** How long the room list may stay on "Loading…" before we call it a failure (ms) */
 const ROOMS_TIMEOUT_MS = 8_000;
@@ -66,7 +74,7 @@ export function RoomBrowser({ rooms, failed, retry, initialCode = '', busy, join
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!listed || !q) return listed;
-    return listed.filter((r) => [r.name, r.code, r.rules.name, r.rules.short, mapName(r.seed), r.host, ...r.players]
+    return listed.filter((r) => [r.name, r.code, r.rules.name, r.rules.short, mapLabel(r.map), r.host, ...r.players]
       .some((field) => field.toLowerCase().includes(q)));
   }, [listed, search]);
 
@@ -118,7 +126,9 @@ export function RoomBrowser({ rooms, failed, retry, initialCode = '', busy, join
         ) : shown.length === 0 ? (
           <li className="empty">No rooms match “{search.trim()}”. <button type="button" onClick={() => setSearch('')}>Clear search</button></li>
         ) : (
-          shown.map((room) => (
+          shown.map((room) => {
+            const playable = isPlayableSpec(room.map);
+            return (
             <li key={room.code}>
               <div className="info">
                 <div className="name">
@@ -126,15 +136,21 @@ export function RoomBrowser({ rooms, failed, retry, initialCode = '', busy, join
                   {room.name}
                 </div>
                 <div className="meta">
-                  {room.rules.name} · {mapName(room.seed)} · <span className="code">{room.code}</span> · {room.players.length} playing ·{' '}
+                  {room.rules.name} · {playable ? mapLabel(room.map) : <span className="version-badge">{room.map.gen > GENERATOR_VERSION ? 'Newer version' : 'Older version'}</span>}
+                  {' · '}<span className="code">{room.code}</span> · {room.players.length} playing ·{' '}
                   {room.players.slice(0, 4).join(', ')}{room.players.length > 4 ? '…' : ''}
                 </div>
               </div>
-              <button disabled={disabled} onClick={() => onJoin(room.code)}>
+              <button
+                disabled={disabled || !playable}
+                title={playable ? undefined : versionMessage(room.map.gen)}
+                onClick={() => onJoin(room.code)}
+              >
                 {busy && joiningCode === room.code ? <><span className="spinner" aria-hidden="true" />Joining…</> : 'Join'}
               </button>
             </li>
-          ))
+            );
+          })
         )}
       </ul>
     </>

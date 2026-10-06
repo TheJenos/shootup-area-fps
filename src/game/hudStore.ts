@@ -1,6 +1,7 @@
 import type { SlotView } from './abilities';
 import { baseRules, type ModeRules } from './rules';
 import type { GameMode, GunKind, PlayerState, Team, WeaponKind } from '../types';
+import type { MapSize, MapSpec } from './mapgen';
 
 const FEED_LIFETIME = 5_000;
 const FEED_MAX = 5;
@@ -168,8 +169,10 @@ export interface HudState {
   inventoryOpen: boolean;
   match: MatchInfo | null;
   myMatch: MyMatch;
-  /** The arena's theme name and seed */
-  map: { name: string; seed: string } | null;
+  /** The map being played */
+  map: { name: string; seed: string; size: MapSize; spec: MapSpec } | null;
+  /** This build can't play the room's map (another generator version): reload to update */
+  mapError: string | null;
   mode: GameMode;
   /** Our team, in team modes */
   team: Team | null;
@@ -228,6 +231,7 @@ const initialState: HudState = {
   match: null,
   myMatch: { pickups: 0, abilitiesUsed: 0, dropped: 0 },
   map: null,
+  mapError: null,
   mode: 'ffa',
   team: null,
   score: { red: 0, blue: 0, mine: 0, leader: null },

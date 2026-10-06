@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { connectDiscord, type DiscordSession } from '../discord/discord';
 import { createRoomWithCode, getRoomSetup, randomId } from '../net/network';
 import { initAudio } from '../game/audio';
@@ -9,9 +9,9 @@ import { loadPropModels } from '../game/props';
 import { loadPhysics } from '../game/physics';
 import { ModePicker } from './ModePicker';
 import { PRESETS, type ModeRules } from '../game/rules';
-import { generateMap, layoutName, mapName, normalizeSeed, randomSeed, SEED_MAX_LENGTH } from '../game/mapgen';
-import { MapPreview } from './MapPreview';
-import { RoomBrowser, useRooms } from './RoomBrowser';
+import { GENERATOR_VERSION, isPlayableSpec, type MapSpec } from '../game/mapgen';
+import { MapPicker, useMapChoice } from './MapPicker';
+import { RoomBrowser, mapLabel, useRooms, versionMessage } from './RoomBrowser';
 import type { Session } from './App';
 import { Brand } from './Brand';
 import { friendlyError } from './errors';
@@ -32,7 +32,7 @@ function roomCodeFor(instanceId: string): string {
   return code;
 }
 
-type Existing = { rules: ModeRules; seed: string } | null;
+type Existing = { rules: ModeRules; map: MapSpec } | null;
 type Tab = 'channel' | 'rooms' | 'leaderboard';
 
 interface Props {
@@ -50,8 +50,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
   /** Which listed room's Join button should spin (Open rooms tab) */
   const [joiningCode, setJoiningCode] = useState('');
   const [tab, setTab] = useState<Tab>('channel');
-  const [seed, setSeed] = useState(randomSeed);
-  const map = useMemo(() => (seed ? generateMap(seed) : null), [seed]);
+  const mapChoice = useMapChoice();
   const { rooms, failed: roomsFailed, retry: retryRooms } = useRooms();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -85,15 +84,16 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
       const playerId = randomId();
       // Someone may have started the match since we looked; then we just join theirs.
       const created = existing ? false
-        : await createRoomWithCode(roomCode, 'Discord match', rules, seed || randomSeed(), discord.name, playerId);
+        : await createRoomWithCode(roomCode, 'Discord match', rules, mapChoice.spec(), discord.name, playerId);
       const setup = await getRoomSetup(roomCode);
       if (!setup) throw new Error('Could not start the match. Try again.');
+      if (!isPlayableSpec(setup.map)) throw new Error(versionMessage(setup.map.gen));
       // We lost the race to start: the mode we picked wasn't used.
       const notice = !existing && !created && setup.rules.name !== rules.name
         ? `Someone started first — you joined their ${setup.rules.name} match`
         : undefined;
       onEnter({
-        roomCode, playerId, name: discord.name, seed: setup.seed, profileId: discordProfileId(discord.userId), guildId: discord.guildId, ...(notice ? { notice } : {}),
+        roomCode, playerId, name: discord.name, map: setup.map, profileId: discordProfileId(discord.userId), guildId: discord.guildId, ...(notice ? { notice } : {}),
       });
     } catch (err) {
       console.error(err);
@@ -113,7 +113,8 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
     try {
       const setup = await getRoomSetup(normalized);
       if (!setup) throw new Error(`Room ${normalized} doesn't exist.`);
-      onEnter({ roomCode: normalized, playerId: randomId(), name: discord.name, seed: setup.seed, profileId: discordProfileId(discord.userId), guildId: discord.guildId });
+      if (!isPlayableSpec(setup.map)) throw new Error(versionMessage(setup.map.gen));
+      onEnter({ roomCode: normalized, playerId: randomId(), name: discord.name, map: setup.map, profileId: discordProfileId(discord.userId), guildId: discord.guildId });
     } catch (err) {
       console.error(err);
       setError(friendlyError(err));
@@ -179,13 +180,20 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
                     <div className="match-info">
                       <span className={`mode-badge ${existing.rules.base}`}>{existing.rules.short}</span>
                       <div>
-                        <strong>{existing.rules.name}</strong> on <strong>{mapName(existing.seed)}</strong>
+                        <strong>{existing.rules.name}</strong> on <strong>{mapLabel(existing.map)}</strong>
                         <p className="muted">A match is running in this voice channel.</p>
                       </div>
                     </div>
-                    <button className="primary create-button" disabled={busy} onClick={() => void play()}>
-                      {busy ? <><span className="spinner" aria-hidden="true" />Joining…</> : 'Join match'}
-                    </button>
+                    {isPlayableSpec(existing.map) ? (
+                      <button className="primary create-button" disabled={busy} onClick={() => void play()}>
+                        {busy ? <><span className="spinner" aria-hidden="true" />Joining…</> : 'Join match'}
+                      </button>
+                    ) : (
+                      <div className="warning version-notice" role="alert">
+                        {versionMessage(existing.map.gen)}
+                        {existing.map.gen > GENERATOR_VERSION && <button type="button" className="primary" onClick={() => location.reload()}>Restart</button>}
+                      </div>
+                    )}
                     <p className="error">{error}</p>
                   </div>
                 ) : (
@@ -197,25 +205,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
                     <div className="create-side">
                       <div className="field">
                         <span>Map</span>
-                        <div className="map-picker stacked">
-                          {map ? <MapPreview map={map} mode={rules.base} /> : <div className="map-preview empty">Random map</div>}
-                          <div className="map-controls">
-                            <strong>{map ? layoutName(map) : 'Surprise me'}</strong>
-                            <div className="row">
-                              <input
-                                className="seed-input"
-                                value={seed}
-                                onChange={(e) => setSeed(normalizeSeed(e.target.value))}
-                                maxLength={SEED_MAX_LENGTH}
-                                placeholder="Seed"
-                                aria-label="Map seed"
-                                autoComplete="off"
-                              />
-                              <button type="button" title="New random map" aria-label="New random map" onClick={() => setSeed(randomSeed())}>🎲</button>
-                            </div>
-                            <small className="muted">Same seed, same map.</small>
-                          </div>
-                        </div>
+                        <MapPicker choice={mapChoice} mode={rules.base} hint="Same seed, same map." />
                       </div>
                       <button className="primary create-button" disabled={busy} onClick={() => void play()}>
                         {busy ? <><span className="spinner" aria-hidden="true" />Starting…</> : `Start ${rules.name}`}
