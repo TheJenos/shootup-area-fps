@@ -24,8 +24,11 @@ function saveSize(size: MapSize): void {
   } catch { /* storage unavailable */ }
 }
 
-/** The map being chosen: a seed (blank means a random one when the room is made) and a size. */
-export function useMapChoice(): {
+/**
+ * The map being chosen: a seed (blank means a random one when the room is made) and a size.
+ * @param initial start from this map (e.g. the one being played) rather than a random one
+ */
+export function useMapChoice(initial?: MapSpec): {
   seed: string;
   setSeed(seed: string): void;
   size: MapSize;
@@ -33,8 +36,8 @@ export function useMapChoice(): {
   /** The spec to create the room with (a fresh random seed if none was given) */
   spec(): MapSpec;
 } {
-  const [seed, setSeed] = useState(randomSeed);
-  const [size, setSizeState] = useState(loadSize);
+  const [seed, setSeed] = useState(() => initial?.seed ?? randomSeed());
+  const [size, setSizeState] = useState(() => initial?.size ?? loadSize());
   const setSize = (s: MapSize) => {
     setSizeState(s);
     saveSize(s);

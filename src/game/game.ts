@@ -35,7 +35,7 @@ import { MomentTracker } from './moments';
 import { ReplayDirector, ReplayRecorder } from './replay';
 import { RoomConnection, randomId } from '../net/network';
 import { recordRound } from '../net/leaderboard';
-import { baseRules, goalOf, type ModeRules } from './rules';
+import { baseRules, goalOf, normalizeRules, sameRules, type ModeRules } from './rules';
 import * as sfx from './audio';
 import { actionFor, keyFor, keyLabel, settings, type Action, type Quality } from './settings';
 import { IN_DISCORD } from '../discord/patch';
@@ -359,6 +359,7 @@ export class Game {
       onPickupAdded: (id, pickup) => this.pickups.add(id, pickup),
       onPickupRemoved: (id) => this.pickups.remove(id),
       onGame: (game) => this.onGame(game),
+      onOwner: (id, ownerName) => this.hud.update({ owner: { name: ownerName, me: id === playerId } }),
       onConnection: (connected) => this.onConnection(connected),
     });
 
@@ -1311,6 +1312,11 @@ export class Game {
       if (!sameMap(spec, this.mapSpec) || !this.map) this.loadMap(spec);
       else if (first || next.mapHash !== prev.mapHash) this.checkMapHash();
     }
+    // The owner changed the mode: switch before the new round respawns us.
+    if (next.rules) {
+      const rules = normalizeRules(next.rules, next.rules.base);
+      if (!sameRules(rules, this.rules)) this.setRules(rules, !first);
+    }
     // Build the next round's map while the results are up.
     if (next.ended?.nextSeed) prefetchMap({ ...this.mapSpec, seed: normalizeSeed(next.ended.nextSeed) || CLASSIC_SEED });
 
@@ -1432,6 +1438,42 @@ export class Game {
     const map = this.hud.get().map;
     this.hud.toast(`Round ${this.game.round + 1}${map ? ` · ${map.name}` : ''} — fight!`);
     sfx.playRoundStart();
+  }
+
+  /**
+   * Play by new rules (the owner restarted the match with another mode). Teams and the flags come
+   * and go with the mode; our stats and spawn are reset by the new round that comes with it.
+   * @param announce say so (not when we find a room already on other rules as we join)
+   */
+  private setRules(rules: ModeRules, announce: boolean): void {
+    const wasCtf = this.mode === 'ctf';
+    this.rules = rules;
+    this.mode = rules.base;
+    this.applyRules();
+    if (MODES[this.mode].teams && !this.team) {
+      // Everyone picks at the same moment, so split by sorted id rather than by who's on which team now.
+      const ids = Object.keys({ ...this.players, [this.playerId]: true }).sort();
+      this.setTeam(ids.indexOf(this.playerId) % 2 === 0 ? 'red' : 'blue');
+      void this.net.sendState({ team: this.team!, color: this.color });
+    } else if (!MODES[this.mode].teams && this.team) {
+      this.team = null;
+      this.color = colorFor(this.playerId);
+      this.hud.update({ team: null });
+      void this.net.sendState({ team: null, color: this.color });
+    }
+    if (this.mode === 'ctf' && !this.flagField) this.flagField = new FlagField(this.scene);
+    else if (this.mode !== 'ctf' && wasCtf) {
+      this.flagField?.dispose();
+      this.flagField = null;
+    }
+    this.hud.update({ mode: this.mode, rules });
+    if (announce) this.hud.announce(rules.name.toUpperCase(), goalOf(rules));
+  }
+
+  /** Room owner only (the pause menu offers it): end this round now and start over with `rules` on `map`. */
+  async restartMatch(rules: ModeRules, map: MapSpec): Promise<void> {
+    if (!this.hud.get().owner?.me) return;
+    await this.net.restartMatch(rules, map, this.net.serverNow());
   }
 
   /** The last-30-seconds music: on while the clock is in the red, faster as it runs out. */

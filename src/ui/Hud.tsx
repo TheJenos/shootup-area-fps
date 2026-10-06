@@ -12,6 +12,7 @@ import { InventoryPanel } from './InventoryPanel';
 import { TouchControls } from './TouchControls';
 import { TouchIntro } from './TouchIntro';
 import { PauseMenu } from './PauseMenu';
+import { MatchSetup } from './MatchSetup';
 import { GUNS } from '../game/guns';
 import type { GunKind } from '../types';
 import { safeColor } from './colors';
@@ -69,6 +70,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
   const hud = useHud(game);
   const { hudScale, showFps } = useSettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(false);
   // Phones: the controls guide, once.
   const [intro, setIntro] = useState(() => game.touch && !readFlag(TOUCH_INTRO_KEY));
   // "Connecting…" that drags on gets a way out.
@@ -208,13 +210,16 @@ export function Hud({ game, roomCode, onLeave }: Props) {
 
       {hud.paused && !intro && (settingsOpen
         ? <SettingsPanel onClose={() => setSettingsOpen(false)} />
-        : (
+        : setupOpen && hud.owner?.me
+          ? <MatchSetup game={game} hud={hud} onClose={() => setSetupOpen(false)} />
+          : (
           <PauseMenu
             game={game}
             hud={hud}
             roomCode={roomCode}
             onLeave={onLeave}
             onSettings={() => setSettingsOpen(true)}
+            onMatchSetup={() => setSetupOpen(true)}
             onIntro={game.touch ? () => setIntro(true) : undefined}
           />
         ))}

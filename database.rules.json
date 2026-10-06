@@ -20,6 +20,9 @@
         "mode": {
           ".validate": "newData.val() === 'ffa' || newData.val() === 'tdm' || newData.val() === 'ctf' || newData.val() === 'gungame' || newData.val() === 'sniper' || newData.val() === 'snipertdm'"
         },
+        "hostId": {
+          ".validate": "newData.isString() && newData.val().length <= 16"
+        },
         "members": {
           "$pid": {
             ".validate": "newData.isString() && newData.val().length <= 16"

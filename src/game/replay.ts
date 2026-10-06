@@ -159,6 +159,8 @@ export class ReplayDirector {
   private time: number;
   private eventIndex = 0;
   private orbit = 0;
+  /** Where each flag is at the replay's current time, so carriers' stand-ins stow their guns */
+  private flags: Partial<Record<Team, FlagPlacement>> = {};
 
   constructor(opts: ReplayOptions) {
     this.opts = opts;
@@ -181,8 +183,8 @@ export class ReplayDirector {
     }
     this.eventIndex = recorder.events.findIndex((e) => e.t > this.start);
     if (this.eventIndex < 0) this.eventIndex = recorder.events.length;
-    const flags = recorder.flagsAt(this.start);
-    for (const team of TEAMS) opts.flagField?.set(team, flags[team] ?? { at: 'base' });
+    this.flags = recorder.flagsAt(this.start);
+    for (const team of TEAMS) opts.flagField?.set(team, this.flags[team] ?? { at: 'base' });
   }
 
   /** Where a carried flag should be drawn during the replay */
@@ -208,6 +210,7 @@ export class ReplayDirector {
       if (pose) {
         ghost.setData({ x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw, pitch: pose.pitch, alive: pose.alive, stance: pose.stance ?? 'stand', aim: !!pose.aim });
       }
+      ghost.setCarrying(TEAMS.some((t) => { const f = this.flags[t]; return f?.at === 'carried' && f.carrier === id; }));
       ghost.update(dt);
     }
   }
@@ -257,6 +260,7 @@ export class ReplayDirector {
         grenades.launch(`replay:${e.id}`, arc);
         smoke?.spawn(`replay:${e.id}`, arc.end);
       } else if (e.kind === 'flag') {
+        this.flags[e.team] = e.placement;
         flagField?.set(e.team, e.placement);
       }
     }

@@ -250,6 +250,8 @@ export interface LobbyRecord {
   /** Map generator version (GENERATOR_VERSION); missing on rooms made before versions existed (1) */
   gen?: number;
   host: string;
+  /** The room owner's player id; missing on rooms made before owners existed */
+  hostId?: string;
   createdAt: number;
   members?: Record<string, string>;
 }
@@ -288,6 +290,8 @@ export interface GameRecord {
   /** Team modes: kills (TDM) or captures (CTF) */
   score?: Partial<Record<Team, number>>;
   flags?: Partial<Record<Team, FlagRecord>>;
+  /** The mode rules, once the owner has changed them mid-room; missing means the lobby's */
+  rules?: ModeRules;
 }
 
 /** A GameRecord with the parts Firebase may leave out filled in. */

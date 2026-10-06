@@ -176,6 +176,8 @@ export interface HudState {
   mode: GameMode;
   /** Our team, in team modes */
   team: Team | null;
+  /** Who owns the room (they can restart it with another mode or map); null until known */
+  owner: { name: string; me: boolean } | null;
   score: ScoreView;
   /** CTF only */
   flags: Record<Team, FlagStatus> | null;
@@ -234,6 +236,7 @@ const initialState: HudState = {
   mapError: null,
   mode: 'ffa',
   team: null,
+  owner: null,
   score: { red: 0, blue: 0, mine: 0, leader: null },
   flags: null,
   clock: null,

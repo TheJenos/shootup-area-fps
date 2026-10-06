@@ -339,7 +339,8 @@ export class RemotePlayer {
     this.target.copy(next);
     this.targetYaw = data.yaw ?? this.targetYaw;
     this.targetPitch = data.pitch ?? this.targetPitch;
-    if (data.color || data.team) this.setColor(data.color ?? this.colorNow, data.team ?? this.teamNow);
+    // A colour comes with the whole record, so a missing team then means none (the owner switched to free-for-all).
+    if (data.color || data.team) this.setColor(data.color ?? this.colorNow, data.color ? data.team : this.teamNow);
     if (data.name) this.tag.setName(data.name);
     this.shield.visible = !!data.shield && this.alive;
     if (data.cloak !== undefined) this.cloak = data.cloak;

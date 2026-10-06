@@ -14,9 +14,9 @@ import type {
 /*
  * Database layout
  *
- *   lobby/{code}                 { name, mode, rules, seed, size, gen, host, createdAt, members: { pid: name } }
+ *   lobby/{code}                 { name, mode, rules, seed, size, gen, host, hostId, createdAt, members: { pid: name } }
  *   rooms/{code}/players/{pid}   { name, color, team, x, y, z, yaw, pitch, hp, alive, kills, deaths }
- *   rooms/{code}/game            { round, seed, size, gen, mapHash, ended, score, flags }  round state, only changed by transaction
+ *   rooms/{code}/game            { round, seed, size, gen, mapHash, rules, ended, score, flags }  round state, only changed by transaction
  *   rooms/{code}/events/{eid}    { type: 'shot' | 'kill' | 'grenade' | 'blast', ... }  (auto-removed after a few seconds)
  *   rooms/{code}/pickups/{id}    { type, x, z }  abilities on the map; spawned by one player, claimed by transaction
  *
@@ -65,6 +65,7 @@ export async function createRoom(
     rules,
     ...mapFields(map),
     host,
+    hostId: playerId,
     createdAt: serverTimestamp(),
     members: { [playerId]: host },
   });
@@ -84,7 +85,7 @@ export async function createRoomWithCode(
   const result = await runTransaction(ref(db(), `lobby/${code}`), (current: LobbyRecord | null) => {
     // A record without members is a leftover from an abandoned room: take it over.
     if (current && Object.keys(current.members || {}).length > 0) return undefined;
-    return { name, mode: rules.base, rules, ...mapFields(map), host, createdAt: Date.now(), members: { [playerId]: host } };
+    return { name, mode: rules.base, rules, ...mapFields(map), host, hostId: playerId, createdAt: Date.now(), members: { [playerId]: host } };
   }, { applyLocally: false });
   if (!result.committed) return false;
   await set(ref(db(), `rooms/${code}/game`), { round: 0, ...mapFields(map), startedAt: serverTimestamp() });
@@ -124,6 +125,8 @@ export interface RoomHandlers {
   onPickupAdded(id: string, pickup: PickupRecord): void;
   onPickupRemoved(id: string): void;
   onGame(game: GameState): void;
+  /** Who owns the room now (see RoomConnection.join) */
+  onOwner?(id: string, name: string): void;
   /** The connection to the server came or went */
   onConnection?(connected: boolean): void;
 }
@@ -185,14 +188,21 @@ export class RoomConnection {
 
     // Whoever is alone in the room arranges for the whole room to be deleted
     // server-side when they disconnect, so closing the tab still cleans up.
+    let members: Record<string, string> = {};
+    let hostId: string | null = null;
     this.unsubs.push(
       onValue(ref(db(), `lobby/${this.code}/members`), (snap) => {
-        const members = (snap.val() || {}) as Record<string, string>;
+        members = (snap.val() || {}) as Record<string, string>;
         const alone = Object.keys(members).every((id) => id === this.playerId);
         if (alone !== this.lastOneHere) {
           this.lastOneHere = alone;
           this.armDisconnect().catch((err) => console.warn('onDisconnect update failed', err));
         }
+        this.updateOwner(members, hostId);
+      }),
+      onValue(ref(db(), `lobby/${this.code}/hostId`), (snap) => {
+        hostId = typeof snap.val() === 'string' ? (snap.val() as string) : null;
+        this.updateOwner(members, hostId);
       }),
     );
 
@@ -217,6 +227,24 @@ export class RoomConnection {
     this.unsubs.push(onChildAdded(fromNow, (s) => (countNet('down', s.val()), onEvent(s.val() as GameEvent))));
   }
 
+  /**
+   * The owner is whoever made the room. Once they've left (or in rooms from before owners), the
+   * member with the lowest id takes over and records it, so it doesn't move again when someone joins.
+   */
+  private updateOwner(members: Record<string, string>, hostId: string | null): void {
+    const ids = Object.keys(members);
+    if (!ids.length) return;
+    if (hostId && members[hostId] !== undefined) {
+      this.handlers.onOwner?.(hostId, members[hostId]);
+      return;
+    }
+    const heir = ids.sort()[0]!;
+    if (heir === this.playerId) {
+      update(this.lobbyRef, { hostId: heir, host: members[heir] })
+        .catch((err: unknown) => console.warn('Could not take over the room', err));
+    }
+  }
+
   private async registerPresence(): Promise<void> {
     const state = this.getFullState();
     await this.armDisconnect();
@@ -235,8 +263,8 @@ export class RoomConnection {
     }
   }
 
-  /** Partial update of our own player record (position, hp, ...). */
-  sendState(partial: Partial<PlayerState>): Promise<void> {
+  /** Partial update of our own player record (position, hp, ...); null removes a field. */
+  sendState(partial: { [K in keyof PlayerState]?: PlayerState[K] | null }): Promise<void> {
     countNet('up', partial);
     return update(this.playerRef, partial);
   }
@@ -290,6 +318,31 @@ export class RoomConnection {
   /** Keep the lobby list showing the map that's currently being played. */
   setLobbyMap(map: MapSpec): Promise<void> {
     return update(ref(db(), `lobby/${this.code}`), mapFields(map));
+  }
+
+  /**
+   * The owner's restart: end the round now (no results, nothing ranked) and start a new one with
+   * `rules` on `map`. The lobby list follows along.
+   */
+  async restartMatch(rules: ModeRules, map: MapSpec, now: number): Promise<boolean> {
+    const committed = await this.mutateGame((g) => {
+      g.round += 1;
+      Object.assign(g, mapFields(map));
+      g.rules = rules;
+      g.startedAt = now;
+      delete g.mapHash;
+      delete g.ended;
+      g.score = {};
+      g.flags = {};
+      return true;
+    });
+    if (committed) {
+      await Promise.all([
+        this.clearPickups(),
+        update(this.lobbyRef, { mode: rules.base, rules, ...mapFields(map) }),
+      ]);
+    }
+    return committed;
   }
 
   /** Room name, mode and creation time. */
