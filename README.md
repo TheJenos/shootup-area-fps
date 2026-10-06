@@ -64,6 +64,55 @@ One-time setup:
 3. If a deploy fails with a permission error about checking enabled APIs, also give the account the
    **Service Usage Consumer** role.
 
+### End-to-end tests
+
+`e2e/` holds Playwright tests that play the game in real browsers against the database emulator. They cover:
+
+- the lobby: name, rooms, search, join by code, invites, every preset mode, custom modes, settings and the leaderboard
+- matches: joining and leaving, movement, shooting and damage, kills and respawns
+- each mode's rules, scoring and round ends, team play and flags
+- pickups, abilities and deployables, spectating, connection loss, touch controls and the Discord launch
+
+```bash
+npm run test:e2e        # starts the emulator, the game (vite --mode e2e) and the tests
+npm run test:e2e:ui     # the same in Playwright's UI mode, to watch and step through them
+```
+
+Run `npx playwright install chromium` once first. It needs Java, like the emulator. If an emulator is already
+running on :9000 (from `npm run emulator`), `firebase emulators:exec` can't start another. Run
+`npx playwright test` instead (optionally `-g "<test name>"`) and it uses the running one.
+
+How they work:
+
+- **No GPU needed.** Chromium renders WebGL in software (SwiftShader). The tests seed `fps-settings` with low
+  quality and no sound, and the sound files are stubbed out.
+- **`vite --mode e2e`** reads `.env.e2e`. It points the game at the emulator and sets `VITE_E2E`, which
+  exposes the running game as `window.game`, as dev builds already do. Production builds never set it.
+- **`game.test`** (in `game.ts`) stands in for what headless browsers can't do reliably: pointer lock and
+  mouse aiming. `play()` starts taking input, `aimAt(id, 'head')` + `fire()` shoot, and `teleport()`
+  moves a player. `state()` reads health, kills, team, flags and more. Everything else goes through the real
+  inputs: keys, the menus and the network.
+- **Rooms are written straight into the database** (`e2e/support/db.ts`) with exact rules, and pickups are
+  off unless a test turns them on. Each test deletes its rooms afterwards, so tests run in parallel.
+- **The `duel` fixture** (`e2e/support/fixtures.ts`) gives a test two players, Alice and Bob, in their own
+  browser contexts. They face each other 8 m apart on the classic map, ready to play:
+
+```ts
+test('a headshot takes 50', async ({ duel }) => {
+  const { alice, bob } = await duel(rules('ffa'));
+  await alice.shoot(bob, { part: 'head' });
+  await expect.poll(async () => (await bob.state()).hp).toBe(50);
+});
+```
+
+Wait on state, not on time. Frame rates are low in software rendering and the game caps each frame's time
+step, so game time runs slower than the wall clock. Use `expect.poll`, and compare speeds and heights rather
+than distances. Round clocks run on the server's time: `expireClock()` moves a round's start back instead of
+waiting it out.
+
+`.github/workflows/e2e.yml` runs them on pull requests and pushes that change the game. On failure it uploads
+the HTML report, with traces and videos.
+
 ## Game modes
 
 Every mode is one of three **base types**, which decide teams, flags and how points are scored, plus a set of
@@ -648,7 +697,7 @@ TypeScript (strict) + React for the UI, bundled by Vite. The 3D game itself is p
 the engine runs its own render loop and publishes HUD state to a small store (`game/hudStore.ts`)
 that React reads with `useSyncExternalStore`, so React never re-renders per frame.
 
-`npm run typecheck` runs `tsc`; `npm run build` typechecks and then builds.
+`npm run typecheck` runs `tsc` on the game and the e2e tests; `npm run build` typechecks the game and then builds.
 
 ```
 src/

@@ -43,7 +43,7 @@ import { StepTracker, type StepEvent } from './footsteps';
 import { hints, type HintId } from './hints';
 import { PERF_DEBUG, perfStats } from './perfStats';
 import type {
-  GameEvent, GameMode, GameState, GunKind, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, Team, Vec3Tuple, WeaponKind,
+  AbilityType, GameEvent, GameMode, GameState, GunKind, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, Team, Vec3Tuple, WeaponKind,
 } from '../types';
 
 const SEND_INTERVAL = 1 / 15;
@@ -514,6 +514,106 @@ export class Game {
 
   setTouchScoreboard(open: boolean): void {
     this.hud.update({ scoreboardOpen: open, ...(open ? { scoreboard: this.scoreRows() } : {}) });
+  }
+
+  // ---------------------------------------------------------------- end-to-end tests
+
+  /**
+   * Handles for the Playwright tests (e2e/), reached through `window.game.test`, which is only set in dev
+   * and `--mode e2e` builds. Headless browsers can't be relied on for pointer lock or mouse movement, so
+   * these stand in for them; everything else (keys, menus, the network) still goes through the real paths.
+   */
+  get test() {
+    return {
+      /** Start taking input, as a click into the game would. */
+      play: () => {
+        if (!this.joined) return false;
+        this.locked = true;
+        this.player.setEnabled(true);
+        this.hud.update({ paused: false });
+        return true;
+      },
+      /** Stand at (x, y, z) facing `yaw`, and tell everyone straight away. */
+      teleport: (x: number, y: number, z: number, yaw = this.player.yaw) => {
+        this.player.teleport(new THREE.Vector3(x, y, z), yaw);
+        this.lastPose = null;
+        this.sendTimer = SEND_INTERVAL;
+      },
+      /** Look at a remote player's body or head. False if they aren't in sight (not joined, or dead). */
+      aimAt: (id: string, part: 'body' | 'head' = 'body') => {
+        const box = this.remotes.get(id)?.hitboxes[part === 'head' ? 1 : 0];
+        if (!box) return false;
+        this.aimAtPoint(box.getWorldPosition(new THREE.Vector3()));
+        return true;
+      },
+      aimAtPoint: (x: number, y: number, z: number) => this.aimAtPoint(new THREE.Vector3(x, y, z)),
+      /** One pull of the trigger (or one flag swing). False if the gun couldn't fire (cooling down, reloading, empty). */
+      fire: () => {
+        if (!this.alive || !this.joined || this.roundOver) return false;
+        let fired = false;
+        if (this.carryingFlag()) {
+          fired = this.weapon.trySwing(MELEE_COOLDOWN);
+          if (fired) this.swingFlag();
+        } else {
+          fired = this.weapon.tryFire();
+          if (fired) this.shoot();
+        }
+        this.weapon.releaseTrigger();
+        return fired;
+      },
+      /** Put an ability in the first free slot, as picking one up would. */
+      give: (type: AbilityType) => {
+        const slot = this.inventory.add(type);
+        this.lastSlotsKey = '';
+        return slot;
+      },
+      /** Pretend we joined long ago (the leaderboard skips rounds a player only just joined). */
+      backdateJoin: (ms: number) => { this.joinedAt -= ms; },
+      remoteIds: () => [...this.remotes.keys()],
+      /** Where we draw a remote player, or null if they aren't in the room */
+      remotePos: (id: string) => this.remotes.get(id)?.position.toArray() ?? null,
+      /** Whether a remote player's model has caught up with their last reported position. */
+      remoteSettled: (id: string) => {
+        const r = this.remotes.get(id);
+        return !!r && r.position.distanceTo(r.target) < 0.05;
+      },
+      state: () => ({
+        id: this.playerId,
+        hp: this.hp,
+        alive: this.alive,
+        kills: this.kills,
+        deaths: this.deaths,
+        team: this.team,
+        locked: this.locked,
+        spectating: this.spectating,
+        leader: this.isLeader(),
+        pos: this.player.position.toArray(),
+        yaw: this.player.yaw,
+        onGround: this.player.onGround,
+        speed: this.player.horizontalSpeed,
+        stance: this.player.stance,
+        gun: this.weapon.gun,
+        special: this.weapon.special,
+        ammo: this.weapon.ammo,
+        reserve: this.weapon.reserve,
+        carryingFlag: this.carryingFlag(),
+        shield: this.shieldHp,
+        slots: this.inventory.view(performance.now()).map((s) => s?.type ?? null),
+        mapSeed: this.mapSeed,
+        game: this.game,
+        rules: this.rules,
+      }),
+    };
+  }
+
+  private aimAtPoint(p: THREE.Vector3): void {
+    const eye = this.camera.getWorldPosition(new THREE.Vector3());
+    const d = p.sub(eye);
+    this.player.yaw = Math.atan2(-d.x, -d.z);
+    this.player.pitch = Math.atan2(d.y, Math.hypot(d.x, d.z));
+    // shoot() reads the camera, which otherwise only follows on the next frame.
+    this.camera.rotation.set(this.player.pitch, this.player.yaw, 0);
+    this.camera.updateMatrixWorld();
   }
 
   /**

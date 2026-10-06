@@ -6,7 +6,7 @@ import { friendlyError } from './errors';
 
 declare global {
   interface Window {
-    /** Exposed in dev builds for poking at the game from the console. */
+    /** Exposed in dev builds for poking at the game from the console, and in `--mode e2e` builds for the e2e tests. */
     game?: Game;
   }
 }
@@ -29,7 +29,7 @@ export function GameView({ session, onExit }: Props) {
     if (!host) return;
     const instance = new Game({ host, ...session });
     setGame(instance);
-    if (import.meta.env.DEV) window.game = instance;
+    if (import.meta.env.DEV || import.meta.env.VITE_E2E === 'true') window.game = instance;
 
     instance.start()
       .then(() => { if (session.notice) instance.hud.pushInfo(session.notice); })
