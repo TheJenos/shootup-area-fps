@@ -1,6 +1,3 @@
-// First: inside Discord this reroutes network traffic through Discord's proxy, and Firebase
-// captures the WebSocket constructor as soon as it loads.
-import './discord/patch';
 import { createRoot } from 'react-dom/client';
 import { App } from './ui/App';
 import { watchReducedMotion } from './game/settings';
