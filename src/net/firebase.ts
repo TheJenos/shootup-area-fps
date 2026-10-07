@@ -1,5 +1,6 @@
 import { initializeApp, type FirebaseOptions } from 'firebase/app';
-import { getDatabase, connectDatabaseEmulator, type Database } from 'firebase/database';
+import { getDatabase, connectDatabaseEmulator, forceWebSockets, type Database } from 'firebase/database';
+import { IN_DISCORD } from '../discord/patch';
 
 const env = import.meta.env;
 const useEmulator = env.VITE_FIREBASE_EMULATOR === 'true';
@@ -15,6 +16,11 @@ const config: FirebaseOptions = useEmulator
     };
 
 export const isConfigured = Boolean(config.databaseURL);
+
+// After a WebSocket that never got healthy (e.g. the Activity was closed mid-connect), Firebase
+// starts the next session with long-polling, which loads <script> tags from the database host.
+// Discord's proxy can't reroute those and its CSP blocks them, so every read hangs. Never poll.
+if (IN_DISCORD) forceWebSockets();
 
 const instance: Database | null = isConfigured ? getDatabase(initializeApp(config)) : null;
 
