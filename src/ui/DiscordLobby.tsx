@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { connectDiscord, type DiscordSession } from '../discord/discord';
+import { connectDiscord, step, type DiscordSession } from '../discord/discord';
 import { createRoomWithCode, getRoomSetup, randomId } from '../net/network';
 import { initAudio } from '../game/audio';
 import { loadCharacter } from '../game/character';
@@ -66,7 +66,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
     loadPhysics().catch(() => {});
     connectDiscord()
       .then(async (d) => {
-        const setup = await getRoomSetup(roomCodeFor(d.instanceId));
+        const setup = await step('loading this channel\'s match from the database', getRoomSetup(roomCodeFor(d.instanceId)));
         if (cancelled) return;
         setDiscord(d);
         setExisting(setup);
