@@ -19,6 +19,17 @@ interface Props {
   onExit(error?: string): void;
 }
 
+/** The last game's leave(); it runs after the lobby is back on screen. */
+let leaving: Promise<void> = Promise.resolve();
+
+/**
+ * Resolves once the previous game has left its room. Read rooms only after this: leaving can
+ * still remove us, or delete the room if we were the last one in it.
+ */
+export function afterLeave(): Promise<void> {
+  return leaving;
+}
+
 /** Owns the Game instance for as long as the player is in a room. */
 export function GameView({ session, onExit }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -54,7 +65,7 @@ export function GameView({ session, onExit }: Props) {
       cancelled = true;
       if (!instance) return;
       if (window.game === instance) window.game = undefined;
-      instance.dispose().catch((err: unknown) => console.warn('Failed to leave room cleanly', err));
+      leaving = instance.dispose().catch((err: unknown) => console.warn('Failed to leave room cleanly', err));
     };
   }, [session]);
 

@@ -19,6 +19,7 @@ import { friendlyError } from './errors';
 import { Leaderboard } from './Leaderboard';
 import { browserProfileId } from '../net/leaderboard';
 import { SettingsPanel } from './SettingsPanel';
+import { afterLeave } from './GameView';
 
 const NAME_KEY = 'fps-name';
 
@@ -123,6 +124,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
     setJoiningCode(normalized);
     return run('join', async (playerName) => {
       if (!normalized) throw new Error('Enter a room code.');
+      await afterLeave();
       const setup = await getRoomSetup(normalized);
       if (!setup) {
         if (normalized === initialCode) {

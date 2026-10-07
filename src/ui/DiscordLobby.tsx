@@ -18,6 +18,7 @@ import { friendlyError } from './errors';
 import { SettingsPanel } from './SettingsPanel';
 import { Leaderboard } from './Leaderboard';
 import { discordProfileId } from '../net/leaderboard';
+import { afterLeave } from './GameView';
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -66,6 +67,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
     loadPhysics().catch(() => {});
     connectDiscord()
       .then(async (d) => {
+        await afterLeave();
         const setup = await step('loading this channel\'s match from the database', getRoomSetup(roomCodeFor(d.instanceId)));
         if (cancelled) return;
         setDiscord(d);
@@ -82,9 +84,12 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
     setError('');
     try {
       const playerId = randomId();
-      // Someone may have started the match since we looked; then we just join theirs.
-      const created = existing ? false
-        : await createRoomWithCode(roomCode, 'Discord match', rules, mapChoice.spec(), discord.name, playerId);
+      await afterLeave();
+      // Always try: the match we saw may have ended since (its last player left), and then we
+      // start it again as it was. If someone else started one since we looked, we join theirs.
+      const created = await createRoomWithCode(
+        roomCode, 'Discord match', existing?.rules ?? rules, existing?.map ?? mapChoice.spec(), discord.name, playerId,
+      );
       const setup = await getRoomSetup(roomCode);
       if (!setup) throw new Error('Could not start the match. Try again.');
       if (!isPlayableSpec(setup.map)) throw new Error(versionMessage(setup.map.gen));
@@ -111,6 +116,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
     setJoiningCode(normalized);
     setError('');
     try {
+      await afterLeave();
       const setup = await getRoomSetup(normalized);
       if (!setup) throw new Error(`Room ${normalized} doesn't exist.`);
       if (!isPlayableSpec(setup.map)) throw new Error(versionMessage(setup.map.gen));
