@@ -1,6 +1,7 @@
 import { GUN_GAME_LADDER, MODES } from './modes';
-import { GUNS } from './guns';
+import { GUNS } from './gunStats';
 import type { GameMode, GunKind } from '../types';
+import type { BotSkill } from './bot/brain';
 
 /*
  * Game modes = a base type (FFA, TDM or CTF: teams, flags, how points are scored) plus a set of
@@ -36,6 +37,9 @@ export interface ModeRules {
   speed: number;
   /** Gravity multiplier (lower = higher, floatier jumps) */
   gravity: number;
+  /** Bots fill the room up to this many players (0: no bots); the room owner plays them */
+  bots: number;
+  botSkill: BotSkill;
 }
 
 export const LIMITS = {
@@ -45,7 +49,15 @@ export const LIMITS = {
   respawn: [1, 10],
   speed: [0.7, 1.5],
   gravity: [0.3, 1.5],
+  bots: [0, 12],
 } as const;
+
+export const BOT_SKILL_OPTIONS: { value: BotSkill; label: string }[] = [
+  { value: 'easy', label: 'Easy' },
+  { value: 'normal', label: 'Normal' },
+  { value: 'hard', label: 'Hard' },
+  { value: 'expert', label: 'Expert' },
+];
 
 export const LOADOUTS: { value: Loadout; label: string }[] = [
   { value: 'standard', label: 'Standard (rifle + pickups)' },
@@ -62,6 +74,7 @@ export function baseRules(base: GameMode): ModeRules {
   return {
     base, name: def.name, short: def.short, loadout: 'standard', guns: true, abilities: true, ammo: true,
     limit: def.limit, minutes: def.timeLimit / 60, health: 100, headshotsOnly: false, respawn: 3, speed: 1, gravity: 1,
+    bots: 0, botSkill: 'normal',
   };
 }
 
@@ -136,6 +149,8 @@ export function normalizeRules(raw: unknown, fallbackMode: unknown = 'ffa'): Mod
     respawn: Math.round(clamp(r.respawn, LIMITS.respawn, 3)),
     speed: Math.round(clamp(r.speed, LIMITS.speed, 1) * 20) / 20,
     gravity: Math.round(clamp(r.gravity, LIMITS.gravity, 1) * 20) / 20,
+    bots: Math.round(clamp(r.bots, LIMITS.bots, 0)),
+    botSkill: BOT_SKILL_OPTIONS.some((o) => o.value === r.botSkill) ? r.botSkill! : 'normal',
   };
 }
 
@@ -205,3 +220,7 @@ export function deleteCustomMode(name: string): ModeRules[] {
 }
 
 export const sameRules = (a: ModeRules, b: ModeRules) => JSON.stringify(a) === JSON.stringify(b);
+
+/** The same mode, whatever the bot settings (those are the room's, not the mode's) */
+export const sameMode = (a: ModeRules, b: ModeRules) =>
+  sameRules({ ...a, bots: 0, botSkill: 'normal' }, { ...b, bots: 0, botSkill: 'normal' });

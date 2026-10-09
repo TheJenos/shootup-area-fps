@@ -18,7 +18,10 @@
     "deploy:rules": "firebase deploy --only database --non-interactive",
     "test": "vitest run",
     "test:maps": "npm run check:maps -- --count 40 --golden",
-    "build:character": "node scripts/build-character.mjs"
+    "build:character": "node scripts/build-character.mjs",
+    "train:bots": "rolldown scripts/train-bots.ts --platform node --format esm --file node_modules/.cache/train-bots.mjs --no-codeSplitting --log-level warn && node node_modules/.cache/train-bots.mjs",
+    "eval:bots": "rolldown scripts/eval-bots.ts --platform node --format esm --file node_modules/.cache/eval-bots.mjs --no-codeSplitting --log-level warn && node node_modules/.cache/eval-bots.mjs",
+    "export:bots": "rolldown scripts/export-bots.ts --platform node --format esm --file node_modules/.cache/export-bots.mjs --log-level warn && node node_modules/.cache/export-bots.mjs"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.21.0",

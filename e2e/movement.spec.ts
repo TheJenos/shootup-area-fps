@@ -68,6 +68,29 @@ test.describe('movement', () => {
     await bob.waitForRemote(aliceId, await at());
   });
 
+  test("players can't walk through each other", async ({ duel }) => {
+    // Alice at x 8 facing +x, Bob at x 16 facing her: she walks straight at him.
+    const { alice, bob } = await duel();
+    const bobPos = (await bob.state()).pos;
+    let closest = Infinity;
+    await alice.page.keyboard.down('KeyW');
+    // Until she's up against him and has had a moment to push (slow machines move in smaller steps).
+    let pushing = 0;
+    const end = Date.now() + 15_000;
+    while (Date.now() < end && pushing < 25) {
+      const p = (await alice.state()).pos;
+      const d = Math.hypot(p[0] - bobPos[0], p[2] - bobPos[2]);
+      closest = Math.min(closest, d);
+      if (d < 1.2) pushing++;
+      await alice.page.waitForTimeout(40);
+    }
+    await alice.page.keyboard.up('KeyW');
+    // Two bodies 0.35 m in radius: never closer than about their widths.
+    expect(closest).toBeGreaterThan(0.6);
+    // And she really did reach him (not stopped short by something else).
+    expect(closest).toBeLessThan(1.2);
+  });
+
   test('jump, crouch, sprint and slide', async ({ players, rooms }) => {
     const p = await players.open(uniqueName('Mover'));
     await soloIn(p, await rooms.seed(rules('ffa')));

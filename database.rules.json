@@ -28,6 +28,26 @@
             ".validate": "newData.isString() && newData.val().length <= 16"
           }
         },
+        "bots": {
+          "$slot": {
+            ".validate": "newData.hasChildren(['base', 'skill', 'at'])",
+            "base": {
+              ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 8"
+            },
+            "skill": {
+              ".validate": "newData.val() === 'easy' || newData.val() === 'normal' || newData.val() === 'hard' || newData.val() === 'expert'"
+            },
+            "team": {
+              ".validate": "newData.val() === 'red' || newData.val() === 'blue'"
+            },
+            "at": {
+              ".validate": "newData.isNumber()"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
         "rules": {
           ".validate": "newData.hasChildren(['base', 'name', 'short', 'loadout', 'limit', 'minutes', 'health', 'respawn', 'speed', 'gravity']) && newData.child('base').val() === newData.parent().child('mode').val()",
           "base": {
@@ -71,6 +91,12 @@
           },
           "gravity": {
             ".validate": "newData.isNumber() && newData.val() >= 0.3 && newData.val() <= 1.5"
+          },
+          "bots": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 12"
+          },
+          "botSkill": {
+            ".validate": "newData.val() === 'easy' || newData.val() === 'normal' || newData.val() === 'hard' || newData.val() === 'expert'"
           },
           "$other": {
             ".validate": false

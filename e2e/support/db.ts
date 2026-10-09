@@ -43,6 +43,8 @@ export interface RoomRules {
   respawn: number;
   speed: number;
   gravity: number;
+  bots?: number;
+  botSkill?: 'easy' | 'normal' | 'hard';
 }
 
 const BASE: Record<RoomRules['base'], RoomRules> = {

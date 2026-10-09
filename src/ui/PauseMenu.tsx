@@ -39,6 +39,8 @@ interface Props {
   onSettings(): void;
   /** Room owner: change the mode / map (restarts the round) */
   onMatchSetup(): void;
+  /** Room owner: add, change or remove bots (mid-game) */
+  onBots(): void;
   /** Touch devices: reopen the controls guide */
   onIntro?(): void;
 }
@@ -48,7 +50,7 @@ interface Props {
  * here), on the right what you can do. The match keeps running while it's open, and the status
  * line says so. Clicking the dimmed backdrop resumes; clicking the card doesn't.
  */
-export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onMatchSetup, onIntro }: Props) {
+export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onMatchSetup, onBots, onIntro }: Props) {
   const { bindings } = useSettings();
   const { copy, copied } = useCopyInvite(game, roomCode);
   // The game built this map already: it's in the cache.
@@ -133,6 +135,7 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onMatchSet
             <p className="muted owner">
               {hud.owner.me ? 'You own this room' : <>Owner <strong>{hud.owner.name}</strong></>}
               {hud.owner.me && <button type="button" onClick={onMatchSetup}>Change match</button>}
+              {hud.owner.me && <button type="button" onClick={onBots}>Bots</button>}
             </p>
           )}
         </section>

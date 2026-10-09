@@ -61,6 +61,8 @@ export const GROUP = {
   RAGDOLL: 1 << 2,
   DEBRIS: 1 << 3,
   THROWN: 1 << 4,
+  /** Living players' bodies (ours, others', bots'): characters walk into each other, nothing else hits them */
+  BODY: 1 << 5,
 } as const;
 export function groups(member: number, filter: number): number {
   return ((member & 0xffff) << 16) | (filter & 0xffff);

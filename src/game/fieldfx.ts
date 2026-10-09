@@ -376,6 +376,10 @@ export class MineField {
     return [...this.mines.values()].filter((m) => m.owner === owner).sort((a, b) => a.until - b.until);
   }
 
+  list(): Mine[] {
+    return [...this.mines.values()];
+  }
+
   /** `friendly(owner)`: whether we may see that player's mine lights (ours and our team's). */
   update(serverNow: number, friendly: (owner: string) => boolean): void {
     for (const [id, m] of this.mines) {

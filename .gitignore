@@ -9,3 +9,6 @@ dist
 assets-src/
 test-results
 playwright-report
+
+# Bot training checkpoints (export the policy into public/bots with npm run export:bots)
+/bots/

@@ -62,6 +62,7 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, rules, scor
       <td className="rank">{i + 1}</td>
       <td className="player">
         <span className="dot" style={{ background: safeColor(r.color) }} />
+        {r.bot && <span className="badge bot" title="Bot">BOT</span>}
         {r.name}{r.spectating && <span className="muted"> (spectating)</span>}
         {r === leader && (r.kills > 0 || r.captures > 0) && <span className="crown" title="Top player">👑</span>}
       </td>

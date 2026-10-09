@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot Training</title>
+<style>
+  :root {
+    --bg: #0d1016; --panel: #151a23; --line: #263042; --text: #e6ebf3; --muted: #8c97a8; --accent: #ffb547;
+    --red: #ff4d4d; --blue: #3d8bff; --good: #4ade80; --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+  h1 { margin: 0; font-size: 18px; letter-spacing: 0.3px; }
+  h1 span { color: var(--accent); }
+  .pill { padding: 3px 10px; border-radius: 999px; background: #1e2532; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .pill b { color: var(--text); font-weight: 600; }
+  .phase { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .phase.playing .dot { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  .phase.evaluating .dot { background: #60a5fa; box-shadow: 0 0 8px #60a5fa; animation: pulse 1s infinite alternate; }
+  .phase.learning .dot { background: var(--warn); box-shadow: 0 0 8px var(--warn); animation: pulse 1s infinite alternate; }
+  .phase.offline .dot { background: var(--red); }
+  @keyframes pulse { to { opacity: 0.35; } }
+  .stages { display: flex; gap: 4px; margin-left: auto; }
+  .stage { padding: 3px 9px; border-radius: 6px; font-size: 12px; color: var(--muted); border: 1px solid var(--line); }
+  .stage.done { color: var(--text); border-color: #36425a; }
+  .stage.now { color: #1a1205; background: var(--accent); border-color: transparent; font-weight: 700; }
+  main { display: grid; grid-template-columns: minmax(320px, 560px) 1fr; gap: 16px; padding: 16px 20px 24px; }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-width: 0; }
+  h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
+  h2 small { text-transform: none; letter-spacing: 0; font-size: 12px; }
+  #arena { width: 100%; aspect-ratio: 1; display: block; border-radius: 8px; background: #0a0d12; }
+  .caption { display: flex; justify-content: space-between; gap: 10px; margin: 10px 0 6px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .caption b { color: var(--text); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  td, th { padding: 4px 6px; text-align: left; border-top: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; border-top: none; }
+  td.num, th.num { text-align: right; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; color: var(--muted); font-size: 12px; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 5px; vertical-align: -2px; border: 2px solid; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .chart { background: #10141c; border: 1px solid var(--line); border-radius: 10px; padding: 10px 10px 6px; }
+  .chart .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .chart .name { font-size: 12px; color: var(--muted); }
+  .chart .value { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .chart .hint { font-size: 11px; color: var(--muted); margin: 2px 0 4px; min-height: 15px; }
+  .chart canvas { width: 100%; height: 120px; display: block; }
+  .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+  .parts { display: grid; gap: 4px; }
+  .part { display: grid; grid-template-columns: 90px 1fr 60px; align-items: center; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .part .bar { position: relative; height: 10px; background: #10141c; border-radius: 3px; }
+  .part .bar span { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+  .part .num { text-align: right; }
+  #log { margin-top: 12px; max-height: 180px; overflow: auto; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+  #log div b { color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bot <span>Training</span></h1>
+  <span class="pill phase offline" id="phase"><span class="dot"></span><span id="phase-text">Connecting…</span></span>
+  <span class="pill">Iteration <b id="iter">–</b></span>
+  <span class="pill">Steps <b id="steps">–</b></span>
+  <span class="pill">Speed <b id="sps">–</b></span>
+  <span class="pill">Training time <b id="elapsed">–</b></span>
+  <div class="stages" id="stages"></div>
+</header>
+<main>
+  <section>
+    <h2>Live match <small id="match-meta">waiting for the first match…</small></h2>
+    <canvas id="arena" width="1120" height="1120"></canvas>
+    <div class="caption"><span id="clock">–</span><span id="score">–</span><span id="speed">–</span></div>
+    <table id="board"><thead><tr><th>Player</th><th>Played by</th><th class="num">HP</th><th class="num">K</th><th class="num">D</th></tr></thead><tbody></tbody></table>
+    <div class="legend">
+      <span><i style="border-color:#fff"></i>Learning policy</span>
+      <span><i style="border-color:#c084fc;border-style:dashed"></i>Older snapshot</span>
+      <span><i style="border-color:#fb923c"></i>Scripted bot</span>
+      <span><i style="border-color:#6b7280"></i>Dummy</span>
+    </div>
+  </section>
+  <section>
+    <h2>Learning curves <small>smoothed · x axis: training steps</small></h2>
+    <div class="chart" style="margin-bottom:12px">
+      <div class="top"><span class="name">Held-out evaluation vs scripted bot</span><span class="value" id="eval-value" style="color:#fbbf24">–</span></div>
+      <div class="hint" id="eval-hint">every 25 iterations, on maps training never uses · K/D per mode, and the score the best policy is picked by</div>
+      <canvas id="eval-chart" style="height:150px"></canvas>
+    </div>
+    <div class="charts" id="charts"></div>
+    <h2 style="margin-top:16px">Where the reward comes from <small>per episode, latest iteration</small></h2>
+    <div id="parts" class="parts"><div class="empty">waiting for an iteration…</div></div>
+    <div id="log"></div>
+  </section>
+</main>
+<script>
+const STAGES = ['aim', 'duel', 'tdm', 'ctf', 'mix'];
+const STAGE_TINT = { aim: '#3b82f6', duel: '#a855f7', tdm: '#ef4444', ctf: '#f59e0b', mix: '#10b981' };
+const ROLE = {
+  learner: { label: 'Learning policy', ring: '#ffffff', dash: [] },
+  snapshot: { label: 'Older snapshot', ring: '#c084fc', dash: [6, 4] },
+  scripted: { label: 'Scripted bot', ring: '#fb923c', dash: [] },
+  dummy: { label: 'Dummy', ring: '#6b7280', dash: [] },
+};
+const FFA_COLORS = ['#22d3ee', '#f472b6', '#a3e635', '#facc15', '#c084fc', '#fb7185', '#34d399', '#60a5fa'];
+const CHARTS = [
+  { key: 'rewardPerEpisode', name: 'Reward per episode', hint: 'everything the learners earned, per match', color: '#ffb547' },
+  { key: 'killsPerEpisode', name: 'Kills per episode', hint: 'by the learning bots', color: '#4ade80' },
+  { key: 'kdVsScripted', name: 'K/D vs scripted bot', hint: 'above 1: beats the hand-written bot', color: '#60a5fa', line: 1 },
+  { key: 'capturesPerEpisode', name: 'Flag captures per episode', hint: 'CTF stages', color: '#f472b6' },
+  { key: 'entropy', name: 'Policy entropy', hint: 'falls as choices get confident', color: '#c084fc' },
+  { key: 'sps', name: 'Steps per second', hint: 'decisions trained on, all workers', color: '#94a3b8', raw: true },
+];
+
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => (n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 1 : 2) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(Math.round(n)));
+const fmtTime = (ms) => { const m = Math.floor(ms / 60000); return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`; };
+
+// ------------------------------------------------------------ learning curves
+
+let rows = [];
+let evals = [];
+
+/** A rollback restarts the step count: keep only the branch that's being trained now. */
+function addRow(list, r) {
+  while (list.length && list[list.length - 1].steps > r.steps) list.pop();
+  list.push(r);
+}
+function splitHistory(all) {
+  rows = [];
+  evals = [];
+  for (const r of all) addRow(r.type === 'eval' ? evals : rows, r);
+}
+
+const EVAL_LINES = [
+  { key: 'ffa', label: 'FFA K/D', color: '#22d3ee' },
+  { key: 'tdm', label: 'TDM K/D', color: '#f87171' },
+  { key: 'ctf', label: 'CTF K/D', color: '#f472b6' },
+  { key: 'score', label: 'score', color: '#fbbf24' },
+];
+function drawEval() {
+  const cv = $('eval-chart');
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== w * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  if (!evals.length) { g.fillStyle = '#8c97a8'; g.font = '12px system-ui'; g.fillText('waiting for the first evaluation…', 8, h / 2); return; }
+  const val = (e, k) => (k === 'score' ? e.score : e.byMode?.[k]?.kd);
+  const x0 = Math.min(evals[0].steps, rows[0]?.steps ?? Infinity), x1 = Math.max(evals[evals.length - 1].steps, x0 + 1);
+  let hi = 1.2;
+  for (const e of evals) for (const l of EVAL_LINES) { const v = val(e, l.key); if (typeof v === 'number') hi = Math.max(hi, Math.min(3, v) * 1.1); }
+  const L = 34, B = 16;
+  const X = (v) => L + ((v - x0) / Math.max(1, x1 - x0)) * (w - L - 4);
+  const Y = (v) => 4 + (1 - Math.min(v, hi) / hi) * (h - B - 4);
+  g.strokeStyle = '#263042'; g.fillStyle = '#6b7689'; g.font = '10px system-ui';
+  for (const v of [0, hi / 2, hi]) { g.beginPath(); g.moveTo(L, Y(v)); g.lineTo(w, Y(v)); g.stroke(); g.fillText(v.toFixed(1), 2, Y(v) + 3); }
+  g.setLineDash([4, 4]); g.strokeStyle = '#8c97a8'; g.beginPath(); g.moveTo(L, Y(1)); g.lineTo(w, Y(1)); g.stroke(); g.setLineDash([]);
+  g.fillText(fmt(x0), L, h - 3);
+  let lx = L + 4;
+  for (const l of EVAL_LINES) {
+    const pts = evals.filter((e) => typeof val(e, l.key) === 'number');
+    if (!pts.length) continue;
+    g.strokeStyle = l.color; g.fillStyle = l.color; g.lineWidth = l.key === 'score' ? 2.5 : 1.5;
+    g.beginPath();
+    pts.forEach((e, i) => (i ? g.lineTo(X(e.steps), Y(val(e, l.key))) : g.moveTo(X(e.steps), Y(val(e, l.key)))));
+    g.stroke();
+    for (const e of pts) { g.beginPath(); g.arc(X(e.steps), Y(val(e, l.key)), 2.5, 0, Math.PI * 2); g.fill(); }
+    g.fillText(l.label, lx, 12); lx += g.measureText(l.label).width + 14;
+  }
+  const last = evals[evals.length - 1];
+  $('eval-value').textContent = `${last.score.toFixed(2)} (best ${last.best.toFixed(2)})`;
+}
+const charts = CHARTS.map((c) => {
+  const el = document.createElement('div');
+  el.className = 'chart';
+  el.innerHTML = `<div class="top"><span class="name">${c.name}</span><span class="value" style="color:${c.color}">–</span></div><div class="hint">${c.hint}</div><canvas></canvas>`;
+  $('charts').appendChild(el);
+  return { ...c, value: el.querySelector('.value'), canvas: el.querySelector('canvas') };
+});
+
+function ema(values, alpha = 0.15) {
+  let s = null;
+  return values.map((v) => (s = s === null ? v : s + alpha * (v - s)));
+}
+
+function drawChart(c) {
+  const cv = c.canvas;
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== w * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const pts = rows.filter((r) => typeof r[c.key] === 'number');
+  if (pts.length < 2) { g.fillStyle = '#8c97a8'; g.font = '12px system-ui'; g.fillText('waiting for data…', 8, h / 2); return; }
+  const xs = pts.map((r) => r.steps);
+  const raw = pts.map((r) => r[c.key]);
+  const smooth = c.raw ? raw : ema(raw);
+  const x0 = xs[0], x1 = xs[xs.length - 1] || 1;
+  let lo = Math.min(...raw, c.line ?? Infinity), hi = Math.max(...raw, c.line ?? -Infinity);
+  if (hi - lo < 1e-6) { hi += 1; lo -= 1; }
+  const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+  const L = 34, B = 16;
+  const X = (v) => L + ((v - x0) / Math.max(1, x1 - x0)) * (w - L - 4);
+  const Y = (v) => 4 + (1 - (v - lo) / (hi - lo)) * (h - B - 4);
+  // Stage bands
+  let start = 0;
+  for (let i = 1; i <= pts.length; i++) {
+    if (i === pts.length || pts[i].stage !== pts[start].stage) {
+      g.fillStyle = (STAGE_TINT[pts[start].stage] || '#555') + '14';
+      g.fillRect(X(xs[start]), 0, X(xs[i - 1]) - X(xs[start]) + 1, h - B);
+      g.fillStyle = (STAGE_TINT[pts[start].stage] || '#888') + 'aa';
+      g.font = '10px system-ui';
+      if (X(xs[i - 1]) - X(xs[start]) > 24) g.fillText(pts[start].stage, X(xs[start]) + 3, h - B - 4);
+      start = i;
+    }
+  }
+  // Axes
+  g.strokeStyle = '#263042'; g.lineWidth = 1;
+  g.fillStyle = '#6b7689'; g.font = '10px system-ui';
+  for (const v of [lo + pad, (lo + hi) / 2, hi - pad]) {
+    g.beginPath(); g.moveTo(L, Y(v)); g.lineTo(w, Y(v)); g.stroke();
+    g.fillText(Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(Math.abs(v) >= 10 ? 1 : 2), 2, Y(v) + 3);
+  }
+  g.fillText(fmt(x0), L, h - 3);
+  const end = fmt(x1); g.fillText(end, w - g.measureText(end).width - 2, h - 3);
+  if (c.line !== undefined && c.line > lo && c.line < hi) {
+    g.setLineDash([4, 4]); g.strokeStyle = '#8c97a8';
+    g.beginPath(); g.moveTo(L, Y(c.line)); g.lineTo(w, Y(c.line)); g.stroke(); g.setLineDash([]);
+  }
+  // Raw (faint) and smoothed
+  if (!c.raw) {
+    g.strokeStyle = c.color + '40'; g.lineWidth = 1; g.beginPath();
+    raw.forEach((v, i) => (i ? g.lineTo(X(xs[i]), Y(v)) : g.moveTo(X(xs[i]), Y(v)))); g.stroke();
+  }
+  g.strokeStyle = c.color; g.lineWidth = 2; g.beginPath();
+  smooth.forEach((v, i) => (i ? g.lineTo(X(xs[i]), Y(v)) : g.moveTo(X(xs[i]), Y(v)))); g.stroke();
+  const last = smooth[smooth.length - 1];
+  c.value.textContent = c.key === 'sps' ? fmt(last) : last.toFixed(2);
+}
+
+function redrawCharts() { charts.forEach(drawChart); drawEval(); }
+window.addEventListener('resize', redrawCharts);
+
+function updateHeader() {
+  const r = rows[rows.length - 1];
+  if (!r) return;
+  drawParts();
+  $('iter').textContent = r.iteration;
+  $('steps').textContent = fmt(r.steps);
+  $('sps').textContent = r.sps ? `${fmt(r.sps)}/s` : '–';
+  // Training time: only the gaps between iterations that look like continuous training.
+  let ms = 0;
+  for (let i = 1; i < rows.length; i++) { const d = rows[i].t - rows[i - 1].t; if (d > 0 && d < 120000) ms += d; }
+  $('elapsed').textContent = fmtTime(ms);
+  setStage(r.stage);
+}
+
+const PART_NAMES = { kill: 'kills', teamKill: 'team kills', damage: 'damage dealt', flag: 'flags', win: 'winning', progress: 'toward objective', aim: 'aiming', hurt: 'damage taken', death: 'deaths', miss: 'missed shots', time: 'time' };
+function drawParts() {
+  const r = rows[rows.length - 1];
+  if (!r || !r.parts) return;
+  const entries = Object.entries(r.parts).sort((a, b) => b[1] - a[1]);
+  const max = Math.max(0.01, ...entries.map(([, v]) => Math.abs(v)));
+  $('parts').innerHTML = entries.map(([k, v]) => {
+    const w = (Math.abs(v) / max) * 50;
+    const style = v >= 0 ? `left:50%;width:${w}%;background:#4ade80` : `right:50%;width:${w}%;background:#f87171`;
+    return `<div class="part"><span>${PART_NAMES[k] || k}</span><div class="bar"><span style="${style}"></span></div><span class="num">${v.toFixed(2)}</span></div>`;
+  }).join('');
+}
+
+function setStage(stage) {
+  const at = STAGES.indexOf(stage);
+  $('stages').innerHTML = STAGES.map((s, i) => `<span class="stage ${i < at ? 'done' : i === at ? 'now' : ''}">${s}</span>`).join('');
+}
+
+function log(html) {
+  const d = document.createElement('div');
+  d.innerHTML = `${new Date().toLocaleTimeString()} · ${html}`;
+  $('log').prepend(d);
+  while ($('log').children.length > 60) $('log').lastChild.remove();
+}
+
+// ------------------------------------------------------------ the match
+
+let map = null;
+const frames = [];
+let frame = null;
+const tracers = [];
+let lastDraw = 0;
+const arena = $('arena');
+const ctx = arena.getContext('2d');
+
+function agentColor(i) {
+  const team = map.teams[i];
+  return team === 'red' ? '#ff4d4d' : team === 'blue' ? '#3d8bff' : FFA_COLORS[i % FFA_COLORS.length];
+}
+
+function drawArena() {
+  const W = arena.width;
+  ctx.fillStyle = '#0a0d12';
+  ctx.fillRect(0, 0, W, W);
+  if (!map) return;
+  const s = W / (map.half * 2 + 2);
+  const P = (x, z) => [(x + map.half + 1) * s, (z + map.half + 1) * s];
+  // Ground and edge
+  ctx.fillStyle = '#121822';
+  const [gx, gz] = P(-map.half, -map.half);
+  ctx.fillRect(gx, gz, map.half * 2 * s, map.half * 2 * s);
+  ctx.strokeStyle = '#2b3547'; ctx.lineWidth = 2; ctx.strokeRect(gx, gz, map.half * 2 * s, map.half * 2 * s);
+  // Cover: lighter is taller
+  for (const [x, z, w, d, top, ramp] of map.boxes) {
+    const shade = Math.max(0, Math.min(1, top / 8));
+    ctx.fillStyle = ramp ? `rgba(120, 140, 170, ${0.25 + shade * 0.3})` : `rgb(${40 + shade * 70}, ${48 + shade * 74}, ${62 + shade * 80})`;
+    const [px, pz] = P(x - w / 2, z - d / 2);
+    ctx.fillRect(px, pz, w * s, d * s);
+  }
+  // Flag bases and flags
+  if (map.mode === 'ctf') {
+    for (const team of ['red', 'blue']) {
+      const b = map.bases[team];
+      const [px, pz] = P(b.x, b.z);
+      ctx.strokeStyle = team === 'red' ? '#ff4d4d' : '#3d8bff';
+      ctx.lineWidth = 3; ctx.setLineDash([6, 5]);
+      ctx.beginPath(); ctx.arc(px, pz, 1.5 * s, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+      const f = frame?.flags?.[team];
+      if (!f || f.at === 'base') drawFlag(px, pz, team, s);
+      else if (f.at === 'ground') { const [fx, fz] = P(f.x, f.z); drawFlag(fx, fz, team, s); }
+    }
+  }
+  if (!frame) return;
+  // Tracers
+  const now = performance.now();
+  for (let i = tracers.length - 1; i >= 0; i--) {
+    const t = tracers[i];
+    const age = (now - t.at) / 350;
+    if (age >= 1) { tracers.splice(i, 1); continue; }
+    const [ax, az] = P(t.x0, t.z0), [bx, bz] = P(t.x1, t.z1);
+    ctx.strokeStyle = t.hit ? `rgba(255, 80, 80, ${1 - age})` : `rgba(255, 210, 120, ${0.7 * (1 - age)})`;
+    ctx.lineWidth = t.hit ? 2.5 : 1.5;
+    ctx.beginPath(); ctx.moveTo(ax, az); ctx.lineTo(bx, bz); ctx.stroke();
+  }
+  // Players
+  frame.agents.forEach(([x, z, yaw, alive, hp, , , firing], i) => {
+    const [px, pz] = P(x, z);
+    const r = Math.max(10, 0.6 * s);
+    const color = agentColor(i);
+    const role = ROLE[map.roles[i]] || ROLE.learner;
+    if (!alive) {
+      ctx.strokeStyle = color + '80'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(px - r, pz - r); ctx.lineTo(px + r, pz + r); ctx.moveTo(px + r, pz - r); ctx.lineTo(px - r, pz + r); ctx.stroke();
+      return;
+    }
+    // Facing: a short cone
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    ctx.fillStyle = color + (firing ? '55' : '2a');
+    ctx.beginPath(); ctx.moveTo(px, pz);
+    const reach = r * 4.2, spread = 0.32;
+    for (const a of [-spread, spread]) {
+      const c = Math.cos(a), sn = Math.sin(a);
+      ctx.lineTo(px + (fx * c - fz * sn) * reach, pz + (fx * sn + fz * c) * reach);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(px, pz, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = role.ring; ctx.lineWidth = 2.5; ctx.setLineDash(role.dash);
+    ctx.beginPath(); ctx.arc(px, pz, r + 2.5, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    // Health
+    ctx.strokeStyle = hp > 50 ? '#4ade80' : hp > 25 ? '#fbbf24' : '#f87171'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(px, pz, r + 7, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.max(0, hp) / 100); ctx.stroke();
+    // Carrying a flag
+    if (frame.flags) for (const team of ['red', 'blue']) {
+      const f = frame.flags[team];
+      if (f && f.at === 'carried' && f.carrier === `a${i}`) drawFlag(px + r, pz - r, team, s * 0.8);
+    }
+  });
+}
+
+function drawFlag(x, y, team, s) {
+  const h = Math.max(14, 1.6 * s);
+  ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y - h); ctx.stroke();
+  ctx.fillStyle = team === 'red' ? '#ff4d4d' : '#3d8bff';
+  ctx.beginPath(); ctx.moveTo(x, y - h); ctx.lineTo(x + h * 0.7, y - h * 0.78); ctx.lineTo(x, y - h * 0.56); ctx.closePath(); ctx.fill();
+}
+
+function showFrame(f) {
+  if (!map) return;
+  frame = f;
+  for (const [, x0, z0, x1, z1, hit] of f.shots) tracers.push({ x0, z0, x1, z1, hit: !!hit, at: performance.now() });
+  $('clock').innerHTML = `Match time <b>${Math.floor(f.t / 60)}:${String(Math.floor(f.t % 60)).padStart(2, '0')}</b>`;
+  if (map.mode === 'ffa') {
+    const best = Math.max(...f.agents.map((a) => a[5]));
+    $('score').innerHTML = `Top score <b>${best}</b> kills`;
+  } else {
+    $('score').innerHTML = `<span style="color:var(--red)">Red <b>${f.score.red ?? 0}</b></span> · <span style="color:var(--blue)">Blue <b>${f.score.blue ?? 0}</b></span>`;
+  }
+  $('board').tBodies[0].innerHTML = f.agents.map(([, , , alive, hp, k, d], i) => `<tr style="opacity:${alive ? 1 : 0.5}">
+    <td><span class="swatch" style="background:${agentColor(i)}"></span>${map.teams[i] ? map.teams[i] + ' ' : ''}#${i + 1}</td>
+    <td>${(ROLE[map.roles[i]] || ROLE.learner).label}</td><td class="num">${alive ? hp : '†'}</td><td class="num">${k}</td><td class="num">${d}</td></tr>`).join('');
+}
+
+// Workers play far faster than real time (and pause while the policy learns), so the match is shown
+// at a steady 3× real time; when it falls too far behind, it skips to the start of a later match.
+function tick(now) {
+  const fps = frames.length > 400 ? 60 : 30;
+  if (frames.length && now - lastDraw >= 1000 / fps) {
+    lastDraw = now;
+    let f = frames.shift();
+    while (f && f.map) { setMap(f.map); f = frames.shift(); }
+    if (f) showFrame(f);
+    $('speed').textContent = `${fps / 10}× real time${frames.length > 400 ? ' (catching up)' : ''}`;
+  }
+  drawArena();
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+function setMap(m) {
+  map = m;
+  frame = null;
+  tracers.length = 0;
+  const players = m.mode === 'ffa' ? `${m.teams.length} players` : `${m.teams.length / 2}v${m.teams.length / 2}`;
+  $('match-meta').textContent = `${m.mode.toUpperCase()} · ${players} · ${m.name} (${m.seed}, ${m.size.toUpperCase()})`;
+}
+
+// ------------------------------------------------------------ stream
+
+function connect() {
+  const es = new EventSource('/events');
+  es.addEventListener('history', (e) => { splitHistory(JSON.parse(e.data)); updateHeader(); redrawCharts(); });
+  es.addEventListener('eval', (e) => {
+    const r = JSON.parse(e.data);
+    addRow(evals, r);
+    drawEval();
+    const parts = Object.entries(r.byMode).map(([m, v]) => `${m} ${v.kd.toFixed(2)}`).join(' · ');
+    log(`<b>eval</b> at ${fmt(r.steps)}: ${parts} · score ${r.score.toFixed(2)}${r.score >= r.best ? ' — new best' : ''}`);
+  });
+  es.addEventListener('iteration', (e) => {
+    const r = JSON.parse(e.data);
+    addRow(rows, r);
+    updateHeader();
+    redrawCharts();
+    log(`#${r.iteration} · ${fmt(r.steps)} steps · reward ${r.rewardPerEpisode.toFixed(2)} · kills ${r.killsPerEpisode.toFixed(2)} · K/D vs bot ${r.kdVsScripted.toFixed(2)}`);
+  });
+  es.addEventListener('stage', (e) => { const s = JSON.parse(e.data); log(`<b>stage → ${s.stage}</b> at ${fmt(s.steps)} steps`); setStage(s.stage); });
+  es.addEventListener('map', (e) => {
+    // Wait for the frames of the last match to play out before switching map.
+    const m = JSON.parse(e.data);
+    if (!map) setMap(m); else frames.push({ map: m });
+  });
+  es.addEventListener('frame', (e) => {
+    frames.push(JSON.parse(e.data));
+    if (frames.length > 1500) {
+      // Skip to the newest match that's waiting (or just the latest 20 s of this one).
+      let cut = -1;
+      for (let i = frames.length - 1; i > 0; i--) if (frames[i].map) { cut = i; break; }
+      frames.splice(0, cut > 0 ? cut : frames.length - 600);
+    }
+  });
+  es.addEventListener('status', (e) => {
+    const s = JSON.parse(e.data);
+    const el = $('phase');
+    el.className = `pill phase ${s.phase}`;
+    $('phase-text').textContent = s.phase === 'playing' ? `Playing matches (${s.workers} workers)` : s.phase === 'learning' ? 'Learning from them'
+      : s.phase === 'evaluating' ? 'Testing on unseen maps' : 'Finished';
+    setStage(s.stage);
+  });
+  es.onerror = () => { $('phase').className = 'pill phase offline'; $('phase-text').textContent = 'Trainer not running — retrying…'; };
+}
+connect();
+</script>
+</body>
+</html>

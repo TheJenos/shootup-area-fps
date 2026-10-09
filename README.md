@@ -694,6 +694,99 @@ through. Each client times a small write until the server confirms it every 2 s,
 in its player record. Green is under 80 ms, amber under 150 ms, red above. The delay between two players is
 roughly their two pings added together.
 
+## Bots
+
+A room can have AI bots, each at its own level (Easy, Normal, Hard or Expert). When creating a room, **Start
+with bots** and **Bot skill** set the first few. While playing, the room owner opens **Bots** in the pause menu
+to add more mid-game (at any level and, in team modes, on either team or whichever is short), change a bot's
+level or team, or take bots out. Nothing restarts. Bots stay until the owner removes them, however many people
+join (at most 12). Their names carry their level, e.g. `Kai [Hard]`, and the scoreboard and kill feed mark them
+with a BOT badge.
+
+The list lives in `lobby/{code}/bots/{slot}` (`{base, skill, team?, at}`, written by the owner, validated in
+`database.rules.json`; see `game/bot/roster.ts`). The owner's client plays exactly those entries.
+
+**Who plays them.** The room owner's client: each bot is a body in the owner's physics world with an ordinary
+player record (`bot: true`, id `b_…`), so everyone else sees, hears and shoots them like any player. Since the
+game is client-authoritative, the owner is each bot's client: it decides what a bot's shots hit, applies the
+damage others' shots do to it, reports its deaths and takes, returns and captures flags for it. Bots leave with
+the owner (`onDisconnect`), and whoever owns the room next brings the same list back. Bots never own a room, never
+run the leader's chores and never touch the leaderboard. See `game/bot/botHost.ts`.
+
+**How they think.** Three parts.
+
+- *Where to go* is scripted (`game/bot/objective.ts`). In CTF: the carrier takes the flag home, the nearest
+  teammate returns a dropped flag, the two nearest chase whoever has ours, the rest escort our carrier; attackers
+  gather at a rally point and push in pairs, and one in three holds a spot in front of our flag. In FFA and TDM:
+  patrol between spawns and pickup spots (toward the enemy's half in team modes, keeping near the team). Bots go
+  to fights a teammate called out or they heard, and fall back to a teammate when badly hurt. While a bot knows of
+  no enemy, this layer also walks it there along the map's walk grid, glancing to the sides now and then and
+  getting itself unstuck if it wedges into a gap.
+- *Aiming* is a model of how people aim (`game/bot/aim.ts`): pick a target (whoever is shooting at us, a flag
+  carrier first), take a moment to react, put the crosshair roughly on them, settle in, lag behind someone
+  strafing, turn no faster than a person can, fight the recoil. The trigger is only pulled with the crosshair on
+  them. The skill levels (Easy, Normal, Hard, **Expert**) are just these numbers.
+- *Fighting* is a small neural network (75 inputs → 128 → 128 → 15 outputs, about 28k weights) trained with
+  reinforcement learning. As soon as a bot knows of an enemy (seen, remembered from the last 4 s, called out by a
+  teammate, heard firing, or shooting at it), the network decides how to move (strafe, cover, crouch, jump) and
+  when to shoot. Ten times a second it sees what a player could know, all relative to itself: health, speed, ammo,
+  gun, walls around it, the way to its goal, the three nearest enemies it knows about (no wallhacks: sight uses the
+  map's occlusion grid), its nearest teammate.
+
+Teams share what they know: whatever one bot sees, its teammates learn half a second later, and gunfire within
+35 m (60 m for a sniper) gives the shooter away to anyone nearby (`game/bot/team.ts`). Each bot also has a
+personality: how aggressive it is (how far it goes to help, when it backs off) and how much being hurt shakes its
+aim.
+
+**Pickups and abilities** are the scripted layer's too (`game/bot/gear.ts`, `botHost.ts`). Bots fetch
+pickups within 14 m that are worth having (a gun when they have none, ammo for it, abilities while a slot is free;
+never a flag carrier, or while their flag is away), and drop everything where they die, like players. They use
+abilities the way a sensible player would: a medkit when badly hurt, a shield, barrier or smoke under fire,
+lifesteal in a fight, grenades and molotovs at enemies out of easy reach (aimed by simulating the arc), a
+flashbang at someone in front of them, turrets and mines to hold a base, speed, cloak and dash on a flag run, a
+scan when nobody's been seen for a while. Being the bots' client, the owner also applies other players'
+abilities to them (shields soak damage, fire burns, flashbangs blind) and runs their turrets and mines.
+
+Skill levels change only how the network's answers are carried out: reaction time, a shakier aim, slower
+turning, less eager trigger fingers.
+
+**Training** happens offline, in TypeScript, on the CPU:
+
+- `game/bot/sim/arena.ts` is the game without a screen: the real map generator, the real Rapier collision and the
+  player's own movement code (`game/movement.ts`, shared with `player.ts`), guns from `gunStats.ts`, and the
+  FFA / TDM / CTF rules. Abilities, grenades and pickups are left out.
+- `game/bot/ppo.ts` is PPO (clipped objective, GAE, Adam) over the dependency-free MLP in `game/bot/nn.ts`.
+- `scripts/train-bots.ts` runs it with worker threads: they play matches (self-play against the current policy,
+  older snapshots of it and a scripted bot) and compute gradients in parallel; the main thread applies them. It
+  works through a curriculum: **aim** (shoot wandering dummies) → **duel** (1v1 / 3-way FFA) → **tdm** (3v3) →
+  **ctf** (3v3 on all map sizes) → **mix**, moving on when the rolling score passes each stage's bar.
+- Rewards: damage and kills (minus damage taken and deaths), flag takes, returns and captures, winning, plus
+  two shaping terms that can't be farmed (they're potentials): getting closer along the path to the objective,
+  and closing aim on a visible enemy.
+
+```sh
+npm run train:bots                       # resumes from bots/latest.json; --fresh to start over
+npm run train:bots -- --steps 80M --workers 9 --stage ctf
+npm run eval:bots                        # vs the scripted bot on maps it never trained on
+npm run eval:bots -- --tier easy,normal,hard,expert   # one line per skill level
+npm run eval:bots -- --vs bots/ckpt-200.json
+npm run export:bots                      # bots/best.json -> public/bots/policy.json (what the game loads)
+```
+
+Every 25 iterations the trainer also plays the scripted bot on held-out maps, in every mode trained so far, and
+keeps the best policy by that test in `bots/best.json`; `export:bots` ships that one. Training's own numbers are
+mostly against copies of itself, and can look healthy while the policy forgets how to fight anyone else (it
+happened: team-only training wrecked free-for-all play over 25M steps before anyone noticed). Later curriculum
+stages also keep some of the earlier modes in their mix for the same reason.
+
+While it trains, **http://localhost:7777** shows it live: one of the matches being played, from above (who's who,
+where they look, shots, flags, the score), the held-out evaluations, the learning curves with the curriculum stages
+marked (reward, kills, K/D against the scripted bot, captures, policy entropy, speed) and where the reward comes from. `--view-port 0` turns it off.
+
+Checkpoints and the training log (`bots/train-log.jsonl`) stay in `bots/`, which git ignores; only the exported
+`public/bots/policy.json` (~150 KB) ships. Changing the observation layout (`game/bot/observe.ts`) means bumping
+`OBS_VERSION` and retraining: the game refuses a policy made for another layout and plays without bots.
+
 ## How it works
 
 ```
@@ -754,7 +847,12 @@ src/
     propManifest.ts  GENERATED by scripts/build-props.mjs: each model's size and collision boxes
     textures.ts      procedural textures (surfaces, floors, sky, props) + world-scale box UVs
     world.ts         turns a map layout into meshes, lighting, colliders, spawn points
-    player.ts        first-person controller + collisions
+    player.ts        first-person controller (keys, mouse look, camera) over movement.ts
+    movement.ts      walking, sprinting, sliding, jumping and collisions (Rapier), shared with bots
+    gunStats.ts      gun numbers only (no models), shared with the bot simulator
+    bot/             AI bots: nn.ts (MLP + Adam), policy.ts, observe.ts (what a bot knows), objective.ts (goals), nav.ts (paths),
+                     senses.ts, hitscan.ts, brain.ts (skill, steering), botHost.ts (bots in a room),
+                     ppo.ts (training), sim/ (headless arena + rollouts for training)
     remotePlayer.ts  other players' avatars + interpolation
     xray.ts          flat team-colour silhouette of teammates behind cover
     ramps.ts         sloped surfaces: height lookup, wedge geometry

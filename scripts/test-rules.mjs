@@ -40,6 +40,11 @@ const entry = (over = {}) => {
   return { ...e, score: over.score ?? e.kills * 10 + e.captures * 30 + e.wins * 50 };
 };
 
+const ffaRules = {
+  base: 'ffa', name: 'Free-for-all', short: 'FFA', loadout: 'standard', guns: true, abilities: true, ammo: true,
+  limit: 25, minutes: 8, health: 100, headshotsOnly: false, respawn: 3, speed: 1, gravity: 1,
+};
+
 /** [description, path, value, should it be allowed?] run in order (later ones build on earlier ones) */
 const cases = [
   ['global: first round', 'leaderboard/d_player0001', entry(), true],
@@ -53,10 +58,19 @@ const cases = [
   ['server: first round', 'guildboard/123456789012345678/d_player0001', entry(), true],
   ['server: bad server id', 'guildboard/not-a-server/d_player0001', entry(), false],
   ['server: score not matching the formula', 'guildboard/123456789012345678/d_player0002', entry({ score: 5000 }), false],
-  ['lobby: room with a map spec', 'lobby/ROOM1', { name: 'Room', createdAt: 1, seed: 'ABC123', size: 'l', gen: 2, host: 'Tester' }, true],
+  ['lobby: room with a map spec', 'lobby/ROOM1', { name: 'Room', createdAt: 1, seed: 'ABC123', size: 'l', gen: 2, host: 'Tester', mode: 'ffa' }, true],
   ['lobby: unknown map size', 'lobby/ROOM1/size', 'xl', false],
   ['lobby: generator version not a number', 'lobby/ROOM1/gen', '2', false],
   ['lobby: seed too long', 'lobby/ROOM1/seed', 'ABCDEFGHIJKLMNOPQ', false],
+  ['lobby: rules with bots', 'lobby/ROOM1/rules', { ...ffaRules, bots: 6, botSkill: 'hard' }, true],
+  ['lobby: too many bots', 'lobby/ROOM1/rules/bots', 50, false],
+  ['lobby: expert bots', 'lobby/ROOM1/rules/botSkill', 'expert', true],
+  ['lobby: unknown bot skill', 'lobby/ROOM1/rules/botSkill', 'godlike', false],
+  ['lobby: a bot member', 'lobby/ROOM1/members/b_ABCD2345', 'BOT Ava', true],
+  ['lobby: a bot on the list', 'lobby/ROOM1/bots/s_abc', { base: 'Kai', skill: 'expert', team: 'red', at: 1 }, true],
+  ['lobby: a bot with no level', 'lobby/ROOM1/bots/s_def', { base: 'Kai', at: 1 }, false],
+  ['lobby: a bot on a made-up team', 'lobby/ROOM1/bots/s_abc/team', 'green', false],
+  ['lobby: a bot with a long name', 'lobby/ROOM1/bots/s_abc/base', 'Bartholomew', false],
   ['game: round on a map', 'rooms/ROOM1/game', { round: 0, seed: 'ABC123', size: 'm', gen: 2, mapHash: 123456 }, true],
   ['game: unknown map size', 'rooms/ROOM1/game/size', 'huge', false],
   ['game: map fingerprint not a number', 'rooms/ROOM1/game/mapHash', 'abc', false],

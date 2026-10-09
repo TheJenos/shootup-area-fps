@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
 import { GAME_MODES, MODES } from '../game/modes';
 import {
-  LIMITS, LOADOUTS, PRESETS, baseRules, deleteCustomMode, goalOf, loadCustomModes, normalizeRules, sameRules,
+  BOT_SKILL_OPTIONS, LIMITS, LOADOUTS, PRESETS, baseRules, deleteCustomMode, goalOf, loadCustomModes, normalizeRules, sameMode,
   saveCustomMode, tweaks, type Loadout, type ModeRules,
 } from '../game/rules';
 
 interface PickerProps {
   value: ModeRules;
   onChange(rules: ModeRules): void;
+  /** The "start with bots" setting (new rooms; a running room's bots are managed from the pause menu) */
+  showBots?: boolean;
 }
 
 /** The plain base modes come first; everything else is an arcade preset. */
@@ -19,15 +21,17 @@ const ARCADE = PRESETS.filter((p) => !CLASSIC.includes(p));
  * describing the selected mode and a Customize button that starts the editor from it.
  * Used by the lobby and the Discord lobby.
  */
-export function ModePicker({ value, onChange }: PickerProps) {
+export function ModePicker({ value, onChange, showBots = true }: PickerProps) {
   const [mine, setMine] = useState<ModeRules[]>(loadCustomModes);
   const [editing, setEditing] = useState<ModeRules | null>(null);
-  const presetOf = PRESETS.find((p) => sameRules(p.rules, value));
-  const isMine = !presetOf && mine.some((m) => sameRules(m, value));
+  const presetOf = PRESETS.find((p) => sameMode(p.rules, value));
+  const isMine = !presetOf && mine.some((m) => sameMode(m, value));
   const chips = [`${value.limit} ${value.base === 'ctf' ? 'captures' : value.loadout === 'gungame' ? 'guns' : 'kills'} to win`, `${value.minutes} min`, ...tweaks(value)];
+  /** Picking another mode keeps the room's bots */
+  const pick = (rules: ModeRules) => onChange({ ...rules, bots: value.bots, botSkill: value.botSkill });
 
   const chip = (rules: ModeRules, key: string) => {
-    const selected = sameRules(rules, value);
+    const selected = sameMode(rules, value);
     return (
       <button
         key={key}
@@ -36,7 +40,7 @@ export function ModePicker({ value, onChange }: PickerProps) {
         aria-checked={selected}
         className={selected ? 'mode-chip selected' : 'mode-chip'}
         title={rules.name}
-        onClick={() => onChange(rules)}
+        onClick={() => pick(rules)}
       >
         <span className={`mode-badge ${rules.base}`}>{rules.short}</span>{rules.name}
       </button>
@@ -75,7 +79,7 @@ export function ModePicker({ value, onChange }: PickerProps) {
           <div className="mode-detail-tools">
             {isMine && (
               <button type="button" className="icon" aria-label={`Delete ${value.name}`} title="Delete this mode"
-                onClick={() => { setMine(deleteCustomMode(value.name)); onChange(PRESETS[0]!.rules); }}>
+                onClick={() => { setMine(deleteCustomMode(value.name)); pick(PRESETS[0]!.rules); }}>
                 ✕
               </button>
             )}
@@ -89,13 +93,31 @@ export function ModePicker({ value, onChange }: PickerProps) {
         </ul>
       </div>
 
+      {showBots && <div className="mode-bots" role="group" aria-label="Bots">
+        <label className="setting">
+          <span>Bots</span>
+          <input type="range" min={LIMITS.bots[0]} max={LIMITS.bots[1]} step={1} value={value.bots} aria-label="Start with bots"
+            onChange={(e) => onChange({ ...value, bots: Number(e.target.value) })} />
+          <span className="number-readout">{value.bots ? `${value.bots} bot${value.bots === 1 ? '' : 's'}` : 'None'}</span>
+        </label>
+        {value.bots > 0 && (
+          <label className="setting">
+            <span>Bot skill</span>
+            <select value={value.botSkill} aria-label="Bot skill" onChange={(e) => onChange({ ...value, botSkill: e.target.value as ModeRules['botSkill'] })}>
+              {BOT_SKILL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </label>
+        )}
+        <p className="muted hint">Add more, at any level, from the pause menu while you play.</p>
+      </div>}
+
       {editing && (
         <ModeEditor
           initial={editing}
           onCancel={() => setEditing(null)}
           onUse={(rules, save) => {
-            if (save) setMine(saveCustomMode(rules));
-            onChange(rules);
+            if (save) setMine(saveCustomMode({ ...rules, bots: 0, botSkill: 'normal' }));
+            pick(rules);
             setEditing(null);
           }}
         />

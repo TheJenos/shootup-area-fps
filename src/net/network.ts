@@ -7,6 +7,7 @@ import { db } from './firebase';
 import { countNet } from '../game/perfStats';
 import { rulesOfRoom, type ModeRules } from '../game/rules';
 import { toSpec, type MapSpec } from '../game/mapgen';
+import { startingRoster, type BotRoster, type BotSlot } from '../game/bot/roster';
 import type {
   GameEvent, GameMode, GameRecord, GameState, LobbyRecord, OutgoingEvent, PickupRecord, PlayerState, RoomSummary,
 } from '../types';
@@ -27,6 +28,10 @@ import type {
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const EVENT_TTL = 3_000;
 
+/** Bots' player ids start with this (humans' never do: randomId has no lowercase or underscore). */
+export const BOT_PREFIX = 'b_';
+export const isBotId = (id: string): boolean => id.startsWith(BOT_PREFIX);
+
 export function randomId(len = 12): string {
   let s = '';
   for (let i = 0; i < len; i++) s += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
@@ -41,7 +46,8 @@ export function watchRooms(callback: (rooms: RoomSummary[]) => void, onError?: (
       const room = child.val() as LobbyRecord;
       const code = child.key;
       const members = Object.values(room.members || {});
-      if (members.length === 0) {
+      // Bots leave with the player hosting them, so a room of nothing but bots is abandoned too.
+      if (Object.keys(room.members || {}).every(isBotId)) {
         // Rooms are created with their first member, so an empty room is always abandoned.
         deleteRoom(code);
         return;
@@ -68,6 +74,7 @@ export async function createRoom(
     hostId: playerId,
     createdAt: serverTimestamp(),
     members: { [playerId]: host },
+    ...startingBots(rules),
   });
   // The first round starts now, on the chosen map.
   await set(ref(db(), `rooms/${code}/game`), { round: 0, ...mapFields(map), startedAt: serverTimestamp() });
@@ -85,11 +92,16 @@ export async function createRoomWithCode(
   const result = await runTransaction(ref(db(), `lobby/${code}`), (current: LobbyRecord | null) => {
     // A record without members is a leftover from an abandoned room: take it over.
     if (current && Object.keys(current.members || {}).length > 0) return undefined;
-    return { name, mode: rules.base, rules, ...mapFields(map), host, hostId: playerId, createdAt: Date.now(), members: { [playerId]: host } };
+    return { name, mode: rules.base, rules, ...mapFields(map), host, hostId: playerId, createdAt: Date.now(), members: { [playerId]: host }, ...startingBots(rules) };
   }, { applyLocally: false });
   if (!result.committed) return false;
   await set(ref(db(), `rooms/${code}/game`), { round: 0, ...mapFields(map), startedAt: serverTimestamp() });
   return true;
+}
+
+/** A new room's bots, from the "start with bots" setting (Firebase leaves out an empty list) */
+function startingBots(rules: ModeRules): { bots?: BotRoster } {
+  return rules.bots > 0 ? { bots: startingRoster(rules.bots, rules.botSkill, Date.now()) } : {};
 }
 
 /** A map spec as stored on a room */
@@ -129,6 +141,8 @@ export interface RoomHandlers {
   onOwner?(id: string, name: string): void;
   /** The connection to the server came or went */
   onConnection?(connected: boolean): void;
+  /** The room's bot list changed (see game/bot/roster.ts) */
+  onBotRoster?(roster: BotRoster): void;
 }
 
 export class RoomConnection {
@@ -143,6 +157,8 @@ export class RoomConnection {
   private readonly pickupsRef: DatabaseReference;
   private readonly gameRef: DatabaseReference;
   private lastOneHere = false;
+  /** Bots this client plays for (see game/bot/botHost.ts): their records go when we do */
+  private readonly bots = new Map<string, { player: DatabaseReference; member: DatabaseReference }>();
   /** Server clock minus ours, in ms, kept up to date by Firebase */
   private serverOffset = 0;
   private unsubs: Unsubscribe[] = [];
@@ -190,21 +206,32 @@ export class RoomConnection {
     // server-side when they disconnect, so closing the tab still cleans up.
     let members: Record<string, string> = {};
     let hostId: string | null = null;
+    // Ownership is only settled once both have loaded: with the members in but the owner not yet, it
+    // would look ownerless and the first id would claim it (taking the room's bots with it).
+    let membersLoaded = false;
+    let hostLoaded = false;
     this.unsubs.push(
       onValue(ref(db(), `lobby/${this.code}/members`), (snap) => {
         members = (snap.val() || {}) as Record<string, string>;
-        const alone = Object.keys(members).every((id) => id === this.playerId);
+        membersLoaded = true;
+        // Bots don't count: a room with only our bots in it goes when we do.
+        const alone = Object.keys(members).every((id) => id === this.playerId || isBotId(id));
         if (alone !== this.lastOneHere) {
           this.lastOneHere = alone;
           this.armDisconnect().catch((err) => console.warn('onDisconnect update failed', err));
         }
-        this.updateOwner(members, hostId);
+        if (hostLoaded) this.updateOwner(members, hostId);
       }),
       onValue(ref(db(), `lobby/${this.code}/hostId`), (snap) => {
         hostId = typeof snap.val() === 'string' ? (snap.val() as string) : null;
-        this.updateOwner(members, hostId);
+        hostLoaded = true;
+        if (membersLoaded) this.updateOwner(members, hostId);
       }),
     );
+
+    this.unsubs.push(onValue(ref(db(), `lobby/${this.code}/bots`), (snap) => {
+      this.handlers.onBotRoster?.((snap.val() || {}) as BotRoster);
+    }));
 
     this.unsubs.push(onValue(ref(db(), '.info/serverTimeOffset'), (snap) => {
       this.serverOffset = Number(snap.val()) || 0;
@@ -232,7 +259,8 @@ export class RoomConnection {
    * member with the lowest id takes over and records it, so it doesn't move again when someone joins.
    */
   private updateOwner(members: Record<string, string>, hostId: string | null): void {
-    const ids = Object.keys(members);
+    // Bots never own a room.
+    const ids = Object.keys(members).filter((id) => !isBotId(id));
     if (!ids.length) return;
     if (hostId && members[hostId] !== undefined) {
       this.handlers.onOwner?.(hostId, members[hostId]);
@@ -260,7 +288,65 @@ export class RoomConnection {
       await Promise.all([onDisconnect(this.lobbyRef).remove(), onDisconnect(this.roomRef).remove()]);
     } else {
       await Promise.all([onDisconnect(this.playerRef).remove(), onDisconnect(this.memberRef).remove()]);
+      // The cancel above cleared our bots' handlers too.
+      await Promise.all([...this.bots.values()].flatMap((b) => [onDisconnect(b.player).remove(), onDisconnect(b.member).remove()]));
     }
+  }
+
+  // ---------------------------------------------------------------- bots
+
+  /** Put a bot in the room, played by this client; it leaves when we disconnect. */
+  async addBot(id: string, state: PlayerState): Promise<void> {
+    const refs = { player: ref(db(), `rooms/${this.code}/players/${id}`), member: ref(db(), `lobby/${this.code}/members/${id}`) };
+    this.bots.set(id, refs);
+    if (!this.lastOneHere) await Promise.all([onDisconnect(refs.player).remove(), onDisconnect(refs.member).remove()]);
+    countNet('up', state);
+    await set(refs.player, state);
+    await set(refs.member, state.name);
+    // Removed (or we left) while those writes were on their way: they mustn't leave an orphan behind.
+    if (this.bots.get(id) !== refs) await Promise.all([remove(refs.player), remove(refs.member)]);
+  }
+
+  async removeBot(id: string): Promise<void> {
+    const refs = this.bots.get(id);
+    if (!refs) return;
+    this.bots.delete(id);
+    await Promise.all([onDisconnect(refs.player).cancel(), onDisconnect(refs.member).cancel()]);
+    await Promise.all([remove(refs.player), remove(refs.member)]);
+  }
+
+  /** Add or change an entry in the room's bot list (the owner's to edit) */
+  setBotSlot(id: string, slot: BotSlot): Promise<void> {
+    return set(ref(db(), `lobby/${this.code}/bots/${id}`), slot);
+  }
+
+  removeBotSlot(id: string): Promise<void> {
+    return remove(ref(db(), `lobby/${this.code}/bots/${id}`));
+  }
+
+  clearBotSlots(): Promise<void> {
+    return remove(ref(db(), `lobby/${this.code}/bots`));
+  }
+
+  /** One of our bots got a new name (its level changed): its record and its lobby entry */
+  async renameBot(id: string, name: string): Promise<void> {
+    const refs = this.bots.get(id);
+    if (!refs) return;
+    await Promise.all([update(refs.player, { name }), set(refs.member, name)]);
+  }
+
+  /** Partial update of one of our bots' records */
+  sendStateAs(id: string, partial: { [K in keyof PlayerState]?: PlayerState[K] | null }): Promise<void> {
+    const refs = this.bots.get(id);
+    if (!refs) return Promise.resolve();
+    countNet('up', partial);
+    return update(refs.player, partial);
+  }
+
+  /** An event from one of our bots */
+  sendEventAs(id: string, event: OutgoingEvent): void {
+    if (!this.bots.has(id)) return;
+    this.pushEvent(event, id);
   }
 
   /** Partial update of our own player record (position, hp, ...); null removes a field. */
@@ -288,9 +374,13 @@ export class RoomConnection {
   }
 
   sendEvent(event: OutgoingEvent): void {
+    this.pushEvent(event, this.playerId);
+  }
+
+  private pushEvent(event: OutgoingEvent, from: string): void {
     const eventRef = push(this.eventsRef);
     countNet('up', event);
-    set(eventRef, { ...event, from: this.playerId, t: serverTimestamp() });
+    set(eventRef, { ...event, from, t: serverTimestamp() });
     const timer = setTimeout(() => {
       this.timers.delete(timer);
       remove(eventRef);
@@ -403,8 +493,13 @@ export class RoomConnection {
     this.unsubs = [];
     this.timers.forEach(clearTimeout);
     this.timers.clear();
+    // Our bots' records go first, before anything is awaited: cancelling the room's disconnect
+    // handlers below also cancels theirs, so they must already be on their way out if the page closes.
+    const bots = [...this.bots.values()];
+    this.bots.clear();
+    const botsGone = Promise.all(bots.flatMap((b) => [remove(b.player), remove(b.member)]));
     await Promise.all([onDisconnect(this.lobbyRef).cancel(), onDisconnect(this.roomRef).cancel()]);
-    await Promise.all([remove(this.playerRef), remove(this.memberRef)]);
+    await Promise.all([remove(this.playerRef), remove(this.memberRef), botsGone]);
     const members = await get(ref(db(), `lobby/${this.code}/members`));
     if (!members.exists()) await deleteRoom(this.code);
   }

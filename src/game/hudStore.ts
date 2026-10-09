@@ -10,7 +10,7 @@ const TOAST_LIFETIME = 1_800;
 const TOAST_QUEUE_MAX = 3;
 const ANNOUNCE_LIFETIME = 2_200;
 
-type Named = Pick<PlayerState, 'name' | 'color'>;
+type Named = Pick<PlayerState, 'name' | 'color' | 'bot'>;
 
 export type FeedEntry =
   | {
@@ -36,6 +36,8 @@ export interface ScoreRow {
   ping: number | null;
   team: Team | null;
   me: boolean;
+  /** A bot (its name carries its level; the list shows a badge) */
+  bot: boolean;
   /** Watching, not playing */
   spectating: boolean;
 }

@@ -33,7 +33,12 @@ import {
 } from './modes';
 import { MomentTracker } from './moments';
 import { ReplayDirector, ReplayRecorder } from './replay';
-import { RoomConnection, randomId } from '../net/network';
+import { RoomConnection, isBotId, randomId } from '../net/network';
+import { BotHost } from './bot/botHost';
+import { MAX_BOTS, botName, newSlotId, pickBase, rosterEntries, type BotRoster, type BotSlot } from './bot/roster';
+import type { BotSkill } from './bot/brain';
+import { RemoteBodies, type BodyPose } from './bodies';
+import { hitPlayer } from './bot/hitscan';
 import { recordRound } from '../net/leaderboard';
 import { baseRules, goalOf, normalizeRules, sameRules, type ModeRules } from './rules';
 import * as sfx from './audio';
@@ -58,6 +63,43 @@ const STATS_INTERVAL = 1;
 const maxDamage = (weapon: WeaponKind) =>
   (weapon === 'grenade' ? GRENADE_DAMAGE : weapon === 'mine' ? MINE_DAMAGE : weapon === 'flag' ? MELEE_HEAD_DAMAGE : weapon === 'molotov' ? FIRE_DAMAGE
     : weapon === 'turret' ? TURRET_DAMAGE : maxShotDamage(weapon));
+/** One entry of the room's bot list, as the owner's panel shows it */
+export interface BotRow {
+  slot: string;
+  /** "Kai [Hard]", and its parts */
+  name: string;
+  base: string;
+  skill: BotSkill;
+  /** The team it's set to (null: whichever side needs it) */
+  team: Team | null;
+  /** In the game right now, on this team, with this score */
+  playing: boolean;
+  actualTeam: Team | null;
+  kills: number;
+  deaths: number;
+}
+
+/** Who places or throws something: us, or a bot we play (whose events go out under its id) */
+interface Actor {
+  id: string;
+  pos: THREE.Vector3;
+  yaw: number;
+  onGround: boolean;
+  color: string;
+}
+
+/** Someone a turret, mine or grenade of `owner` can hurt */
+interface Target {
+  id: string;
+  /** Their model, or null for ourselves (we have no hitboxes) */
+  remote: RemotePlayer | null;
+  pos: THREE.Vector3;
+  chestY: number;
+  cloaked: boolean;
+}
+
+/** A spawn point counts as taken while someone stands this close to it (m) */
+const SPAWN_CLEARANCE = 1.2;
 /** Dropped items land this far in front of the player */
 const DROP_DISTANCE = 1.6;
 /** A turret or barrier can't go where the ground under it rises and falls more than this (m) */
@@ -104,6 +146,13 @@ export function colorFor(id: string): string {
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
 const toArr = (v: THREE.Vector3): Vec3Tuple => [r2(v.x), r2(v.y), r2(v.z)];
+/** A throw's start and velocity from the eyes along `dir`, rounded as they're sent (everyone simulates the same arc) */
+function throwVectors(eye: THREE.Vector3, dir: readonly [number, number, number]): { o: Vec3Tuple; v: Vec3Tuple } {
+  const d = new THREE.Vector3(dir[0], dir[1], dir[2]).normalize();
+  return { o: toArr(eye.clone().addScaledVector(d, 0.6)), v: toArr(d.multiplyScalar(THROW_SPEED).add(new THREE.Vector3(0, THROW_LIFT, 0))) };
+}
+/** How each thrown thing flies: grenades and smoke bounce, molotovs and flashbangs go off where they land */
+const arcKind = (kind: 'grenade' | 'smoke' | 'molotov' | 'flash') => (kind === 'grenade' ? 'grenade' : kind === 'smoke' ? 'smoke' : 'impact') as 'grenade' | 'smoke' | 'impact';
 const fromArr = (a: Vec3Tuple) => new THREE.Vector3(a[0], a[1], a[2]);
 
 
@@ -155,7 +204,14 @@ export class Game {
   private readonly weapon: Weapon;
   private readonly effects: Effects;
   private readonly net: RoomConnection;
+  /** Bots this client plays when it owns the room (bot/botHost.ts) */
+  private readonly bots: BotHost;
   private readonly raycaster = new THREE.Raycaster();
+  private readonly botRay = new THREE.Raycaster();
+  /** The room's bot list (lobby/{code}/bots): the owner plays these, and edits it from the pause menu */
+  private botRoster: BotRoster = {};
+  /** Other players' bodies in our physics world, so nobody walks through anybody */
+  private readonly remoteBodies = new RemoteBodies();
   private readonly timer = new THREE.Timer();
 
   private readonly remotes = new Map<string, RemotePlayer>();
@@ -219,7 +275,7 @@ export class Game {
   /** When our cloak wears off (0 when not cloaked) */
   private cloakUntil = 0;
   private speedUntil = 0;
-  private pendingBlasts: { id: string; at: number; p: THREE.Vector3 }[] = [];
+  private pendingBlasts: { id: string; at: number; p: THREE.Vector3; owner: string }[] = [];
   private lastSlotsKey = '';
   /** A pickup we just dropped; ignored until we've moved away from where it landed */
   private ignorePickup: { id: string; x: number; z: number } | null = null;
@@ -359,9 +415,17 @@ export class Game {
       onPickupAdded: (id, pickup) => this.pickups.add(id, pickup),
       onPickupRemoved: (id) => this.pickups.remove(id),
       onGame: (game) => this.onGame(game),
-      onOwner: (id, ownerName) => this.hud.update({ owner: { name: ownerName, me: id === playerId } }),
+      onOwner: (id, ownerName) => {
+        this.hud.update({ owner: { name: ownerName, me: id === playerId } });
+        this.bots.setOwner(id === playerId);
+      },
       onConnection: (connected) => this.onConnection(connected),
+      onBotRoster: (roster) => {
+        this.botRoster = roster;
+        this.bots.rosterChanged();
+      },
     });
+    this.bots = this.createBotHost();
 
     this.bindInput(signal);
   }
@@ -596,6 +660,8 @@ export class Game {
       /** Pretend we joined long ago (the leaderboard skips rounds a player only just joined). */
       backdateJoin: (ms: number) => { this.joinedAt -= ms; },
       remoteIds: () => [...this.remotes.keys()],
+      /** Ids of the bots this client plays */
+      botIds: () => this.bots.ids(),
       /** Where we draw a remote player, or null if they aren't in the room */
       remotePos: (id: string) => this.remotes.get(id)?.position.toArray() ?? null,
       /** Whether a remote player's model has caught up with their last reported position. */
@@ -994,7 +1060,74 @@ export class Game {
 
   /** The player with the lowest id runs shared chores (pickups, flag returns). */
   private isLeader(): boolean {
-    return Object.keys(this.players).sort()[0] === this.playerId;
+    // Bots never lead: whoever plays them already has enough to do.
+    return Object.keys(this.players).filter((id) => !isBotId(id)).sort()[0] === this.playerId;
+  }
+
+  /** The bot host's view of the game */
+  private createBotHost(): BotHost {
+    return new BotHost({
+      selfId: this.playerId,
+      net: this.net,
+      joined: () => this.joined,
+      physics: () => this.physics,
+      map: () => this.map,
+      rules: () => this.rules,
+      game: () => this.game,
+      roundOver: () => this.roundOver,
+      players: () => this.players,
+      bodyOf: (id) => {
+        if (id === this.playerId) {
+          const p = this.player.position;
+          return { x: p.x, y: p.y, z: p.z, stance: this.player.stance, alive: this.alive && !this.spectating };
+        }
+        const r = this.remotes.get(id);
+        const data = this.players[id];
+        if (!r || !data || data.spec) return null;
+        return { x: r.position.x, y: r.position.y, z: r.position.z, stance: data.stance ?? 'stand', alive: r.alive };
+      },
+      wallDistance: (ox, oy, oz, dx, dy, dz, max) => {
+        this.botRay.set(new THREE.Vector3(ox, oy, oz), new THREE.Vector3(dx, dy, dz));
+        this.botRay.far = max;
+        return this.botRay.intersectObjects(this.world.solids, false)[0]?.distance ?? max;
+      },
+      groundBelow: (x, y, z) => this.groundBelow(new THREE.Vector3(x, y, z)),
+      terrainAt: (x, z) => this.world.terrainAt(x, z),
+      spawns: () => this.world.spawns,
+      colorFor,
+      creditKill: (killerId, victimTeam) => this.creditKiller(killerId, victimTeam),
+      finishRound: (g, winner, name, reason) => this.finishRound(g, winner, name, reason),
+      maxDamage,
+      pickups: () => this.pickups.list(),
+      scatterAround: (x, z, n) => this.pickups.scatterAround(x, z, n),
+      place: (kind, actor) => (kind === 'turret' ? this.placeTurret(actor) : kind === 'wall' ? this.placeWall(actor) : this.placeMine(actor)) === true,
+      throwFor: (botId, kind, eye, dir) => this.throwAs(botId, kind, eye, dir),
+      landing: (kind, eye, dir) => {
+        const { o, v } = throwVectors(eye, dir);
+        const t = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders, arcKind(kind), this.world.terrainAt);
+        return { end: t.end, duration: t.duration };
+      },
+      arcOf: (kind, o, v) => {
+        const t = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders, arcKind(kind), this.world.terrainAt);
+        return { end: t.end, duration: t.duration };
+      },
+      botRoster: () => this.botRoster,
+      firesAt: (x, y, z) => this.fires.burning(new THREE.Vector3(x, y, z)).map((f) => ({ owner: f.owner, center: f.center })),
+    });
+  }
+
+  /**
+   * A bot we play throws something. It goes out as the bot's event, which comes back to us and is drawn
+   * like anyone's; a grenade's blast is ours to time and send for it.
+   */
+  private throwAs(botId: string, kind: 'grenade' | 'smoke' | 'molotov' | 'flash', eye: THREE.Vector3, dir: readonly [number, number, number]): void {
+    const { o, v } = throwVectors(eye, dir);
+    const id = randomId(8);
+    this.net.sendEventAs(botId, { type: kind, id, o, v });
+    if (kind === 'grenade') {
+      const t = simulateGrenade(fromArr(o), fromArr(v), this.world.colliders, 'grenade', this.world.terrainAt);
+      this.pendingBlasts.push({ id, at: performance.now() + t.duration * 1000, p: t.end, owner: botId });
+    }
   }
 
   /** Fighting is paused while the round-over screen is up. */
@@ -1073,6 +1206,8 @@ export class Game {
   }
 
   private onEvent(evt: GameEvent): void {
+    // Hits on the bots we play are ours to apply.
+    this.bots.onEvent(evt);
     // Server timestamp of the event, for the replay recording.
     const t = typeof evt.t === 'number' ? evt.t : this.net.serverNow();
     if (evt.type === 'shot' && evt.from !== this.playerId && evt.o && evt.e) {
@@ -1432,6 +1567,7 @@ export class Game {
     this.clearAbilities();
     this.hud.update({ myMatch: this.myMatch });
     this.respawn();
+    this.bots.startRound();
     this.cloakUntil = 0;
     this.hud.update({ cloaked: false });
     void this.net.sendState({ kills: 0, deaths: 0, shield: false, cloak: false, moment: null, ...this.stats });
@@ -1447,6 +1583,8 @@ export class Game {
    */
   private setRules(rules: ModeRules, announce: boolean): void {
     const wasCtf = this.mode === 'ctf';
+    // Bots rejoin under the new rules (teams may have come or gone, the skill may differ).
+    if (this.joined) this.bots.rulesChanged();
     this.rules = rules;
     this.mode = rules.base;
     this.applyRules();
@@ -1468,6 +1606,54 @@ export class Game {
     }
     this.hud.update({ mode: this.mode, rules });
     if (announce) this.hud.announce(rules.name.toUpperCase(), goalOf(rules));
+  }
+
+  // ---------------------------------------------------------------- bots (room owner)
+
+  /** The room's bots for the owner's panel: each entry, and how its bot is doing */
+  botRows(): BotRow[] {
+    return rosterEntries(this.botRoster).map(([slot, s]) => {
+      const id = this.bots.playerOf(slot);
+      const p = id ? this.players[id] : undefined;
+      return {
+        slot, name: botName(s), base: s.base, skill: s.skill, team: s.team ?? null,
+        playing: !!p, actualTeam: p?.team ?? null, kills: p?.kills ?? 0, deaths: p?.deaths ?? 0,
+      };
+    });
+  }
+
+  private get ownsRoom(): boolean {
+    return !!this.hud.get().owner?.me;
+  }
+
+  /** Owner: one more bot at `skill` (on `team`, or whichever side needs it). Joins mid-game. */
+  async addBot(skill: BotSkill, team: Team | null = null): Promise<void> {
+    if (!this.ownsRoom || Object.keys(this.botRoster).length >= MAX_BOTS) return;
+    const taken = [...Object.values(this.botRoster).map((s) => s.base), ...Object.values(this.players).map((p) => p.name)];
+    const slot: BotSlot = { base: pickBase(taken), skill, at: Date.now(), ...(team ? { team } : {}) };
+    await this.net.setBotSlot(newSlotId(), slot);
+  }
+
+  /** Owner: change a bot's level (its name follows) or team */
+  async editBot(slotId: string, change: { skill?: BotSkill; team?: Team | null }): Promise<void> {
+    const slot = this.botRoster[slotId];
+    if (!this.ownsRoom || !slot) return;
+    const next: BotSlot = { ...slot, ...(change.skill ? { skill: change.skill } : {}) };
+    if (change.team !== undefined) {
+      if (change.team) next.team = change.team;
+      else delete next.team;
+    }
+    await this.net.setBotSlot(slotId, next);
+  }
+
+  async removeBot(slotId: string): Promise<void> {
+    if (!this.ownsRoom) return;
+    await this.net.removeBotSlot(slotId);
+  }
+
+  async removeAllBots(): Promise<void> {
+    if (!this.ownsRoom) return;
+    await this.net.clearBotSlots();
   }
 
   /** Room owner only (the pause menu offers it): end this round now and start over with `rules` on `map`. */
@@ -2052,12 +2238,12 @@ export class Game {
     return true;
   }
 
-  /** Give the kill to `killerId`, and the point to their team in TDM. */
-  private creditKiller(killerId: string): void {
+  /** Give the kill to `killerId`, and the point to their team in TDM. `victimTeam`: ours, or a bot's we play. */
+  private creditKiller(killerId: string, victimTeam: Team | null = this.team): void {
     const round = this.game.round;
     const killer = this.players[killerId];
     // Team modes without flags score a point per kill (TDM, Sniper TDM).
-    if (MODES[this.mode].teams && this.mode !== 'ctf' && killer?.team && killer.team !== this.team) this.addTeamScore(killer.team);
+    if (MODES[this.mode].teams && this.mode !== 'ctf' && killer?.team && killer.team !== victimTeam) this.addTeamScore(killer.team);
     this.net.creditKill(killerId)
       .then((kills) => {
         if (!MODES[this.mode].teams && kills !== null && kills >= this.rules.limit) {
@@ -2090,12 +2276,25 @@ export class Game {
     void this.net.sendState({ ...this.poseState(), hp: this.hp, alive: true });
   }
 
-  /** Prefer spawn points far away from living enemies. */
+  /** Where everyone else's body is (the bots we play have real ones already: their movement's). */
+  private *bodyPoses(): Generator<BodyPose> {
+    for (const [id, r] of this.remotes) {
+      if (this.bots.has(id)) continue;
+      const data = this.players[id];
+      const p = r.position;
+      yield { id, x: p.x, y: p.y, z: p.z, stance: data?.stance ?? 'stand', solid: r.alive && !data?.spec && !this.replay };
+    }
+  }
+
+  /** Prefer spawn points far away from living enemies, and never one someone is standing on. */
   private pickSpawn(): THREE.Vector3 {
     const enemies = [...this.remotes]
       .filter(([id, r]) => r.alive && !this.isAlly(id))
       .map(([, r]) => r.target);
-    const points = this.team ? teamSpawns(this.world.spawns, this.team) : this.world.spawns.map((s) => s.pos);
+    const standing = [...this.remotes.values()].filter((r) => r.alive).map((r) => r.target);
+    const all = this.team ? teamSpawns(this.world.spawns, this.team) : this.world.spawns.map((s) => s.pos);
+    const free = all.filter((p) => standing.every((o) => Math.hypot(o.x - p.x, o.z - p.z) > SPAWN_CLEARANCE));
+    const points = free.length ? free : all;
     const scored = points.map((p) => ({
       p,
       d: enemies.length ? Math.min(...enemies.map((e) => e.distanceTo(p))) : Math.random() * 100,
@@ -2456,7 +2655,7 @@ export class Game {
     this.grenades.launch(id, trajectory);
     this.net.sendEvent({ type: 'grenade', id, o, v });
     this.recorder.event({ t: this.net.serverNow(), kind: 'grenade', id, o, v });
-    this.pendingBlasts.push({ id, at: performance.now() + trajectory.duration * 1000, p: trajectory.end });
+    this.pendingBlasts.push({ id, at: performance.now() + trajectory.duration * 1000, p: trajectory.end, owner: this.playerId });
   }
 
   /** A smoke canister flies like a grenade and bursts where it lands. */
@@ -2532,9 +2731,25 @@ export class Game {
   }
 
   /** Put a turret down in front of us. Refused when there's no room ('steep': the ground's too steep). */
-  private placeTurret(): boolean | 'steep' {
+  /** Us, as something that places and throws things */
+  private get me(): Actor {
+    return { id: this.playerId, pos: this.player.position, yaw: this.player.yaw, onGround: this.player.onGround, color: this.color };
+  }
+
+  /** Whether anyone living stands where `box` would go */
+  private occupied(box: THREE.Box3, pad: number): boolean {
+    const padded = box.clone().expandByScalar(pad);
+    for (const r of this.remotes.values()) {
+      if (r.alive && padded.containsPoint(r.position.clone().setY(r.position.y + 0.5))) return true;
+    }
     const p = this.player.position;
-    const yaw = this.player.yaw;
+    return this.alive && padded.containsPoint(p.clone().setY(p.y + 0.5));
+  }
+
+  /** Put a turret down in front of `actor` (us, or a bot we play: then it goes out as the bot's). */
+  private placeTurret(actor: Actor = this.me): boolean | 'steep' {
+    const p = actor.pos;
+    const yaw = actor.yaw;
     const x = r2(p.x - Math.sin(yaw) * 1.6);
     const z = r2(p.z - Math.cos(yaw) * 1.6);
     const y = this.deployHeight(x, z, p.y, (h) => TurretField.boxFor(x, h, z));
@@ -2543,15 +2758,16 @@ export class Game {
     const limit = this.world.half - 0.8;
     if (Math.abs(x) > limit || Math.abs(z) > limit) return false;
     if (this.world.blockedBy(box)) return false;
-    const padded = box.clone().expandByScalar(0.3);
-    for (const r of this.remotes.values()) {
-      if (r.alive && padded.containsPoint(r.position.clone().setY(r.position.y + 0.5))) return false;
-    }
-    if (padded.containsPoint(p.clone().setY(p.y + 0.5))) return false;
+    if (this.occupied(box, 0.3) || box.clone().expandByScalar(0.3).containsPoint(p.clone().setY(p.y + 0.5))) return false;
     const id = randomId(8);
     const until = this.net.serverNow() + TURRET_DURATION * 1000;
+    const event = { type: 'turret' as const, id, x, y, z, yaw: r2(yaw), until, c: actor.color };
+    if (actor.id !== this.playerId) {
+      this.net.sendEventAs(actor.id, event);
+      return true;
+    }
     this.turrets.place(id, this.playerId, x, y, z, yaw, until, new THREE.Color(this.color).getHex());
-    this.net.sendEvent({ type: 'turret', id, x, y, z, yaw: r2(yaw), until, c: this.color });
+    this.net.sendEvent(event);
     return true;
   }
 
@@ -2614,9 +2830,9 @@ export class Game {
   }
 
   /** Put a land mine down at our feet. Refused (false) in mid-air or at the arena edge. */
-  private placeMine(): boolean {
-    const p = this.player.position;
-    if (!this.player.onGround) return false;
+  private placeMine(actor: Actor = this.me): boolean {
+    const p = actor.pos;
+    if (!actor.onGround) return false;
     const limit = this.world.half - 0.6;
     if (Math.abs(p.x) > limit || Math.abs(p.z) > limit) return false;
     const x = r2(p.x);
@@ -2624,6 +2840,10 @@ export class Game {
     const y = r2(this.groundBelow(new THREE.Vector3(x, p.y + 0.1, z)));
     const id = randomId(8);
     const until = this.net.serverNow() + MINE_DURATION * 1000;
+    if (actor.id !== this.playerId) {
+      this.net.sendEventAs(actor.id, { type: 'mine', id, x, y, z, until });
+      return true;
+    }
     this.addMine(id, this.playerId, x, y, z, until);
     this.net.sendEvent({ type: 'mine', id, x, y, z, until });
     return true;
@@ -2639,25 +2859,26 @@ export class Game {
   /** Our armed mines go off when an enemy comes within MINE_TRIGGER (cloaked or not). */
   private runMine(m: Mine, serverNow: number): void {
     if (serverNow < m.armedAt) return;
-    for (const [id, r] of this.remotes) {
-      if (!r.alive || this.players[id]?.spec || this.isAlly(id)) continue;
-      const dy = r.position.y - m.at.y;
+    for (const t of this.targetsOf(m.owner)) {
+      const dy = t.pos.y - m.at.y;
       if (dy < -0.5 || dy > 1.2) continue;
-      if (Math.hypot(r.position.x - m.at.x, r.position.z - m.at.z) > MINE_TRIGGER) continue;
+      if (Math.hypot(t.pos.x - m.at.x, t.pos.z - m.at.z) > MINE_TRIGGER) continue;
       this.mines.remove(m.id);
-      this.detonate({ id: m.id, p: m.at.clone().setY(m.at.y + 0.15) }, true);
+      this.detonate({ id: m.id, p: m.at.clone().setY(m.at.y + 0.15) }, true, m.owner);
       return;
     }
   }
 
   /** Our turrets pick the nearest enemy they can see (not cloaked) and fire at them. */
+  /** Our turret, or a bot's we play: find the nearest enemy in sight, turn and fire (sent as its owner's). */
   private runTurret(t: Turret, dt: number): void {
+    const ours = t.owner === this.playerId;
     t.cooldown -= dt;
     const head = t.head.getWorldPosition(new THREE.Vector3());
-    let best: { id: string; chest: THREE.Vector3; dist: number } | null = null;
-    for (const [id, r] of this.remotes) {
-      if (!r.alive || r.cloaked || this.players[id]?.spec || this.isAlly(id)) continue;
-      const chest = r.position.clone().setY(r.position.y + r.chestHeight);
+    let best: { target: Target; chest: THREE.Vector3; dist: number } | null = null;
+    for (const target of this.targetsOf(t.owner)) {
+      if (target.cloaked) continue;
+      const chest = target.pos.clone().setY(target.chestY);
       const dist = chest.distanceTo(head);
       if (dist > TURRET_RANGE || (best && dist >= best.dist)) continue;
       // Start the sight line just outside the turret's own box.
@@ -2666,7 +2887,7 @@ export class Game {
       this.turretRay.set(from, dir);
       this.turretRay.far = from.distanceTo(chest);
       if (this.turretRay.intersectObjects(this.world.solids, false).length > 0) continue;
-      best = { id, chest, dist };
+      best = { target, chest, dist };
     }
     if (!best) {
       // Nobody in sight: slowly sweep.
@@ -2681,15 +2902,34 @@ export class Game {
     t.cooldown = TURRET_INTERVAL;
     const muzzle = t.muzzle.getWorldPosition(new THREE.Vector3());
     const dir = best.chest.clone().sub(muzzle).normalize().add(new THREE.Vector3().randomDirection().multiplyScalar(0.035)).normalize();
+    const enemies = this.targetsOf(t.owner);
     const targets: THREE.Object3D[] = [...this.world.solids.filter((s) => s !== t.solid)];
-    for (const [id, r] of this.remotes) if (!this.isAlly(id)) targets.push(...r.hitboxes);
+    for (const e of enemies) if (e.remote) targets.push(...e.remote.hitboxes);
     this.turretRay.set(muzzle, dir);
     this.turretRay.far = TURRET_RANGE + 4;
     const hit = this.turretRay.intersectObjects(targets, false)[0];
-    const end = hit ? hit.point : muzzle.clone().addScaledVector(dir, TURRET_RANGE);
-    const hitId = (hit?.object.userData as Partial<HitboxData> | undefined)?.playerId ?? null;
+    let reach = hit ? hit.distance : TURRET_RANGE;
+    let hitId = (hit?.object.userData as Partial<HitboxData> | undefined)?.playerId ?? null;
+    // We have no hitboxes: a bot's turret checks us by shape.
+    const me = enemies.find((e) => !e.remote);
+    if (me) {
+      const h = hitPlayer({ ox: muzzle.x, oy: muzzle.y, oz: muzzle.z, dx: dir.x, dy: dir.y, dz: dir.z },
+        { id: me.id, x: me.pos.x, y: me.pos.y, z: me.pos.z, stance: this.player.stance }, reach);
+      if (h) {
+        reach = h.dist;
+        hitId = me.id;
+      }
+    }
+    const end = muzzle.clone().addScaledVector(dir, reach);
+    const event = { type: 'shot' as const, o: toArr(muzzle), e: toArr(end), ...(hitId ? { hit: hitId, dmg: TURRET_DAMAGE } : {}), tur: t.id };
+    // A bot's shot comes back to us as an event, which draws it (and hurts us if it hit).
+    if (!ours) {
+      this.net.sendEventAs(t.owner, event);
+      return;
+    }
     this.effects.tracer(muzzle, end, 0xffd27a);
-    if (hit) this.effects.impact(end, hitId ? 0xff3b3b : 0xffc35c);
+    if (hitId) this.effects.impact(end, 0xff3b3b);
+    else if (hit) this.effects.impact(end, 0xffc35c);
     this.debris.shot(muzzle, end);
     this.turrets.fired(t);
     sfx.playShot(0.5 / (1 + muzzle.distanceTo(this.camera.position) / 10), 'rifle');
@@ -2697,9 +2937,7 @@ export class Game {
       const target = this.remotes.get(hitId);
       if (target) this.stats.damage += Math.min(TURRET_DAMAGE, target.displayedHp);
     }
-    this.net.sendEvent({
-      type: 'shot', o: toArr(muzzle), e: toArr(end), ...(hitId ? { hit: hitId, dmg: TURRET_DAMAGE } : {}), tur: t.id,
-    });
+    this.net.sendEvent(event);
   }
 
   /** Per frame: thrown things landing, standing in fire, our turrets, the scan pulse. */
@@ -2718,8 +2956,11 @@ export class Game {
         this.takeDamage(FIRE_DAMAGE, fire.owner, false, 'molotov', fire.center);
       }
     }
-    for (const t of this.turrets.ownedBy(this.playerId)) this.runTurret(t, dt);
-    if (!this.roundOver) for (const m of this.mines.ownedBy(this.playerId)) this.runMine(m, this.net.serverNow());
+    // Ours, and those of the bots we play.
+    for (const t of this.turrets.list()) if (t.owner === this.playerId || this.bots.has(t.owner)) this.runTurret(t, dt);
+    if (!this.roundOver) {
+      for (const m of this.mines.list()) if (m.owner === this.playerId || this.bots.has(m.owner)) this.runMine(m, this.net.serverNow());
+    }
     if (this.scanUntil) {
       if (now >= this.scanUntil) this.endScan();
       else for (const [id, r] of this.remotes) r.setScanned(!this.isAlly(id) && r.position.distanceTo(this.scanOrigin) <= SCAN_RADIUS);
@@ -2730,9 +2971,9 @@ export class Game {
    * Put a barrier down in front of us, square to whichever axis we're facing most. Refused
    * (false) when it would cut into cover, another player or the arena edge ('steep': the ground's too steep).
    */
-  private placeWall(): boolean | 'steep' {
-    const p = this.player.position;
-    const yaw = this.player.yaw;
+  private placeWall(actor: Actor = this.me): boolean | 'steep' {
+    const p = actor.pos;
+    const yaw = actor.yaw;
     const fx = -Math.sin(yaw);
     const fz = -Math.cos(yaw);
     // Facing along z means the wall runs across x.
@@ -2745,36 +2986,57 @@ export class Game {
     const limit = this.world.half - 0.8;
     if (Math.abs(box.min.x) > limit || Math.abs(box.max.x) > limit || Math.abs(box.min.z) > limit || Math.abs(box.max.z) > limit) return false;
     if (this.world.blockedBy(box)) return false;
-    const padded = box.clone().expandByScalar(0.4);
-    for (const r of this.remotes.values()) {
-      if (r.alive && padded.containsPoint(r.position.clone().setY(r.position.y + 0.5))) return false;
-    }
-    if (padded.containsPoint(p.clone().setY(p.y + 0.5))) return false;
+    if (this.occupied(box, 0.4) || box.clone().expandByScalar(0.4).containsPoint(p.clone().setY(p.y + 0.5))) return false;
     const id = randomId(8);
     const until = this.net.serverNow() + WALL_DURATION * 1000;
+    const event = { type: 'wall' as const, id, x, y, z, axis, until, c: actor.color };
+    if (actor.id !== this.playerId) {
+      this.net.sendEventAs(actor.id, event);
+      return true;
+    }
     this.walls.place(id, this.playerId, x, y, z, axis, until, new THREE.Color(this.color).getHex());
-    this.net.sendEvent({ type: 'wall', id, x, y, z, axis, until, c: this.color });
+    this.net.sendEvent(event);
     return true;
   }
 
   /** Our grenade went off: work out who it hurt (walls block it) and tell everyone. */
-  private detonate(blast: { id: string; p: THREE.Vector3 }, mine = false): void {
+  /** Everyone `owner`'s turrets, mines and grenades can hurt: in play, not them, not their team. */
+  private targetsOf(owner: string): Target[] {
+    const team = owner === this.playerId ? this.team : this.players[owner]?.team ?? null;
+    const out: Target[] = [];
+    for (const [id, r] of this.remotes) {
+      const data = this.players[id];
+      if (id === owner || !r.alive || data?.spec || (team && data?.team === team)) continue;
+      out.push({ id, remote: r, pos: r.position, chestY: r.position.y + r.chestHeight, cloaked: r.cloaked });
+    }
+    // A bot's things can hurt us too (we're not among our own remotes).
+    if (owner !== this.playerId && this.joined && this.alive && !this.spectating && !(team && this.team === team)) {
+      const p = this.player.position;
+      const chest = this.player.stance === 'slide' ? 0.45 : this.player.stance === 'crouch' ? 0.65 : 1;
+      out.push({ id: this.playerId, remote: null, pos: p, chestY: p.y + chest, cloaked: this.cloakUntil > performance.now() });
+    }
+    return out;
+  }
+
+  /** A grenade or mine of `owner`'s goes off (ours, or a bot's we play: then it's sent as the bot's). */
+  private detonate(blast: { id: string; p: THREE.Vector3 }, mine = false, owner = this.playerId): void {
+    const ours = owner === this.playerId;
     const hits: Record<string, number> = {};
     // Enemy barriers and turrets in range take damage too (measured to their nearest side).
     const dep: Record<string, number> = {};
     const blastRadius = mine ? MINE_RADIUS : GRENADE_RADIUS;
     for (const d of [...this.walls.list(), ...this.turrets.list()]) {
-      if (!this.canBreak(d.owner, this.playerId)) continue;
+      if (!this.canBreak(d.owner, owner)) continue;
       const dist = d.box.distanceToPoint(blast.p);
       const dmg = Math.round((mine ? MINE_DAMAGE : GRENADE_DAMAGE) * (1 - dist / blastRadius));
       if (dmg >= 5) dep[d.id] = dmg;
     }
-    if (Object.keys(dep).length) this.damageDeployables(dep, this.playerId, Infinity);
+    // (A bot's blast comes back to us as an event, which applies all of this; ours doesn't.)
+    if (ours && Object.keys(dep).length) this.damageDeployables(dep, this.playerId, Infinity);
     // A mine goes off under you: measured to the middle of the body, not the chest.
     const radius = mine ? MINE_RADIUS : GRENADE_RADIUS;
-    for (const [id, remote] of this.remotes) {
-      if (!remote.alive || this.isAlly(id)) continue;
-      const chest = remote.position.clone().setY(remote.position.y + (mine ? 0.6 : remote.chestHeight));
+    for (const t of this.targetsOf(owner)) {
+      const chest = t.pos.clone().setY(mine ? t.pos.y + 0.6 : t.chestY);
       const dist = chest.distanceTo(blast.p);
       if (dist > radius) continue;
       const from = blast.p.clone().setY(blast.p.y + 0.2);
@@ -2783,24 +3045,30 @@ export class Game {
       if (this.losRay.intersectObjects(this.world.solids, false).length > 0) continue;
       const dmg = Math.round((mine ? MINE_DAMAGE : GRENADE_DAMAGE) * (1 - dist / radius));
       if (dmg < 5) continue;
-      hits[id] = dmg;
-      this.stats.damage += Math.min(dmg, remote.displayedHp);
-      remote.reveal(dmg);
+      hits[t.id] = dmg;
+      if (ours && t.remote) {
+        this.stats.damage += Math.min(dmg, t.remote.displayedHp);
+        t.remote.reveal(dmg);
+      }
     }
-
+    const hitAnyone = Object.keys(hits).length > 0;
+    // Firebase rejects undefined fields, so only include hits when there are some.
+    const event = {
+      type: 'blast' as const, id: blast.id, p: toArr(blast.p),
+      ...(hitAnyone ? { hits } : {}), ...(mine ? { mine } : {}), ...(Object.keys(dep).length ? { dep } : {}),
+    };
+    if (!ours) {
+      this.net.sendEventAs(owner, event);
+      return;
+    }
     this.grenades.explode(blast.id, blast.p, GRENADE_RADIUS);
     this.liftBodies(blast.p);
     sfx.playExplosion(1 / (1 + blast.p.distanceTo(this.camera.position) / 12));
-    const hitAnyone = Object.keys(hits).length > 0;
     if (hitAnyone) {
       this.hud.hitmarker(false);
       sfx.playHit(false);
     }
-    // Firebase rejects undefined fields, so only include hits when there are some.
-    this.net.sendEvent({
-      type: 'blast', id: blast.id, p: toArr(blast.p),
-      ...(hitAnyone ? { hits } : {}), ...(mine ? { mine } : {}), ...(Object.keys(dep).length ? { dep } : {}),
-    });
+    this.net.sendEvent(event);
     this.recorder.event({ t: this.net.serverNow(), kind: 'blast', id: blast.id, p: toArr(blast.p) });
   }
 
@@ -2817,7 +3085,7 @@ export class Game {
     const due = this.pendingBlasts.filter((b) => now >= b.at);
     if (due.length) {
       this.pendingBlasts = this.pendingBlasts.filter((b) => now < b.at);
-      due.forEach((b) => this.detonate(b));
+      due.forEach((b) => this.detonate(b, false, b.owner));
     }
     const landed = this.pendingSmokes.filter((b) => now >= b.at);
     if (landed.length) {
@@ -3078,6 +3346,7 @@ export class Game {
     }
     // Nobody moves between rounds.
     this.player.update(dt, this.alive && !this.roundOver);
+    this.bots.update(dt);
     // Bodies and loose props, after we've moved (our body shoves props out of the way).
     this.physics?.update(dt);
     this.debris.update();
@@ -3147,6 +3416,9 @@ export class Game {
         if (heard) sfx.playReload(heard.volume * 1.5, r.heldGun);
       }
     }
+    // Bodies: ours is solid while we play; everyone else's follows where we draw them.
+    this.player.mover.setSolid(this.alive && this.joined && !this.spectating);
+    this.remoteBodies.sync(this.physics, this.bodyPoses());
     this.updateAllySight(dt);
     this.effects.update(dt);
     this.world.sky.position.copy(this.camera.position);
@@ -3495,6 +3767,7 @@ export class Game {
           captures: s.captures || 0,
           team: (id === this.playerId ? this.team : p.team) ?? null,
           me: id === this.playerId,
+          bot: !!p.bot,
           spectating: id === this.playerId ? this.spectating : !!p.spec,
         };
       })
@@ -3508,6 +3781,8 @@ export class Game {
     this.disposed = true;
     this.renderer.setAnimationLoop(null);
     this.player.detachPhysics();
+    this.bots.dispose();
+    this.remoteBodies.clear();
     this.debris.dispose();
     setActivePhysics(null);
     this.physics?.dispose();

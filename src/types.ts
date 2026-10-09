@@ -30,6 +30,8 @@ export interface PlayerState {
   th?: number;
   /** Watching rather than playing: no body, no hitboxes, not in the standings */
   spec?: boolean;
+  /** A bot, played by the room owner's client */
+  bot?: boolean;
   /** Team in TDM / CTF; absent in free-for-all */
   team?: Team;
   /** Match stats, reported by each player about themselves */
@@ -254,6 +256,8 @@ export interface LobbyRecord {
   hostId?: string;
   createdAt: number;
   members?: Record<string, string>;
+  /** The room's bots, kept by its owner (see game/bot/roster.ts) */
+  bots?: Record<string, { base: string; skill: 'easy' | 'normal' | 'hard' | 'expert'; team?: Team | null; at: number }>;
 }
 
 /** Base mode types; prebuilt and custom modes are rule sets on top (see game/rules.ts). */

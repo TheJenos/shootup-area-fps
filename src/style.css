@@ -742,11 +742,39 @@ kbd {
 .mode-detail-tools button { padding: 6px 12px; font-size: 13px; }
 .mode-detail-tools button.icon { padding: 6px 9px; }
 .mode-rules { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 5px; }
+.mode-bots { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; }
+.mode-bots .setting { display: flex; align-items: center; gap: 10px; flex: 1 1 220px; font-size: 13px; }
+.mode-bots .setting > span:first-child { width: 64px; flex-shrink: 0; color: var(--muted); }
+.mode-bots input[type='range'] { flex: 1; min-width: 0; padding: 0; accent-color: var(--accent); }
+.mode-bots select { flex: 1; padding: 6px 8px; background: #0f1218; color: var(--text); border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+.mode-bots .number-readout { width: 64px; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
 .mode-rules li { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.06); color: var(--muted); }
 @media (max-width: 480px) { .mode-group { grid-template-columns: 1fr; } .mode-group-label { padding-top: 0; } }
 
 /* Custom mode editor (reuses the settings panel look) */
 #match-setup { background: rgba(8, 10, 14, 0.75); pointer-events: auto; z-index: 40; }
+/* Bots: the owner's panel, and the badge bots wear in lists */
+.badge.bot { display: inline-block; font-size: 10px; font-weight: 800; letter-spacing: 0.5px; line-height: 1; padding: 2px 4px; margin-right: 5px; border-radius: 3px; background: rgba(255, 181, 71, 0.18); color: var(--accent); vertical-align: 1px; }
+#bots-panel { background: rgba(8, 10, 14, 0.75); pointer-events: auto; z-index: 40; }
+#bots-panel .panel-box { width: min(620px, 100%); max-height: calc(100% - 16px); overflow-y: auto; background: rgba(16, 20, 27, 0.97); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; text-align: left; }
+#bots-panel header, #bots-panel footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+#bots-panel h3 { margin: 0; font-size: 20px; }
+#bots-panel h3 .count { font-size: 14px; font-weight: 500; margin-left: 6px; }
+#bots-panel footer { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+#bots-panel footer p { font-size: 12px; line-height: 1.4; margin: 0; }
+#bots-panel select { padding: 7px 9px; background: #0f1218; color: var(--text); border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 13px; }
+#bots-panel .bots-add { display: flex; gap: 8px; margin: 14px 0; flex-wrap: wrap; }
+#bots-panel .bots-add .primary { margin-left: auto; }
+#bots-panel .empty { font-size: 13px; line-height: 1.5; }
+#bots-panel .bots-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+#bots-panel .bots-list li { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.04); }
+#bots-panel .bots-list li.joining { opacity: 0.6; }
+#bots-panel .bot-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; white-space: nowrap; overflow: hidden; }
+#bots-panel .bot-name .score { margin-left: 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
+#bots-panel .tag { display: inline-block; font-size: 11px; font-weight: 800; padding: 2px 4px; border-radius: 3px; color: #fff; }
+#bots-panel .tag.red { background: #c23b3b; }
+#bots-panel .tag.blue { background: #2f6fd1; }
+@media (max-width: 520px) { #bots-panel .bots-list li { flex-wrap: wrap; } #bots-panel .bot-name { flex-basis: 100%; } }
 #match-setup .panel-box { width: min(640px, 100%); max-height: calc(100% - 16px); overflow-y: auto; background: rgba(16, 20, 27, 0.97); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; text-align: left; }
 #match-setup header, #match-setup footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 #match-setup footer { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }

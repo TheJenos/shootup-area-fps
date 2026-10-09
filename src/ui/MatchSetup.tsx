@@ -57,7 +57,7 @@ export function MatchSetup({ game, hud, onClose }: Props) {
 
         <section>
           <h4>Mode</h4>
-          <ModePicker value={rules} onChange={setRules} />
+          <ModePicker value={rules} onChange={setRules} showBots={false} />
         </section>
 
         <section>

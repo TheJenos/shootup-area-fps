@@ -13,6 +13,7 @@ import { TouchControls } from './TouchControls';
 import { TouchIntro } from './TouchIntro';
 import { PauseMenu } from './PauseMenu';
 import { MatchSetup } from './MatchSetup';
+import { BotsPanel } from './BotsPanel';
 import { GUNS } from '../game/guns';
 import type { GunKind } from '../types';
 import { safeColor } from './colors';
@@ -71,6 +72,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
   const { hudScale, showFps } = useSettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
+  const [botsOpen, setBotsOpen] = useState(false);
   // Phones: the controls guide, once.
   const [intro, setIntro] = useState(() => game.touch && !readFlag(TOUCH_INTRO_KEY));
   // "Connecting…" that drags on gets a way out.
@@ -212,7 +214,9 @@ export function Hud({ game, roomCode, onLeave }: Props) {
         ? <SettingsPanel onClose={() => setSettingsOpen(false)} />
         : setupOpen && hud.owner?.me
           ? <MatchSetup game={game} hud={hud} onClose={() => setSetupOpen(false)} />
-          : (
+          : botsOpen && hud.owner?.me
+            ? <BotsPanel game={game} hud={hud} onClose={() => setBotsOpen(false)} />
+            : (
           <PauseMenu
             game={game}
             hud={hud}
@@ -220,6 +224,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
             onLeave={onLeave}
             onSettings={() => setSettingsOpen(true)}
             onMatchSetup={() => setSetupOpen(true)}
+            onBots={() => setBotsOpen(true)}
             onIntro={game.touch ? () => setIntro(true) : undefined}
           />
         ))}
@@ -596,14 +601,14 @@ function KillFeed({ entries }: { entries: FeedEntry[] }) {
         ) : (
           <li key={e.id} className={e.mine ? 'me' : undefined}>
             <span style={{ color: safeColor(e.killer.color) }}>
-              {tag(e.killerTeam)}{e.killer.name}{e.me === 'killer' && <span className="you"> (you)</span>}
+              {tag(e.killerTeam)}{e.killer.bot && <span className="badge bot">BOT</span>}{e.killer.name}{e.me === 'killer' && <span className="you"> (you)</span>}
             </span>
             <span className="weapon">
               {weaponIcon(e.weapon)}
               {e.weapon !== 'grenade' && e.head && <span className="head"> ⌖ headshot</span>}
             </span>
             <span style={{ color: safeColor(e.victim.color) }}>
-              {tag(e.victimTeam)}{e.victim.name}{e.me === 'victim' && <span className="you"> (you)</span>}
+              {tag(e.victimTeam)}{e.victim.bot && <span className="badge bot">BOT</span>}{e.victim.name}{e.me === 'victim' && <span className="you"> (you)</span>}
             </span>
           </li>
         ),

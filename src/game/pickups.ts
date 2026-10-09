@@ -255,6 +255,11 @@ export class PickupField {
   }
 
   /** The pickup the player is standing on, if any. */
+  /** Everything lying on the map: where it is (its stand's height included) and what it is */
+  list(): { id: string; type: PickupType; uses?: number; x: number; y: number; z: number }[] {
+    return [...this.pickups].map(([id, p]) => ({ id, type: p.record.type, ...(p.record.uses !== undefined ? { uses: p.record.uses } : {}), x: p.record.x, y: p.group.position.y, z: p.record.z }));
+  }
+
   touching(pos: THREE.Vector3): string | null {
     for (const [id, p] of this.pickups) {
       const dx = p.record.x - pos.x;
