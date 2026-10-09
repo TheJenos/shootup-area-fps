@@ -335,6 +335,8 @@ export class Game {
   private specFree = false;
   private readonly specPos = new THREE.Vector3();
   private specKey = '';
+  /** Who we were watching when they died (and when), so their kill can hand us to the killer */
+  private specLost: { id: string; at: number } | null = null;
 
   /** Discord rich presence: what we last showed and when */
   private presenceKey = '';
@@ -660,6 +662,8 @@ export class Game {
       /** Pretend we joined long ago (the leaderboard skips rounds a player only just joined). */
       backdateJoin: (ms: number) => { this.joinedAt -= ms; },
       remoteIds: () => [...this.remotes.keys()],
+      /** Spectating: the next player, as a click would */
+      nextSpectate: () => this.spectating && this.cycleSpectate(1),
       /** Ids of the bots this client plays */
       botIds: () => this.bots.ids(),
       /** Where we draw a remote player, or null if they aren't in the room */
@@ -974,6 +978,7 @@ export class Game {
     this.spectating = false;
     this.specTarget = null;
     this.specKey = '';
+    this.specLost = null;
     this.pov?.setFirstPerson(false);
     this.pov = null;
     this.hud.update({ spectate: null });
@@ -989,8 +994,12 @@ export class Game {
       .sort();
   }
 
-  /** Follow the next (or previous) player. */
+  /**
+   * Follow the next (or previous) player. If whoever we were watching just dropped out of the list
+   * (died, left, started spectating), that's the next one after where they were, not the first.
+   */
   private cycleSpectate(step: 1 | -1): void {
+    this.specLost = null;
     const ids = this.spectatable();
     if (!ids.length) {
       this.specTarget = null;
@@ -998,8 +1007,32 @@ export class Game {
       return;
     }
     this.specFree = false;
-    const i = this.specTarget ? ids.indexOf(this.specTarget) : -1;
-    this.specTarget = ids[((i < 0 ? (step > 0 ? -1 : 0) : i) + step + ids.length) % ids.length] ?? null;
+    const current = this.specTarget;
+    const i = current ? ids.indexOf(current) : -1;
+    if (i >= 0) {
+      this.specTarget = ids[(i + step + ids.length) % ids.length] ?? null;
+    } else if (current) {
+      // Where they'd sit in the (sorted) list: the next one after, or the one before.
+      const after = ids.findIndex((id) => id > current);
+      const next = step > 0 ? (after < 0 ? 0 : after) : (after < 0 ? ids.length : after) - 1;
+      this.specTarget = ids[(next + ids.length) % ids.length] ?? null;
+    } else {
+      this.specTarget = ids[step > 0 ? 0 : ids.length - 1] ?? null;
+    }
+  }
+
+  /**
+   * Someone was killed: if it's who we're watching (or were, a moment ago: their death can arrive
+   * before or after the kill), follow whoever killed them.
+   */
+  private followKiller(victim: string, killer: string): void {
+    if (!this.spectating || this.replay || killer === victim) return;
+    const lost = this.specLost;
+    const watching = this.specTarget === victim || (lost?.id === victim && performance.now() - lost.at < 2_000);
+    if (!watching || !this.spectatable().includes(killer)) return;
+    this.specLost = null;
+    this.specFree = false;
+    this.specTarget = killer;
   }
 
   /**
@@ -1009,7 +1042,9 @@ export class Game {
   private updateSpectator(dt: number): void {
     const target = this.specTarget ? this.remotes.get(this.specTarget) : null;
     if (this.specTarget && (!target || !target.alive || this.players[this.specTarget]?.spec)) {
+      const lost = { id: this.specTarget, at: performance.now() };
       this.cycleSpectate(1);
+      this.specLost = lost;
       return;
     }
     // Someone to watch again after flying around alone: go back to their eyes.
@@ -1223,6 +1258,7 @@ export class Game {
       this.recorder.event({ t, kind: 'smoke', id: evt.id, o: evt.o, v: evt.v });
     } else if (evt.type === 'kill') {
       this.recorder.event({ t, kind: 'kill', killer: evt.killer, victim: evt.victim, head: evt.head });
+      this.followKiller(evt.victim, evt.killer);
     }
 
     if (evt.type === 'shot') {
@@ -1233,7 +1269,9 @@ export class Game {
         this.turrets.aimAt(turret, fromArr(evt.e));
         this.turrets.fired(turret);
       } else if (!evt.tur) {
-        this.remotes.get(evt.from)?.noteShot();
+        const shooter = this.remotes.get(evt.from);
+        shooter?.showGun(evt.w && evt.w in GUNS ? evt.w : 'rifle');
+        shooter?.noteShot();
       }
       const origin = fromArr(evt.o);
       const gun = evt.w && evt.w in GUNS ? evt.w : 'rifle';
@@ -3489,7 +3527,9 @@ export class Game {
     const gun = target.heldGun;
     const pv = this.povWeapon;
     // A flag carrier holds the flag they took, in its team's colour.
-    const carried = !this.replay && this.specTarget ? TEAMS.find((t) => this.game.flags[t]?.by === this.specTarget) : undefined;
+    const carried = this.replay
+      ? this.replay.carriedFlag(this.replay.mvpId)
+      : this.specTarget ? TEAMS.find((t) => this.game.flags[t]?.by === this.specTarget) : undefined;
     pv.setMelee(target.carryingFlag, carried ? TEAM_INFO[carried].color : undefined);
     pv.showGun(gun);
     if (target.consumeShotFlash()) pv.flashShot();
@@ -3625,7 +3665,7 @@ export class Game {
     this.recordTimer -= dt;
     if (this.recordTimer > 0) return;
     this.recordTimer = RECORD_INTERVAL;
-    this.recorder.pose(this.playerId, { name: this.name, color: this.color, ...this.poseState(), alive: this.alive }, this.net.serverNow());
+    this.recorder.pose(this.playerId, { name: this.name, color: this.color, ...this.poseState(), gun: this.weapon.gun, alive: this.alive }, this.net.serverNow());
   }
 
   /** Measure our ping every few seconds and publish it for everyone's scoreboard. */

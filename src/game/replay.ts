@@ -28,6 +28,7 @@ interface PoseSample {
   alive: boolean;
   stance?: Stance;
   aim?: boolean;
+  gun?: GunKind;
 }
 
 interface Track {
@@ -61,7 +62,7 @@ export class ReplayRecorder {
   }
 
   pose(
-    id: string, data: Pick<PlayerState, 'name' | 'color' | 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'alive' | 'stance' | 'aim'>, t: number,
+    id: string, data: Pick<PlayerState, 'name' | 'color' | 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'alive' | 'stance' | 'aim' | 'gun'>, t: number,
   ): void {
     let track = this.tracks.get(id);
     if (!track) {
@@ -74,10 +75,11 @@ export class ReplayRecorder {
     const last = track.samples[track.samples.length - 1];
     const stance = data.stance ?? 'stand';
     const aim = !!data.aim;
-    // Always keep deaths, respawns, stance and aim changes, otherwise thin out to the sample rate.
-    if (last && t - last.t < SAMPLE_GAP && last.alive === alive && last.stance === stance && !!last.aim === aim) return;
+    const gun = data.gun ?? 'rifle';
+    // Always keep deaths, respawns, stance, aim and gun changes, otherwise thin out to the sample rate.
+    if (last && t - last.t < SAMPLE_GAP && last.alive === alive && last.stance === stance && !!last.aim === aim && last.gun === gun) return;
     track.samples.push({
-      t, x: data.x || 0, y: data.y || 0, z: data.z || 0, yaw: data.yaw || 0, pitch: data.pitch || 0, alive, stance, aim,
+      t, x: data.x || 0, y: data.y || 0, z: data.z || 0, yaw: data.yaw || 0, pitch: data.pitch || 0, alive, stance, aim, gun,
     });
   }
 
@@ -120,6 +122,7 @@ function sampleAt(samples: PoseSample[], t: number): PoseSample | null {
     alive: true,
     stance: a.stance,
     aim: a.aim,
+    gun: a.gun,
   };
 }
 
@@ -208,11 +211,24 @@ export class ReplayDirector {
       const pose = track ? sampleAt(track.samples, this.time) : null;
       ghost.setVisible(!!pose);
       if (pose) {
-        ghost.setData({ x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw, pitch: pose.pitch, alive: pose.alive, stance: pose.stance ?? 'stand', aim: !!pose.aim });
+        ghost.setData({
+          x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw, pitch: pose.pitch, alive: pose.alive, stance: pose.stance ?? 'stand', aim: !!pose.aim,
+          gun: pose.gun ?? 'rifle',
+        });
       }
       ghost.setCarrying(TEAMS.some((t) => { const f = this.flags[t]; return f?.at === 'carried' && f.carrier === id; }));
       ghost.update(dt);
     }
+  }
+
+  /** Whose highlight this is */
+  get mvpId(): string {
+    return this.opts.mvp.id;
+  }
+
+  /** The team whose flag `id` is carrying at the replay's current time */
+  carriedFlag(id: string): Team | undefined {
+    return TEAMS.find((t) => { const f = this.flags[t]; return f?.at === 'carried' && f.carrier === id; });
   }
 
   /** Whose eyes the replay is seen through: the MVP, while their stand-in is on screen. */
@@ -236,7 +252,9 @@ export class ReplayDirector {
       this.eventIndex++;
       if (e.t <= from) continue;
       if (e.kind === 'shot') {
-        if (e.from) this.ghosts.get(e.from)?.noteShot();
+        const shooter = e.from ? this.ghosts.get(e.from) : undefined;
+        shooter?.showGun(e.w ?? 'rifle');
+        shooter?.noteShot();
         const o = fromArr(e.o);
         for (const p of [e.e, ...(e.ends ?? [])]) {
           const end = fromArr(p);

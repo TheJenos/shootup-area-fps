@@ -473,6 +473,16 @@ export class RemotePlayer {
     return 1 - 0.35 * this.crouchAmount - 0.55 * this.slideAmount;
   }
 
+  /**
+   * The gun a shot of theirs says they fired: a shot can arrive just before the state update that
+   * says they switched, so trust the shot.
+   */
+  showGun(kind: GunKind): void {
+    if (kind === this.gunNow) return;
+    this.setGun(kind);
+    if (this.alive) this.switchTime = 0;
+  }
+
   /** Show the gun they're holding. */
   private setGun(kind: GunKind): void {
     this.gunNow = kind;
