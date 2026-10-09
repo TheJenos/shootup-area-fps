@@ -13,7 +13,7 @@ interface PickerProps {
 }
 
 /** The plain base modes come first; everything else is an arcade preset. */
-const CLASSIC = PRESETS.filter((p) => p.id === 'ffa' || p.id === 'tdm' || p.id === 'ctf');
+const CLASSIC = PRESETS.filter((p) => p.id === 'ffa' || p.id === 'tdm' || p.id === 'ctf' || p.id === 'snd');
 const ARCADE = PRESETS.filter((p) => !CLASSIC.includes(p));
 
 /**
@@ -26,7 +26,8 @@ export function ModePicker({ value, onChange, showBots = true }: PickerProps) {
   const [editing, setEditing] = useState<ModeRules | null>(null);
   const presetOf = PRESETS.find((p) => sameMode(p.rules, value));
   const isMine = !presetOf && mine.some((m) => sameMode(m, value));
-  const chips = [`${value.limit} ${value.base === 'ctf' ? 'captures' : value.loadout === 'gungame' ? 'guns' : 'kills'} to win`, `${value.minutes} min`, ...tweaks(value)];
+  const unit = value.base === 'ctf' ? 'captures' : value.base === 'snd' ? 'rounds' : value.loadout === 'gungame' ? 'guns' : 'kills';
+  const chips = [`${value.limit} ${unit} to win`, `${value.minutes} min`, ...(value.base === 'snd' ? ['One life per round'] : []), ...tweaks(value)];
   /** Picking another mode keeps the room's bots */
   const pick = (rules: ModeRules) => onChange({ ...rules, bots: value.bots, botSkill: value.botSkill });
 
@@ -210,9 +211,14 @@ function ModeEditor({ initial, onCancel, onUse }: EditorProps) {
           <h4>Round</h4>
           {rules.loadout === 'gungame'
             ? <p className="muted hint">Gun Game ends when someone clears all {rules.limit} guns.</p>
-            : range(rules.base === 'ctf' ? 'Captures to win' : rules.base === 'tdm' ? 'Team kills to win' : 'Kills to win', 'limit', lo, hi, 1, (v) => String(v))}
+            : range(
+              rules.base === 'ctf' ? 'Captures to win' : rules.base === 'snd' ? 'Rounds to win' : rules.base === 'tdm' ? 'Team kills to win' : 'Kills to win',
+              'limit', lo, hi, 1, (v) => String(v),
+            )}
           {range('Time limit', 'minutes', LIMITS.minutes[0], LIMITS.minutes[1], 1, (v) => `${v} min`)}
-          {range('Respawn', 'respawn', LIMITS.respawn[0], LIMITS.respawn[1], 1, (v) => `${v} s`)}
+          {rules.base === 'snd'
+            ? <p className="muted hint">No respawns: whoever dies sits out the rest of the round. Teams swap sides at halftime.</p>
+            : range('Respawn', 'respawn', LIMITS.respawn[0], LIMITS.respawn[1], 1, (v) => `${v} s`)}
         </section>
 
         <section>

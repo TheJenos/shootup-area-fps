@@ -41,7 +41,7 @@ export interface PlayerState {
   headshots?: number;
   streak?: number;
   best?: number;
-  /** Flags captured (CTF) */
+  /** Flags captured (CTF), or bombs planted and defused (Search & Destroy) */
   captures?: number;
   /** Round trip to the Firebase server in ms, measured by this player */
   ping?: number;
@@ -119,8 +119,8 @@ export interface ShotEvent {
 /** Guns a player can hold. The rifle is always carried; the others are picked up on the map. */
 export type GunKind = 'rifle' | 'shotgun' | 'sniper' | 'deagle';
 
-/** What can kill: a gun, the knife, a grenade, or the enemy flag swung as a club (CTF carriers) */
-export type WeaponKind = GunKind | 'knife' | 'grenade' | 'flag' | 'molotov' | 'turret' | 'mine';
+/** What can kill: a gun, the knife, a grenade, the enemy flag swung as a club (CTF carriers) or the bomb going off (S&D) */
+export type WeaponKind = GunKind | 'knife' | 'grenade' | 'flag' | 'molotov' | 'turret' | 'mine' | 'bomb';
 
 export interface KillEvent {
   type: 'kill';
@@ -263,7 +263,7 @@ export interface LobbyRecord {
 }
 
 /** Base mode types; prebuilt and custom modes are rule sets on top (see game/rules.ts). */
-export type GameMode = 'ffa' | 'tdm' | 'ctf';
+export type GameMode = 'ffa' | 'tdm' | 'ctf' | 'snd';
 
 export type Team = 'red' | 'blue';
 
@@ -276,6 +276,40 @@ export interface FlagRecord {
   x?: number;
   y?: number;
   z?: number;
+}
+
+/** A bomb site in Search & Destroy */
+export type SiteId = 'a' | 'b';
+
+/**
+ * The bomb (Search & Destroy). `by`: someone is carrying it; `site` + `plantedAt`: it's ticking there;
+ * otherwise `x`/`y`/`z` is where it lies.
+ */
+export interface BombRecord {
+  by?: string;
+  x?: number;
+  y?: number;
+  z?: number;
+  site?: SiteId;
+  /** When it was planted (server ms), and by whom */
+  plantedAt?: number;
+  planter?: string;
+}
+
+/**
+ * Search & Destroy: one match is a series of short rounds without respawns. The attackers win a round by
+ * blowing up a bomb site (or wiping out the defenders); the defenders by stopping that. At game/snd.
+ */
+export interface SndRecord {
+  /** This round's number in the match, from 0 */
+  n: number;
+  /** The attacking team this round */
+  atk: Team;
+  /** When the fighting starts (server ms); before that everyone is held at their spawn */
+  at: number;
+  bomb: BombRecord;
+  /** Set once the round is decided; the next starts a few seconds later */
+  over?: { winner: Team; why: 'elim' | 'bomb' | 'defuse' | 'time'; at: number; x?: number; y?: number; z?: number };
 }
 
 /** Round state at rooms/{code}/game, changed only through transactions. */
@@ -293,9 +327,11 @@ export interface GameRecord {
   startedAt?: number;
   /** Set at the time or score limit; results, the MVP replay, then the next round follow */
   ended?: RoundEnd;
-  /** Team modes: kills (TDM) or captures (CTF) */
+  /** Team modes: kills (TDM), captures (CTF) or rounds won (S&D) */
   score?: Partial<Record<Team, number>>;
   flags?: Partial<Record<Team, FlagRecord>>;
+  /** Search & Destroy's round; missing until the first one is set up */
+  snd?: SndRecord;
   /** The mode rules, once the owner has changed them mid-room; missing means the lobby's */
   rules?: ModeRules;
 }

@@ -5,10 +5,14 @@ import { generateMap, groundHeight, toSpec, type MapData, type MapSize } from '.
 import { GUNS, shotDamage } from '../../gunStats';
 import { FLAG_RADIUS, FLAG_RETURN_TIME, MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_RANGE, otherTeam } from '../../modes';
 import type { Ramp } from '../../ramps';
-import type { GameMode, GunKind } from '../../../types';
+import type { GameMode, GunKind, SiteId, SndRecord } from '../../../types';
+import {
+  BOMB_BLAST_RADIUS, BOMB_PICKUP_RADIUS, DEFUSE_RADIUS, DEFUSE_TIME, PLANT_TIME, ROUND_END_TIME, attackersFor, bombHome, bombPlacement,
+  bombSites, decide, newRound, phaseOf, siteAt, type Headcount,
+} from '../../snd';
 import type { Team } from '../../mapgen/types';
 import { DECISION_DT, MAX_TURN, type BotAction } from '../policy';
-import { goalFor, newPatrol, travelAction, Unstuck, type Patrol, type Point } from '../objective';
+import { goalFor, newPatrol, travelAction, Unstuck, type Patrol, type Point, type SndGoalView } from '../objective';
 import { BotMemory, MEMORY_TIME, OBS_LAYOUT, observe, type BodyView, type CtfView, type FlagState } from '../observe';
 import { AimController } from '../aim';
 import { rollPersonality, type Personality } from '../brain';
@@ -19,7 +23,7 @@ import { aimAngles, hitPlayer, lookDir, scatter, spreadOf, type Ray } from '../h
 
 /*
  * The game without a screen, for training bots: a generated map, Rapier collision, the player's
- * own movement (movement.ts), guns as guns.ts has them, and the rules of FFA, TDM and CTF.
+ * own movement (movement.ts), guns as guns.ts has them, and the rules of FFA, TDM, CTF and S&D (snd.ts).
  * Abilities, grenades and pickups are left out. Every agent is driven from outside, one decision
  * every DECISION_DT, and gets back a reward.
  */
@@ -55,6 +59,12 @@ export const REWARD = {
   /** Every teammate's share when the team captures (or is captured on: negative) */
   teamCapture: 1.5,
   carrierKill: 1,
+  /** S&D: picking up a dropped bomb, planting it, defusing it */
+  bombPickup: 0.5,
+  plant: 3,
+  defuse: 3,
+  /** S&D: every player's share when their team wins a round (losing it: negative) */
+  round: 1.5,
   /** Getting closer to the objective, per metre (as a potential: walking back costs it again) */
   progress: 0.03,
   /** Turning toward a visible enemy, per radian of aim error closed (a potential too) */
@@ -76,7 +86,7 @@ export interface ArenaConfig {
   gun?: GunKind;
   /** Episode length in seconds of game time */
   seconds: number;
-  /** Kills (FFA), team kills (TDM) or captures (CTF) that end the episode */
+  /** Kills (FFA), team kills (TDM), captures (CTF) or rounds won (S&D) that end the episode */
   limit?: number;
   health?: number;
   /** Goals from the objective layer (objective.ts): on unless turned off */
@@ -102,7 +112,10 @@ export interface SimAgent {
   meleeCooldown: number;
   kills: number;
   deaths: number;
+  /** Flags captured (CTF), or bombs planted and defused (S&D) */
   captures: number;
+  /** S&D: seconds spent planting or defusing so far (standing still meanwhile) */
+  channel: number;
   readonly memory: BotMemory;
   readonly steering: Steering;
   action: BotAction;
@@ -181,6 +194,10 @@ export class Arena {
   flags: Record<Team, FlagState> = { red: { at: 'base' }, blue: { at: 'base' } };
   private flagDroppedAt: Record<Team, number> = { red: 0, blue: 0 };
   readonly bases: Record<Team, { x: number; y: number; z: number }>;
+  /** S&D: this round (times in ms of arena time), the defenders' sites, and the site the attackers go for */
+  snd: SndRecord | null = null;
+  sites: Record<SiteId, Point> | null = null;
+  private sndTarget: SiteId = 'a';
   done = false;
   /** Every kill so far, by agent index */
   readonly killLog: { killer: number; victim: number }[] = [];
@@ -198,7 +215,7 @@ export class Arena {
     this.physics = buildPhysics(this.map);
     this.senses = new MapSenses(this.map, this.physics);
     this.maxHp = config.health ?? 100;
-    this.limit = config.limit ?? (config.mode === 'ctf' ? 3 : config.mode === 'tdm' ? 30 : 15);
+    this.limit = config.limit ?? (config.mode === 'ctf' || config.mode === 'snd' ? 3 : config.mode === 'tdm' ? 30 : 15);
     this.patrolPoints = [
       ...this.map.spawns.map((sp) => ({ x: sp.x, y: sp.y, z: sp.z, team: sp.team })),
       // Red's half is +z.
@@ -218,12 +235,13 @@ export class Arena {
       const gun = config.gun ?? 'rifle';
       this.agents.push({
         id: `a${i}`, index: i, team, dummy: i >= total - dummies, mover, yaw: 0, pitch: 0, hp: this.maxHp, alive: true, respawnAt: 0,
-        gun, ammo: GUNS[gun].mag, reloadLeft: 0, cooldown: 0, burst: 0, meleeCooldown: 0, kills: 0, deaths: 0, captures: 0,
+        gun, ammo: GUNS[gun].mag, reloadLeft: 0, cooldown: 0, burst: 0, meleeCooldown: 0, kills: 0, deaths: 0, captures: 0, channel: 0,
         memory: new BotMemory(), steering: new Steering(), action: { move: 0, sprint: false, jump: false, crouch: false, fire: false, aimYaw: 0, aimPitch: 0 },
         reward: 0, rewardParts: {}, objective: Infinity, aimError: null, patrol: newPatrol(), unstuck: new Unstuck(), personality: rollPersonality(rand), aim: null,
       });
     }
     for (const a of this.agents) this.spawn(a);
+    if (this.mode === 'snd') this.startSndRound(0);
   }
 
   dispose(): void {
@@ -258,9 +276,10 @@ export class Arena {
     const ctf = this.ctfView(a);
     const carrying = this.carrying(a);
     const known = [...a.memory.seen.values()].filter((m) => this.time - m.t <= MEMORY_TIME);
+    const snd = this.sndView(a);
     const goal = this.config.objectives === false ? null : goalFor({
-      self: { id: a.id, team: a.team, x: p.x, y: p.y, z: p.z, carrying },
-      others, mode: this.mode, ctf, patrolPoints: this.patrolPoints, patrol: a.patrol, now: this.time, rand: this.rand,
+      self: { id: a.id, team: a.team, x: p.x, y: p.y, z: p.z, carrying: carrying || !!snd?.carrying },
+      others, mode: this.mode, ctf, snd, patrolPoints: this.patrolPoints, patrol: a.patrol, now: this.time, rand: this.rand,
       hp: a.hp / this.maxHp, known, aggression: a.personality.aggression,
     });
     observe({
@@ -269,7 +288,8 @@ export class Arena {
         hp: a.hp, maxHp: this.maxHp, team: a.team, gun: a.gun, ammo: a.ammo, mag: GUNS[a.gun].mag, reloading: a.reloadLeft > 0, carrying: this.carrying(a),
       },
       others, mode: this.mode, ctf, now: this.time, memory: a.memory, senses: this.senses, info: this.obsInfo,
-      goal, asMode: goal && this.mode === 'ctf' ? 'tdm' : undefined,
+      // As in the game (botHost.ts): the policy has never had S&D inputs, so its fights look like TDM to it.
+      goal, asMode: this.mode === 'snd' || (goal && this.mode === 'ctf') ? 'tdm' : undefined,
     }, out);
     // Whoever it just saw, its teammates hear about.
     if (a.team) callOut(a.memory, this.agents.filter((b) => b !== a && b.team === a.team && b.alive).map((b) => b.memory), this.time);
@@ -330,6 +350,8 @@ export class Arena {
   private tick(): void {
     const dt = TICK;
     this.time += dt;
+    // S&D holds everyone at their spawn before a round; planting and defusing mean standing still.
+    const frozen = !!this.snd && phaseOf(this.snd, this.time * 1000) === 'freeze';
     for (const a of this.agents) {
       if (!a.alive) {
         if (this.time >= a.respawnAt) this.spawn(a);
@@ -342,7 +364,7 @@ export class Arena {
         a.yaw = wrap(a.yaw + dYaw);
         a.pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, a.pitch + dPitch));
       }
-      a.mover.step(dt, a.yaw, moveInputOf(a.action, _move));
+      a.mover.step(dt, a.yaw, frozen || a.channel > 0 ? null : moveInputOf(a.action, _move));
       if (a.mover.position.y < -5) this.kill(a, null, false);
     }
     // Step the world as the game does every frame: Rapier queues every collider move until a step,
@@ -363,6 +385,7 @@ export class Arena {
       else this.fire(a);
     }
     if (this.mode === 'ctf') this.updateFlags();
+    if (this.mode === 'snd') this.updateSnd(dt);
   }
 
   private eye(a: SimAgent): THREE.Vector3 {
@@ -454,15 +477,22 @@ export class Arena {
   }
 
   private kill(victim: SimAgent, killer: SimAgent | null, _head: boolean): void {
-    const carried = this.carrying(victim);
+    // In S&D the bomb carrier, a planter and a defuser are worth as much as a flag carrier.
+    const carried = this.carrying(victim) || this.snd?.bomb.by === victim.id || victim.channel > 0;
     victim.alive = false;
     victim.mover.setSolid(false);
     victim.hp = 0;
     victim.deaths++;
-    victim.respawnAt = this.time + RESPAWN_TIME;
+    victim.channel = 0;
+    // S&D: no respawns; the next round brings everyone back.
+    victim.respawnAt = this.mode === 'snd' ? Infinity : this.time + RESPAWN_TIME;
+    if (this.snd?.bomb.by === victim.id) {
+      const p = victim.mover.position;
+      this.snd.bomb = { x: p.x, y: groundHeight(this.map.ground, p.x, p.z), z: p.z };
+    }
     this.give(victim, 'death', -REWARD.death);
     victim.memory.reset();
-    if (carried) {
+    if (this.carrying(victim)) {
       const p = victim.mover.position;
       const flagTeam = otherTeam(victim.team!);
       this.flags[flagTeam] = { at: 'ground', x: p.x, y: groundHeight(this.map.ground, p.x, p.z), z: p.z };
@@ -548,6 +578,119 @@ export class Arena {
     }
   }
 
+  // ---------------------------------------------------------------- search & destroy
+
+  /** This S&D round as `a`'s objective layer sees it (as botHost.ts builds it in the game) */
+  private sndView(a: SimAgent): SndGoalView | null {
+    const s = this.snd;
+    if (!s || !this.sites || !a.team) return null;
+    const attacking = a.team === s.atk;
+    const b = bombPlacement(s.bomb);
+    const bomb = !b ? null
+      : b.at === 'carried' ? (attacking ? { at: 'carried' as const, carrier: b.carrier } : null)
+        : b.at === 'planted' ? { at: 'planted' as const, x: b.x, y: b.y, z: b.z }
+          : attacking ? { at: 'ground' as const, x: b.x, y: b.y, z: b.z } : null;
+    return { attacking, sites: this.sites, target: this.sndTarget, bomb, carrying: s.bomb.by === a.id };
+  }
+
+  /** S&D round `n`: everyone back at their spawn, the bomb with a random attacker. */
+  private startSndRound(n: number): void {
+    const atk = attackersFor(n, this.limit);
+    const attackers = this.agents.filter((a) => a.team === atk);
+    const carrier = attackers.length ? attackers[Math.floor(this.rand() * attackers.length)]!.id : null;
+    this.snd = newRound(n, this.limit, this.time * 1000, carrier, bombHome(this.map, atk));
+    this.sites = bombSites(this.map, otherTeam(atk));
+    this.sndTarget = this.rand() < 0.5 ? 'a' : 'b';
+    for (const a of this.agents) {
+      a.channel = 0;
+      a.patrol.target = null;
+      a.memory.reset();
+      a.unstuck.reset();
+      this.spawn(a);
+    }
+  }
+
+  private headcount(): Headcount {
+    const heads: Headcount = { red: { size: 0, alive: 0 }, blue: { size: 0, alive: 0 } };
+    for (const a of this.agents) {
+      if (!a.team) continue;
+      heads[a.team].size++;
+      if (a.alive) heads[a.team].alive++;
+    }
+    return heads;
+  }
+
+  /** The bomb and the round, every tick: what game.ts and botHost.ts do between them. */
+  private updateSnd(dt: number): void {
+    const s = this.snd;
+    const sites = this.sites;
+    if (!s || !sites) return;
+    const now = this.time * 1000;
+    if (s.over) {
+      if (now >= s.over.at + ROUND_END_TIME * 1000 && !this.done) this.startSndRound(s.n + 1);
+      return;
+    }
+    for (const a of this.agents) {
+      if (!a.alive || !a.team) continue;
+      const me = a.mover.position;
+      const near = (p: Point, r: number) => Math.hypot(p.x - me.x, p.z - me.z) < r && Math.abs(p.y - me.y) < 1.8;
+      const phase = phaseOf(s, now);
+      const b = bombPlacement(s.bomb);
+      if (a.team === s.atk) {
+        if (b?.at === 'ground' && near(b, BOMB_PICKUP_RADIUS)) {
+          s.bomb = { by: a.id };
+          this.give(a, 'bomb', REWARD.bombPickup);
+          continue;
+        }
+        const site = s.bomb.by === a.id && phase === 'live' && a.mover.onGround ? siteAt(sites, me) : null;
+        if (!site) {
+          a.channel = 0;
+          continue;
+        }
+        a.channel += dt;
+        if (a.channel < PLANT_TIME) continue;
+        a.channel = 0;
+        s.bomb = { x: me.x, y: me.y, z: me.z, site, plantedAt: now, planter: a.id };
+        a.captures++;
+        this.give(a, 'bomb', REWARD.plant);
+        continue;
+      }
+      if (phase !== 'planted' || b?.at !== 'planted' || !near(b, DEFUSE_RADIUS)) {
+        a.channel = 0;
+        continue;
+      }
+      a.channel += dt;
+      if (a.channel < DEFUSE_TIME) continue;
+      a.channel = 0;
+      a.captures++;
+      this.give(a, 'bomb', REWARD.defuse);
+      this.endSndRound(a.team, 'defuse');
+      return;
+    }
+    const result = decide(s, now, this.headcount());
+    if (result) this.endSndRound(result.winner, result.why);
+  }
+
+  private endSndRound(winner: Team, why: NonNullable<SndRecord['over']>['why']): void {
+    const s = this.snd!;
+    s.over = { winner, why, at: this.time * 1000 };
+    for (const a of this.agents) a.channel = 0;
+    if (why === 'bomb') {
+      // Everyone close by goes with it; the planter takes the credit for enemies.
+      const b = bombPlacement(s.bomb);
+      const planter = b?.at === 'planted' ? this.agents.find((x) => x.id === b.planter) ?? null : null;
+      if (b && b.at !== 'carried') {
+        for (const a of this.agents) {
+          const p = a.mover.position;
+          if (a.alive && Math.hypot(p.x - b.x, p.z - b.z) < BOMB_BLAST_RADIUS) this.kill(a, planter && this.isEnemy(planter, a) ? planter : null, false);
+        }
+      }
+    }
+    this.score[winner] = (this.score[winner] ?? 0) + 1;
+    for (const a of this.agents) if (a.team) this.give(a, 'round', a.team === winner ? REWARD.round : -REWARD.round);
+    if (this.score[winner]! >= this.limit) this.done = true;
+  }
+
   /**
    * Shaping rewards for the decision just observed (`obs`, raw): progress toward the objective and
    * aim closing in on the nearest visible enemy. Both are potentials, so they add up to nothing
@@ -568,7 +711,7 @@ export class Arena {
    * closed since the last decision (a potential, so going back and forth earns nothing).
    */
   progress(a: SimAgent, dist: number): void {
-    const weight = this.mode === 'ctf' ? 1 : 0.3;
+    const weight = this.mode === 'ctf' || this.mode === 'snd' ? 1 : 0.3;
     if (Number.isFinite(dist) && Number.isFinite(a.objective) && a.alive) {
       // Don't count teleports (respawns, capturing resets the objective).
       const closed = a.objective - dist;

@@ -3,7 +3,7 @@
  * trained on, and reports wins, kills and captures per mode.
  *
  *   npm run eval:bots -- [--policy bots/best.json | bots/latest.json | public/bots/policy.json] [--vs scripted | <checkpoint>]
- *                        [--episodes 6] [--modes ffa,tdm,ctf] [--size m] [--tier hard | easy,normal,hard,expert]
+ *                        [--episodes 6] [--modes ffa,tdm,ctf,snd] [--size m] [--tier hard | easy,normal,hard,expert]
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { loadPhysics } from '../src/game/physics';
@@ -30,7 +30,7 @@ async function main(): Promise<void> {
   const vs = opt('vs', 'scripted');
   const opponent = vs === 'scripted' ? null : loadPolicy(vs);
   const episodes = Number(opt('episodes', '6'));
-  const modes = opt('modes', 'ffa,tdm,ctf').split(',') as GameMode[];
+  const modes = opt('modes', 'ffa,tdm,ctf,snd').split(',') as GameMode[];
   const size = opt('size', 'm') as MapSize;
   const tiers = opt('tier', 'hard').split(',') as BotSkill[];
 
@@ -40,7 +40,7 @@ async function main(): Promise<void> {
     const results = Array.from({ length: episodes }, (_, ep) => evaluateMatch(policy, opponent, mode, EVAL_SEEDS[ep % EVAL_SEEDS.length]!, size, tier));
     const t = (k: 'kills' | 'deaths' | 'captures' | 'against') => results.reduce((n, r) => n + r[k], 0);
     const count = (o: string) => results.filter((r) => r.outcome === o).length;
-    console.log(`${mode.toUpperCase()}: won ${count('won')}, lost ${count('lost')}, drew ${count('draw')} · K/D ${t('kills')}/${t('deaths')} (${(t('kills') / Math.max(1, t('deaths'))).toFixed(2)})${mode === 'ctf' ? ` · captures ${t('captures')} vs ${t('against')}` : ''}`);
+    console.log(`${mode.toUpperCase()}: won ${count('won')}, lost ${count('lost')}, drew ${count('draw')} · K/D ${t('kills')}/${t('deaths')} (${(t('kills') / Math.max(1, t('deaths'))).toFixed(2)})${mode === 'ctf' ? ` · captures ${t('captures')} vs ${t('against')}` : mode === 'snd' ? ` · rounds ${t('captures')} vs ${t('against')}` : ''}`);
   }
   }
 }

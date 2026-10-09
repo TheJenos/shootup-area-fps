@@ -11,7 +11,10 @@ import { BotBrain, SKILLS, type BotSkill } from './brain';
 import { MAX_BOTS, botName, rosterEntries, type BotRoster, type BotSlot } from './roster';
 import { MEMORY_TIME, OBS_SIZE, observe, type BodyView, type CtfView, type FlagState } from './observe';
 import { MapSenses } from './senses';
-import { goalFor, newPatrol, type Patrol, type Point } from './objective';
+import { goalFor, newPatrol, type Patrol, type Point, type SndGoalView } from './objective';
+import {
+  BOMB_PICKUP_RADIUS, DEFUSE_RADIUS, DEFUSE_TIME, PLANT_TIME, bombPlacement, canJoin, decide, phaseOf, siteAt,
+} from '../snd';
 import { Gear, type PickupRules } from './gear';
 import { callOut, hear } from './team';
 import {
@@ -22,7 +25,9 @@ import { aimAngles, hitPlayer, lookDir, scatter, spreadOf, type Target } from '.
 import type { PhysicsWorld } from '../physics';
 import type { MapData } from '../mapgen';
 import type { ModeRules } from '../rules';
-import type { AbilityType, GameEvent, GameState, GunKind, PickupType, PlayerState, Stance, Team, Vec3Tuple, WeaponKind } from '../../types';
+import type {
+  AbilityType, GameEvent, GameState, GunKind, PickupType, PlayerState, SiteId, SndRecord, Stance, Team, Vec3Tuple, WeaponKind,
+} from '../../types';
 
 /*
  * Bots in a real room. The room owner's client plays them: each bot is a body in the owner's
@@ -85,6 +90,12 @@ export interface BotHostApi {
   creditKill(killerId: string, victimTeam: Team | null): void;
   /** Mark the round over (inside a game transaction) */
   finishRound(g: GameState, winner: string, name: string, reason: 'score'): void;
+  /** S&D: the defenders' sites this round */
+  sites(): Record<SiteId, Point> | null;
+  /** S&D: mark this round won by `winner` (inside a game transaction) */
+  endSndRound(g: GameState, winner: Team, why: NonNullable<SndRecord['over']>['why']): void;
+  /** S&D: who's on each team and how many are alive */
+  headcount(): Record<Team, { size: number; alive: number }>;
   maxDamage(weapon: WeaponKind): number;
   /** Pickups lying on the map */
   pickups(): readonly { id: string; type: PickupType; uses?: number; x: number; y: number; z: number }[];
@@ -139,6 +150,8 @@ interface HostedBot {
   decideIn: number;
   sendIn: number;
   flagBusy: boolean;
+  /** S&D: seconds spent planting or defusing so far (0: not at it) */
+  channel: number;
   /** Where it's patrolling (FFA / TDM objective) */
   readonly patrol: Patrol;
   /** Picked-up gun, abilities and their buffs */
@@ -301,15 +314,23 @@ export class BotHost {
     const bot: HostedBot = {
       id, slot: slotId, skill: slot.skill, name, team, mover, attached: null, brain: new BotBrain(policy, SKILLS[slot.skill]),
       yaw: 0, pitch: 0, hp: rules.health, alive: true, respawnIn: 0, gun: 'rifle', ammo: 0, reloadLeft: 0, cooldown: 0, burst: 0,
-      meleeCooldown: 0, deaths: 0, captures: 0, decideIn: Math.random() * DECISION_DT, sendIn: 0, flagBusy: false, patrol: newPatrol(), gear: new Gear(), detour: null, goal: null, goalDist: 0, spawnedAt: 0,
+      meleeCooldown: 0, deaths: 0, captures: 0, decideIn: Math.random() * DECISION_DT, sendIn: 0, flagBusy: false, channel: 0, patrol: newPatrol(), gear: new Gear(), detour: null, goal: null, goalDist: 0, spawnedAt: 0,
       stats: { damage: 0, shots: 0, hits: 0, headshots: 0, streak: 0, best: 0 }, seenKills: 0, statsKey: '', statsAt: 0,
     };
     this.bots.set(id, bot);
     this.placeAtSpawn(bot);
+    // S&D: a bot added mid-round plays from the next one, like a player who joins then.
+    const snd = rules.base === 'snd' ? api.game().snd : undefined;
+    if (snd && !canJoin(snd, api.net.serverNow())) {
+      bot.alive = false;
+      bot.hp = 0;
+      bot.respawnIn = Infinity;
+      bot.mover.setSolid(false);
+    }
     this.pending++;
     api.net.addBot(id, {
       name, color: team ? TEAM_INFO[team].color : api.colorFor(id), ...(team ? { team } : {}), bot: true,
-      ...this.pose(bot), gun: bot.gun, hp: bot.hp, alive: true, kills: 0, deaths: 0,
+      ...this.pose(bot), gun: bot.gun, hp: bot.hp, alive: bot.alive, kills: 0, deaths: 0,
       damage: 0, shots: 0, hits: 0, headshots: 0, streak: 0, best: 0, captures: 0,
     })
       .catch((err: unknown) => {
@@ -323,6 +344,7 @@ export class BotHost {
     this.drop(bot);
     this.pending++;
     void this.dropFlag(bot);
+    void this.dropBomb(bot);
     this.api.net.removeBot(bot.id)
       .catch((err: unknown) => console.warn('Could not remove a bot', err))
       .finally(() => { this.pending--; });
@@ -360,6 +382,28 @@ export class BotHost {
     }
   }
 
+  /** A new S&D round: everyone back at their spawn; the survivors keep what they carry. */
+  startSndRound(): void {
+    for (const bot of this.bots.values()) {
+      bot.channel = 0;
+      bot.patrol.target = null;
+      if (!bot.alive) {
+        bot.brain.reset();
+        this.respawn(bot);
+        continue;
+      }
+      this.placeAtSpawn(bot);
+      void this.api.net.sendStateAs(bot.id, { ...this.pose(bot), gun: bot.gun, hp: bot.hp, alive: true });
+    }
+  }
+
+  /** The S&D bomb went off at `at`: our bots within `radius` go with it. */
+  bombBlast(at: THREE.Vector3, radius: number, planter: string | null): void {
+    for (const bot of this.bots.values()) {
+      if (bot.alive && bot.mover.position.distanceTo(at) < radius) this.die(bot, planter && planter !== bot.id ? planter : '', false, 'bomb');
+    }
+  }
+
   dispose(): void {
     for (const bot of [...this.bots.values()]) this.drop(bot);
   }
@@ -381,6 +425,9 @@ export class BotHost {
     if (this.senses?.map !== map) this.senses = new MapSenses(map, physics);
     const roundOver = api.roundOver();
     const rules = api.rules();
+    const snd = rules.base === 'snd' ? api.game().snd ?? null : null;
+    // S&D holds everyone at their spawn until the round's fight starts.
+    const frozen = !!snd && phaseOf(snd, api.net.serverNow()) === 'freeze';
     this.updateFlashes();
 
     for (const bot of this.bots.values()) {
@@ -399,7 +446,7 @@ export class BotHost {
       let decided = false;
       if (bot.decideIn <= 0) {
         bot.decideIn += DECISION_DT;
-        bot.brain.decide(this.observe(bot), rules.base === 'ctf', bot.mover.position);
+        bot.brain.decide(this.observe(bot), rules.base === 'ctf' || rules.base === 'snd', bot.mover.position);
         decided = true;
       }
       // Someone in view: the aim model aims. Otherwise the decision's turn (walking, looking about).
@@ -410,7 +457,8 @@ export class BotHost {
         bot.yaw += dYaw;
         bot.pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, bot.pitch + dPitch));
       }
-      bot.mover.step(dt, bot.yaw, roundOver ? null : bot.brain.moveInput);
+      // Planting or defusing (S&D) means standing still.
+      bot.mover.step(dt, bot.yaw, roundOver || frozen || bot.channel > 0 ? null : bot.brain.moveInput);
       // The same backstop as the player's: never outside the map.
       const edge = map.half - 0.9;
       const p = bot.mover.position;
@@ -434,6 +482,7 @@ export class BotHost {
       else if (this.carrying(bot)) this.swing(bot);
       else if (!this.stab(bot)) this.fire(bot);
       if (rules.base === 'ctf' && !roundOver) this.updateFlags(bot);
+      if (snd && !roundOver) this.updateBomb(bot, snd, dt);
     }
 
     for (const bot of this.bots.values()) {
@@ -534,9 +583,10 @@ export class BotHost {
     const carrying = this.carrying(bot);
     const map = this.api.map();
     const known = [...bot.brain.memory.seen.values()].filter((m) => this.clock - m.t <= MEMORY_TIME);
+    const snd = this.sndView(bot);
     const objective = map ? goalFor({
-      self: { id: bot.id, team: bot.team, x: p.x, y: p.y, z: p.z, carrying },
-      others, mode: rules.base, ctf, patrolPoints: this.patrolPoints(map), patrol: bot.patrol, now: this.clock,
+      self: { id: bot.id, team: bot.team, x: p.x, y: p.y, z: p.z, carrying: carrying || !!snd?.carrying },
+      others, mode: rules.base, ctf, snd, patrolPoints: this.patrolPoints(map), patrol: bot.patrol, now: this.clock,
       hp: bot.hp / rules.health, known, aggression: bot.brain.personality.aggression,
     }) : null;
     // Something worth picking up close by: fetch it first.
@@ -550,7 +600,8 @@ export class BotHost {
         carrying,
       },
       others, mode: rules.base, ctf, now: this.clock, memory: bot.brain.memory, senses: this.senses!,
-      goal, asMode: goal && rules.base === 'ctf' ? 'tdm' : undefined,
+      // The policy was trained on FFA, TDM and CTF: S&D fights look like TDM to it.
+      goal, asMode: rules.base === 'snd' || (goal && rules.base === 'ctf') ? 'tdm' : undefined,
     }, this.obs);
     // Whoever it just saw, its teammates hear about.
     if (bot.team) {
@@ -750,11 +801,14 @@ export class BotHost {
   private die(bot: HostedBot, killerId: string, head: boolean, weapon: WeaponKind): void {
     const { api } = this;
     void this.dropFlag(bot);
+    void this.dropBomb(bot);
     bot.alive = false;
+    bot.channel = 0;
     bot.mover.setSolid(false);
     bot.hp = 0;
     bot.deaths++;
-    bot.respawnIn = api.rules().respawn;
+    // S&D: no respawns, the next round brings everyone back (startSndRound).
+    bot.respawnIn = api.rules().base === 'snd' ? Infinity : api.rules().respawn;
     bot.brain.reset();
     this.dropLoot(bot);
     bot.gear.reset();
@@ -1163,6 +1217,97 @@ export class BotHost {
       .then((committed) => { if (committed) onCommit?.(); })
       .catch((err: unknown) => console.warn('Bot flag update failed', err))
       .finally(() => { bot.flagBusy = false; });
+  }
+
+  // ---------------------------------------------------------------- search & destroy
+
+  /** This S&D round as the bot's objective layer sees it */
+  private sndView(bot: HostedBot): SndGoalView | null {
+    const { api } = this;
+    const s = api.rules().base === 'snd' ? api.game().snd : undefined;
+    const sites = api.sites();
+    if (!s || !sites || !bot.team) return null;
+    const attacking = bot.team === s.atk;
+    const b = bombPlacement(s.bomb);
+    const bomb = !b ? null
+      : b.at === 'carried' ? (attacking ? { at: 'carried' as const, carrier: b.carrier } : null)
+        : b.at === 'planted' ? { at: 'planted' as const, x: b.x, y: b.y, z: b.z }
+          : attacking ? { at: 'ground' as const, x: b.x, y: b.y, z: b.z } : null;
+    // The attackers pick a site per round, the same for all of them.
+    const target = (api.game().round * 3 + s.n) % 2 === 0 ? 'a' : 'b';
+    return { attacking, sites, target, bomb, carrying: s.bomb.by === bot.id };
+  }
+
+  /** What a player's client does for them (game.ts updateBomb): pick the bomb up, plant it, defuse it. */
+  private updateBomb(bot: HostedBot, s: SndRecord, dt: number): void {
+    const { api } = this;
+    if (!bot.team || !bot.alive || bot.flagBusy) return;
+    const now = api.net.serverNow();
+    const phase = phaseOf(s, now);
+    const me = bot.mover.position;
+    const b = bombPlacement(s.bomb);
+    const round = api.game().round;
+    const same = (next: GameState) => next.round === round && !next.ended && next.snd?.n === s.n && !next.snd.over;
+    const near = (p: Point, r: number) => Math.hypot(p.x - me.x, p.z - me.z) < r && Math.abs(p.y - me.y) < 1.8;
+    if (bot.team === s.atk) {
+      if (b?.at === 'ground' && phase !== 'over' && near(b, BOMB_PICKUP_RADIUS)) {
+        this.flagTransaction(bot, (next) => {
+          if (!same(next) || next.snd!.bomb.by || next.snd!.bomb.plantedAt !== undefined) return false;
+          next.snd!.bomb = { by: bot.id };
+          return true;
+        });
+        return;
+      }
+      const sites = api.sites();
+      const site = s.bomb.by === bot.id && phase === 'live' && sites ? siteAt(sites, me) : null;
+      if (!site || !bot.mover.onGround) {
+        bot.channel = 0;
+        return;
+      }
+      bot.channel += dt;
+      if (bot.channel < PLANT_TIME) return;
+      bot.channel = 0;
+      const spot = { x: r2(me.x), y: r2(api.groundBelow(me.x, me.y + 0.1, me.z)), z: r2(me.z) };
+      this.flagTransaction(bot, (next) => {
+        if (!same(next) || next.snd!.bomb.by !== bot.id || phaseOf(next.snd!, api.net.serverNow()) !== 'live') return false;
+        next.snd!.bomb = { ...spot, site, plantedAt: api.net.serverNow(), planter: bot.id };
+        return true;
+      }, () => {
+        bot.captures++;
+        void api.net.sendStateAs(bot.id, { captures: bot.captures });
+      });
+      return;
+    }
+    if (phase !== 'planted' || b?.at !== 'planted' || !near(b, DEFUSE_RADIUS)) {
+      bot.channel = 0;
+      return;
+    }
+    bot.channel += dt;
+    if (bot.channel < DEFUSE_TIME) return;
+    bot.channel = 0;
+    const team = bot.team;
+    this.flagTransaction(bot, (next) => {
+      if (!same(next) || phaseOf(next.snd!, api.net.serverNow()) !== 'planted') return false;
+      if (decide(next.snd!, api.net.serverNow(), api.headcount())?.why === 'bomb') return false;
+      api.endSndRound(next, team, 'defuse');
+      return true;
+    }, () => {
+      bot.captures++;
+      void api.net.sendStateAs(bot.id, { captures: bot.captures });
+    });
+  }
+
+  /** Drop the bomb where the bot stands (it died or left). */
+  private dropBomb(bot: HostedBot): Promise<unknown> {
+    const { api } = this;
+    if (api.rules().base !== 'snd' || api.game().snd?.bomb.by !== bot.id) return Promise.resolve();
+    const p = bot.mover.position;
+    const at = { x: r2(p.x), y: r2(api.groundBelow(p.x, p.y + 0.1, p.z)), z: r2(p.z) };
+    return api.net.mutateGame((g) => {
+      if (g.snd?.bomb.by !== bot.id) return false;
+      g.snd.bomb = at;
+      return true;
+    }).catch((err: unknown) => console.warn('Could not drop the bot\'s bomb', err));
   }
 
   /** Drop the enemy flag where the bot stands (it died or left). */

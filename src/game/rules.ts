@@ -4,7 +4,7 @@ import type { GameMode, GunKind } from '../types';
 import type { BotSkill } from './bot/brain';
 
 /*
- * Game modes = a base type (FFA, TDM or CTF: teams, flags, how points are scored) plus a set of
+ * Game modes = a base type (FFA, TDM, CTF or S&D: teams, flags, how points are scored) plus a set of
  * rules on top. The prebuilt modes are just named rule sets, and players can make their own.
  * A room's rules are stored with it (lobby/{code}/rules), so everyone who joins plays the same.
  */
@@ -23,7 +23,7 @@ export interface ModeRules {
   guns: boolean;
   abilities: boolean;
   ammo: boolean;
-  /** Kills (FFA: one player, TDM: a team) or captures (CTF) to win; Gun Game uses the ladder */
+  /** Kills (FFA: one player, TDM: a team), captures (CTF) or rounds (S&D) to win; Gun Game uses the ladder */
   limit: number;
   /** Round length in minutes */
   minutes: number;
@@ -31,7 +31,7 @@ export interface ModeRules {
   health: number;
   /** Only headshots hurt (grenades are left out of the pickups) */
   headshotsOnly: boolean;
-  /** Seconds before respawning */
+  /** Seconds before respawning (S&D has no respawns: the dead wait for the next round) */
   respawn: number;
   /** Movement speed multiplier */
   speed: number;
@@ -43,7 +43,7 @@ export interface ModeRules {
 }
 
 export const LIMITS = {
-  limit: { ffa: [5, 60], tdm: [10, 150], ctf: [1, 10] } as Record<GameMode, [number, number]>,
+  limit: { ffa: [5, 60], tdm: [10, 150], ctf: [1, 10], snd: [2, 10] } as Record<GameMode, [number, number]>,
   minutes: [3, 20],
   health: [25, 200],
   respawn: [1, 10],
@@ -91,6 +91,7 @@ export const PRESETS: Preset[] = [
   { id: 'ffa', description: MODES.ffa.description, rules: baseRules('ffa') },
   { id: 'tdm', description: MODES.tdm.description, rules: baseRules('tdm') },
   { id: 'ctf', description: MODES.ctf.description, rules: baseRules('ctf') },
+  { id: 'snd', description: MODES.snd.description, rules: baseRules('snd') },
   preset('gungame', 'Every kill gives the next gun; finish the ladder to win', 'ffa', {
     name: 'Gun Game', short: 'GG', loadout: 'gungame', limit: GUN_GAME_LADDER.length, minutes: 10, guns: false, ammo: false, abilities: false,
   }),
@@ -104,6 +105,7 @@ export const PRESETS: Preset[] = [
     name: 'Hardcore TDM', short: 'HC', health: 50, abilities: false, respawn: 6, limit: 40,
   }),
   preset('tanks', 'Double health, flags change hands slowly', 'ctf', { name: 'Tank CTF', short: 'TNK', health: 200, speed: 0.9 }),
+  preset('sniper-snd', 'One life, one bolt: Search & Destroy with snipers', 'snd', { name: 'Sniper S&D', short: 'SSD', loadout: 'sniper' }),
   preset('moon', 'Low gravity: huge jumps, floaty fights', 'ffa', { name: 'Moon Gravity', short: 'MOON', gravity: 0.35, speed: 1.1 }),
   preset('speed', 'Fast feet, instant respawns', 'ffa', { name: 'Speed Rush', short: 'SPD', speed: 1.45, respawn: 1, limit: 30 }),
 ];
@@ -113,7 +115,7 @@ const LEGACY: Record<string, string> = { sniper: 'sniper-ffa', snipertdm: 'snipe
 
 // Function declarations (not consts): the presets above are built with these when the module loads.
 export function isBaseMode(m: unknown): m is GameMode {
-  return m === 'ffa' || m === 'tdm' || m === 'ctf';
+  return m === 'ffa' || m === 'tdm' || m === 'ctf' || m === 'snd';
 }
 
 function clamp(v: unknown, [min, max]: readonly [number, number], fallback: number): number {
@@ -168,7 +170,8 @@ export function goalOf(r: ModeRules): string {
     ? `Every kill hands you the next gun — clear all ${r.limit} to win`
     : r.base === 'ffa' ? `Every kill counts — first to ${r.limit} wins`
       : r.base === 'tdm' ? `Kills score for your team — first team to ${r.limit} wins`
-        : `Take the enemy flag to your base — first to ${r.limit} capture${r.limit === 1 ? '' : 's'}. Your own flag must be home to score.`;
+        : r.base === 'ctf' ? `Take the enemy flag to your base — first to ${r.limit} capture${r.limit === 1 ? '' : 's'}. Your own flag must be home to score.`
+          : `Attackers plant the bomb at site A or B, defenders stop them. One life per round — first team to ${r.limit} rounds wins`;
   const extras = tweaks(r);
   return extras.length ? `${win}. ${extras.join(' · ')}` : win;
 }
@@ -184,7 +187,7 @@ export function tweaks(r: ModeRules): string[] {
   if (r.health !== 100) out.push(`${r.health} HP`);
   if (r.speed !== 1) out.push(`${Math.round(r.speed * 100)}% speed`);
   if (r.gravity !== 1) out.push(r.gravity < 1 ? `Low gravity (${Math.round(r.gravity * 100)}%)` : `Heavy gravity (${Math.round(r.gravity * 100)}%)`);
-  if (r.respawn !== 3) out.push(`${r.respawn}s respawn`);
+  if (r.respawn !== 3 && r.base !== 'snd') out.push(`${r.respawn}s respawn`);
   return out;
 }
 

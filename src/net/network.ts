@@ -424,6 +424,7 @@ export class RoomConnection {
       delete g.ended;
       g.score = {};
       g.flags = {};
+      delete g.snd;
       return true;
     });
     if (committed) {
@@ -508,5 +509,7 @@ export class RoomConnection {
 /** Fill in the parts Firebase leaves out, since it never stores empty objects. */
 function normalizeGame(value: unknown): GameState {
   const game = (value && typeof value === 'object' ? value : {}) as Partial<GameRecord>;
-  return { ...game, round: Number(game.round) || 0, score: { ...game.score }, flags: { ...game.flags } };
+  // Firebase leaves empty objects out: an S&D round always has a bomb record, even an empty one.
+  const snd = game.snd ? { ...game.snd, bomb: { ...game.snd.bomb } } : undefined;
+  return { ...game, round: Number(game.round) || 0, score: { ...game.score }, flags: { ...game.flags }, ...(snd ? { snd } : {}) };
 }

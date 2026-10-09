@@ -29,7 +29,7 @@ export const db = {
 export const serverNow = () => Date.now();
 
 export interface RoomRules {
-  base: 'ffa' | 'tdm' | 'ctf';
+  base: 'ffa' | 'tdm' | 'ctf' | 'snd';
   name: string;
   short: string;
   loadout: 'standard' | 'gungame' | 'rifle' | 'shotgun' | 'sniper' | 'deagle';
@@ -51,6 +51,7 @@ const BASE: Record<RoomRules['base'], RoomRules> = {
   ffa: { base: 'ffa', name: 'Free-for-all', short: 'FFA', loadout: 'standard', guns: true, abilities: true, ammo: true, limit: 25, minutes: 8, health: 100, headshotsOnly: false, respawn: 3, speed: 1, gravity: 1 },
   tdm: { base: 'tdm', name: 'Team Deathmatch', short: 'TDM', loadout: 'standard', guns: true, abilities: true, ammo: true, limit: 50, minutes: 10, health: 100, headshotsOnly: false, respawn: 3, speed: 1, gravity: 1 },
   ctf: { base: 'ctf', name: 'Capture the Flag', short: 'CTF', loadout: 'standard', guns: true, abilities: true, ammo: true, limit: 3, minutes: 12, health: 100, headshotsOnly: false, respawn: 3, speed: 1, gravity: 1 },
+  snd: { base: 'snd', name: 'Search & Destroy', short: 'S&D', loadout: 'standard', guns: true, abilities: true, ammo: true, limit: 5, minutes: 20, health: 100, headshotsOnly: false, respawn: 3, speed: 1, gravity: 1 },
 };
 
 /**

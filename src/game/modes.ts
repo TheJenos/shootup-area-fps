@@ -18,7 +18,7 @@ export interface ModeDef {
   short: string;
   description: string;
   teams: boolean;
-  /** Kills (FFA: one player's, TDM: a team's) or flag captures (CTF) needed to win the round */
+  /** Kills (FFA: one player's, TDM: a team's), flag captures (CTF) or rounds (S&D) needed to win the match */
   limit: number;
   /** Round length in seconds; the best score when it runs out wins */
   timeLimit: number;
@@ -28,7 +28,7 @@ export interface ModeDef {
   goal: string;
 }
 
-/** The three base types every mode (prebuilt or custom) is built on; see rules.ts for the rest. */
+/** The base types every mode (prebuilt or custom) is built on; see rules.ts for the rest. */
 export const MODES: Record<GameMode, ModeDef> = {
   ffa: {
     name: 'Free-for-all', short: 'FFA', description: 'Everyone for themselves', teams: false, limit: 25, timeLimit: 8 * 60, pickups: true,
@@ -41,6 +41,10 @@ export const MODES: Record<GameMode, ModeDef> = {
   ctf: {
     name: 'Capture the Flag', short: 'CTF', description: 'Bring the enemy flag to yours', teams: true, limit: 3, timeLimit: 12 * 60, pickups: true,
     goal: 'Take the enemy flag to your base — first to 3 captures. Your own flag must be home to score.',
+  },
+  snd: {
+    name: 'Search & Destroy', short: 'S&D', description: 'One life per round: plant the bomb or stop it', teams: true, limit: 5, timeLimit: 20 * 60, pickups: true,
+    goal: 'Attackers plant the bomb at site A or B, defenders stop them. One life per round — first team to 5 rounds wins.',
   },
 };
 

@@ -115,7 +115,7 @@ the HTML report, with traces and videos.
 
 ## Game modes
 
-Every mode is one of three **base types**, which decide teams, flags and how points are scored, plus a set of
+Every mode is one of four **base types**, which decide teams, flags and how points are scored, plus a set of
 **rules** on top. The room's creator picks a mode in the lobby; the room list shows its badge and name.
 
 | Base | Goal | Default time limit | Or ends early at |
@@ -123,6 +123,7 @@ Every mode is one of three **base types**, which decide teams, flags and how poi
 | **FFA** — Free-for-all | Most kills | 8 min | 25 kills by one player |
 | **TDM** — Team Deathmatch | Red vs Blue; every kill scores for the killer's team | 10 min | 50 team kills |
 | **CTF** — Capture the Flag | Grab the enemy flag and bring it to your own base | 12 min | 3 captures |
+| **S&D** — Search & Destroy | One life per round: attackers plant the bomb at site A or B, defenders stop them | 20 min | 5 rounds won |
 
 **Rules** (`src/game/rules.ts`), all optional on top of the base:
 
@@ -131,17 +132,17 @@ Every mode is one of three **base types**, which decide teams, flags and how poi
 | Loadout | Standard (rifle + pickups), Rifles / Shotguns / Snipers / Deagles only (endless ammo, no other guns or ammo boxes), or the Gun Game ladder (FFA only) |
 | Pickups | Gun pickups, ammo boxes, abilities: each on or off |
 | Headshots only | Body hits do nothing; grenades don't spawn |
-| Score limit | FFA 5–60 kills, TDM 10–150 team kills, CTF 1–10 captures |
+| Score limit | FFA 5–60 kills, TDM 10–150 team kills, CTF 1–10 captures, S&D 2–10 rounds |
 | Time limit | 3–20 minutes |
 | Health | 25–200 HP (medkits heal up to it, the health bar and name tags scale to it) |
-| Respawn | 1–10 seconds |
+| Respawn | 1–10 seconds (not in S&D: the dead sit out the rest of the round) |
 | Speed / gravity | 70–150 % movement speed, 30–150 % gravity (low gravity = higher, floatier jumps) |
 
 **Prebuilt modes:**
 
 | Badge | Mode | Base | What's different |
 | --- | --- | --- | --- |
-| FFA / TDM / CTF | Free-for-all, Team Deathmatch, Capture the Flag | – | The plain base modes |
+| FFA / TDM / CTF / S&D | Free-for-all, Team Deathmatch, Capture the Flag, Search & Destroy | – | The plain base modes |
 | GG | Gun Game | FFA | Every kill hands you the next gun on a 12-step ladder; first through it wins. No pickups |
 | SNP | Sniper Only | FFA | Snipers only, 20 kills |
 | SNT | Sniper TDM | TDM | Snipers only, 40 team kills |
@@ -151,8 +152,21 @@ Every mode is one of three **base types**, which decide teams, flags and how poi
 | HS | Headhunter | FFA | Headshots only, 15 kills |
 | HC | Hardcore TDM | TDM | 50 HP, no abilities, 6 s respawn, 40 team kills |
 | TNK | Tank CTF | CTF | 200 HP, 90 % speed |
+| SSD | Sniper S&D | S&D | Snipers only |
 | MOON | Moon Gravity | FFA | 35 % gravity, 110 % speed |
 | SPD | Speed Rush | FFA | 145 % speed, 1 s respawn, 30 kills |
+
+**Search & Destroy** (`src/game/snd.ts`): a match is a series of short rounds. Red attacks first; one attacker
+starts with the bomb (it drops where its carrier dies, and any attacker can pick it up). Holding **E** for 3.5 s
+on site **A** (the defenders' flag spot) or **B** (the far side of their half) plants it; it goes off 40 s later,
+killing everyone within 14 m. Defenders win by holding **E** for 6 s at the planted bomb, by running out the
+100 s attack clock before a plant, or by taking out every attacker before one. Taking out every defender wins it
+for the attackers (planted or not). Everyone is held at their spawn for 5 s before each round. Nobody respawns
+mid-round: the dead watch a teammate (click to switch) until the next round. Anyone who joins or switches team
+in the first 15 s of a round still plays it. Teams swap sides after limit − 1 rounds (past that, they alternate).
+Plants and defuses count as objectives (the leaderboard's captures). The lowest player id referees: it sets
+rounds up, decides them and starts the next one 5 s later (`game/snd` in the database). Bots carry, plant,
+escort, hold the sites and defuse.
 
 **Custom modes:** **＋ Create custom mode** in the lobby opens an editor: pick the base, name it (and a badge of
 up to 4 letters), set every rule, and see a live description. **Use once** plays it in the room you create;

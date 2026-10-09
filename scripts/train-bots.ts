@@ -1,9 +1,9 @@
 /**
  * Trains the bots' policy with PPO and self-play in the headless arena (src/game/bot/sim), all in
  * TypeScript on the CPU. Worker threads play matches and compute gradients; the main thread
- * applies them, keeps checkpoints and moves through the curriculum (aim → duel → tdm → ctf → mix).
+ * applies them, keeps checkpoints and moves through the curriculum (aim → duel → tdm → ctf → snd → mix).
  *
- *   npm run train:bots -- [--workers 9] [--steps 50M] [--batch 32768] [--stage auto|aim|duel|tdm|ctf|mix]
+ *   npm run train:bots -- [--workers 9] [--steps 50M] [--batch 32768] [--stage auto|aim|duel|tdm|ctf|snd|mix]
  *                         [--fresh] [--dir bots] [--arenas 2] [--lr 3e-4] [--view-port 7777 | 0]
  *
  * While it runs, http://localhost:7777 shows it live: one of the matches being played, seen from above,
@@ -145,6 +145,7 @@ function sendView(port: NonNullable<typeof parentPort>, arena: Arena, roles: rea
       return [r1(p.x), r1(p.z), Math.round(a.yaw * 100) / 100, a.alive ? 1 : 0, Math.round(a.hp), a.kills, a.deaths, a.action.fire ? 1 : 0];
     }),
     shots, score: arena.score, flags: arena.flags,
+    ...(arena.snd && arena.sites ? { snd: { atk: arena.snd.atk, sites: arena.sites, bomb: arena.snd.bomb, n: arena.snd.n } } : {}),
   });
 }
 
@@ -220,6 +221,8 @@ const PROMOTION: Record<string, { min: number; max: number; pass: (s: Rolling) =
   duel: { min: 6e6, max: 30e6, pass: (s) => s.kdVsScripted >= 1.5 },
   tdm: { min: 6e6, max: 30e6, pass: (s) => s.kdVsScripted >= 2 },
   ctf: { min: 15e6, max: 60e6, pass: (s) => s.capturesPerEpisode >= 0.6 },
+  // Plants and defuses per learner per match, without forgetting how to fight.
+  snd: { min: 10e6, max: 40e6, pass: (s) => s.capturesPerEpisode >= 0.5 && s.kdVsScripted >= 1.5 },
 };
 
 interface Rolling {
@@ -396,7 +399,8 @@ async function main(): Promise<void> {
     // mode trained so far. The best policy by that is kept (and is what export:bots ships).
     if (ckpt.iteration % EVAL_EVERY === 0) {
       const stageAt = STAGES.findIndex((st) => st.name === ckpt.stage);
-      const modes: GameMode[] = stageAt >= STAGES.findIndex((st) => st.name === 'ctf') ? ['ffa', 'tdm', 'ctf'] : stageAt >= STAGES.findIndex((st) => st.name === 'tdm') ? ['ffa', 'tdm'] : ['ffa'];
+      const from = (name: string) => stageAt >= STAGES.findIndex((st) => st.name === name);
+      const modes: GameMode[] = from('snd') ? ['ffa', 'tdm', 'ctf', 'snd'] : from('ctf') ? ['ffa', 'tdm', 'ctf'] : from('tdm') ? ['ffa', 'tdm'] : ['ffa'];
       const jobs = modes.flatMap((mode) => Array.from({ length: EVAL_MATCHES }, (_, i) => ({ mode, seed: EVAL_SEEDS[i]! })));
       const policyJson = policy.toJSON();
       const results: EvalResult[] = [];
@@ -423,7 +427,7 @@ async function main(): Promise<void> {
         ckpt.bestScore = score;
         writeFileSync(bestFile, JSON.stringify({ policy: policyJson, steps: ckpt.steps, stage: ckpt.stage, eval: { score, byMode } }));
       }
-      const summary = Object.entries(byMode).map(([m, r]) => `${m} K/D ${r.kd.toFixed(2)}${m === 'ctf' ? ` caps ${r.captures}-${r.against}` : ''}`).join(' · ');
+      const summary = Object.entries(byMode).map(([m, r]) => `${m} K/D ${r.kd.toFixed(2)}${m === 'ctf' ? ` caps ${r.captures}-${r.against}` : m === 'snd' ? ` rounds ${r.captures}-${r.against}` : ''}`).join(' · ');
       console.log(`  eval: ${summary} · score ${score.toFixed(2)}${improved ? ' (best so far: saved)' : ` (best ${best.toFixed(2)})`}`);
       const evalRow = { t: Date.now(), type: 'eval', iteration: ckpt.iteration, steps: ckpt.steps, stage: ckpt.stage, score, best: Math.max(score, best), byMode };
       appendFileSync(logFile, `${JSON.stringify(evalRow)}\n`);

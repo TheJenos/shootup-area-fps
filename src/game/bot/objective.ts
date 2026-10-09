@@ -57,12 +57,25 @@ const CLEAR_FROM = 25;
 const STAGE = 10;
 const CLEAR_WAIT = 8;
 
+/** Search & Destroy, as a bot sees it */
+export interface SndGoalView {
+  attacking: boolean;
+  sites: { a: Point; b: Point };
+  /** The site the attackers go for this round (defenders don't know it) */
+  target: 'a' | 'b';
+  /** Where the bomb is: defenders only know once it's planted */
+  bomb: { at: 'carried'; carrier: string } | { at: 'ground' | 'planted'; x: number; y: number; z: number } | null;
+  /** Carrying the bomb */
+  carrying: boolean;
+}
+
 export interface GoalInput {
   self: { id: string; team: Team | null; x: number; y: number; z: number; carrying: boolean };
   /** Everyone else in play (alive or not) */
   others: readonly BodyView[];
   mode: GameMode;
   ctf: CtfView | null;
+  snd?: SndGoalView | null;
   /** Places worth patrolling: spawns and pickup spots, with whose half they're in */
   patrolPoints: readonly (Point & { team: Team | null })[];
   patrol: Patrol;
@@ -115,6 +128,7 @@ export function goalFor(input: GoalInput): Point {
   const { self, others, mode, ctf } = input;
   const mates = self.team ? others.filter((o) => o.team === self.team) : [];
   if (mode === 'ctf' && ctf && self.team) return ctfGoal(input, mates, others, ctf);
+  if (mode === 'snd' && input.snd && self.team) return sndGoal(input, mates, input.snd);
   if (mates.length) {
     const back = retreat(input, mates);
     if (back) return back;
@@ -183,6 +197,41 @@ function ctfGoal(input: GoalInput, mates: readonly BodyView[], everyone: readonl
  * A CTF attacker near their flag while someone's guarding it: hold a spot short of the flag (fight from
  * there) until the guards are gone or it's waited long enough. Null: go for the flag.
  */
+/** S&D defenders hold this far out from their site's centre, toward the middle of the map (m) */
+const SITE_HOLD = 5;
+
+/** Half the defenders hold each site, decided by id so it doesn't flip back and forth */
+function siteFor(id: string): 'a' | 'b' {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  return (h & 1) === 0 ? 'a' : 'b';
+}
+
+/**
+ * S&D: the bomb. Attackers take it to this round's site (the carrier plants, the rest go with it,
+ * the nearest fetches it when it's dropped) and hold the site once it's planted. Defenders hold their
+ * site, go for enemies they know are on it, and all converge on a planted bomb to defuse it.
+ */
+function sndGoal(input: GoalInput, mates: readonly BodyView[], snd: SndGoalView): Point {
+  const { self } = input;
+  const bomb = snd.bomb;
+  if (snd.attacking) {
+    const site = snd.sites[snd.target];
+    if (snd.carrying) return site;
+    if (bomb?.at === 'planted') return follow(bomb);
+    if (bomb?.at === 'ground' && amongNearest(self, mates, bomb, 1)) return bomb;
+    const target = fight(input, HELP_RANGE * 0.6);
+    return target && flat(target, site) < flat(self, site) ? follow(target) : site;
+  }
+  if (bomb?.at === 'planted') return bomb;
+  const mine = snd.sites[siteFor(self.id)];
+  const close = intruder(input, mine);
+  if (close) return follow(close);
+  const toMiddle = Math.hypot(mine.x, mine.z) || 1;
+  const k = Math.min(1, SITE_HOLD / toMiddle);
+  return { x: mine.x * (1 - k), y: mine.y, z: mine.z * (1 - k) };
+}
+
 function clearFirst(input: GoalInput, ctf: CtfView): Point | null {
   const { self, patrol, now } = input;
   const base = ctf.enemyBase;

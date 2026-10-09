@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { buildWorld } from '../game/world';
 import { PAINT, type MapData } from '../game/mapgen';
 import { TEAM_INFO } from '../game/modes';
+import { bombSites, SITE_IDS } from '../game/snd';
 import type { GameMode } from '../types';
 
 const SIZE = 168;
@@ -10,6 +11,9 @@ const SIZE = 168;
 const ORBIT_PERIOD = 40;
 
 const hex = (n: number) => `#${n.toString(16).padStart(6, '0')}`;
+const SITE_COLOR = '#ffb020';
+/** S&D: the sites blue defends in the first half (red attacks first); the second half mirrors them */
+const firstSites = (map: MapData) => bombSites(map, 'blue');
 
 /** Ground patch colors in the preview */
 const GROUND_COLORS: Record<MapData['patches'][number]['kind'], string> = {
@@ -115,6 +119,22 @@ function draw2D(canvas: HTMLCanvasElement, map: MapData, mode: GameMode): void {
       g.stroke();
     }
   }
+  if (mode === 'snd') {
+    const sites = firstSites(map);
+    g.fillStyle = SITE_COLOR;
+    g.strokeStyle = SITE_COLOR;
+    g.lineWidth = 2;
+    g.font = 'bold 10px system-ui, sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    for (const id of SITE_IDS) {
+      const { x, z } = sites[id];
+      g.beginPath();
+      g.arc(px(x), px(z), 3.5 * scale, 0, Math.PI * 2);
+      g.stroke();
+      g.fillText(id.toUpperCase(), px(x), px(z));
+    }
+  }
 }
 
 /**
@@ -153,6 +173,23 @@ function flagMarkers(map: MapData): THREE.Group {
   return g;
 }
 
+/** S&D: an amber ring and post at each of the first half's bomb sites (the second post on B is taller). */
+function siteMarkers(map: MapData): THREE.Group {
+  const g = new THREE.Group();
+  const sites = firstSites(map);
+  SITE_IDS.forEach((id, i) => {
+    const { x, y, z } = sites[id];
+    const mat = new THREE.MeshBasicMaterial({ color: SITE_COLOR, fog: false });
+    const ring = new THREE.Mesh(new THREE.RingGeometry(3.1, 3.6, 40).rotateX(-Math.PI / 2), mat);
+    ring.position.set(x, y + 0.05, z);
+    const height = 3 + i * 1.5;
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, height, 8), mat);
+    post.position.set(x, y + height / 2, z);
+    g.add(ring, post);
+  });
+  return g;
+}
+
 /** A small 3D view of a generated map, slowly orbiting; drag to turn it. */
 export function MapPreview({ map, mode }: { map: MapData; mode: GameMode }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -175,7 +212,7 @@ export function MapPreview({ map, mode }: { map: MapData; mode: GameMode }) {
     world.setQuality('low');
     // Seen from outside, so push the fog back to just soften the far edge.
     scene.fog = new THREE.Fog(map.theme.sky, map.half * 2.75, map.half * 5.5);
-    const markers = mode === 'ctf' ? flagMarkers(map) : null;
+    const markers = mode === 'ctf' ? flagMarkers(map) : mode === 'snd' ? siteMarkers(map) : null;
     if (markers) scene.add(markers);
 
     const camera = new THREE.PerspectiveCamera(40, 1, 1, 400);
@@ -246,7 +283,7 @@ export function MapPreview({ map, mode }: { map: MapData; mode: GameMode }) {
     };
   }, [map, mode, flat]);
 
-  const label = `Map preview: ${map.name}${mode === 'ctf' ? ', flag bases marked' : ''}`;
+  const label = `Map preview: ${map.name}${mode === 'ctf' ? ', flag bases marked' : mode === 'snd' ? ', bomb sites A and B marked' : ''}`;
   if (flat) {
     return <canvas ref={canvasRef} className="map-preview" role="img" aria-label={label} style={{ width: SIZE, height: SIZE }} />;
   }

@@ -51,7 +51,11 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, rules, scor
   const leader = rows[0];
   const { teams } = MODES[mode];
   const ctf = mode === 'ctf';
-  const columns = ctf ? 11 : 10;
+  const snd = mode === 'snd';
+  /** Objectives: flag captures, or bombs planted and defused */
+  const objectives = ctf || snd;
+  const columns = objectives ? 11 : 10;
+  const unit = ctf ? 'capture' : snd ? 'round' : 'kill';
   // Team modes list each team under its own header; FFA is one list.
   const groups = teams
     ? TEAMS.map((t) => ({ team: t, rows: rows.filter((r) => r.team === t) }))
@@ -66,7 +70,7 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, rules, scor
         {r.name}{r.spectating && <span className="muted"> (spectating)</span>}
         {r === leader && (r.kills > 0 || r.captures > 0) && <span className="crown" title="Top player">👑</span>}
       </td>
-      {ctf && <td>{r.captures}</td>}
+      {objectives && <td>{r.captures}</td>}
       <td>{r.kills}</td>
       <td>{r.deaths}</td>
       <td>{kd(r.kills, r.deaths)}</td>
@@ -109,6 +113,7 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, rules, scor
             <th className="rank">#</th>
             <th>Player</th>
             {ctf && <th>Caps</th>}
+            {snd && <th title="Bombs planted and defused">Obj</th>}
             <th>K</th>
             <th>D</th>
             <th>K/D</th>
@@ -124,7 +129,7 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, rules, scor
             {g.team && (
               <tr className={`team-row ${g.team}`}>
                 <td colSpan={columns} style={{ color: TEAM_INFO[g.team].color }}>
-                  {TEAM_INFO[g.team].name} team · {score[g.team]} {ctf ? 'capture' : 'kill'}{score[g.team] === 1 ? '' : 's'}
+                  {TEAM_INFO[g.team].name} team · {score[g.team]} {unit}{score[g.team] === 1 ? '' : 's'}
                   {g.rows.length === 0 && <span className="muted"> · nobody yet</span>}
                 </td>
               </tr>
@@ -140,6 +145,7 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, rules, scor
           <div className="stats">
             <Stat label="Place" value={`${rows.indexOf(me) + 1} / ${rows.length}`} />
             {ctf ? <Stat label="Captures" value={me.captures} /> : <Stat label="Kills" value={me.kills} />}
+            {snd && <Stat label="Plants & defuses" value={me.captures} />}
             <Stat label="Damage" value={me.damage} />
             <Stat label="Accuracy" value={percent(me.accuracy)} />
             <Stat label="Headshots" value={me.headshots} />

@@ -22,7 +22,7 @@ export interface EvalResult {
   kills: number;
   deaths: number;
   captures: number;
-  /** Captures by the other side (CTF) */
+  /** Captures by the other side (CTF). In S&D, both are rounds won: the policy's side's, the other side's */
   against: number;
   outcome: 'won' | 'lost' | 'draw';
 }
@@ -34,7 +34,7 @@ export interface EvalResult {
 export function evaluateMatch(
   policy: Policy, opponent: Policy | null, mode: GameMode, seed: string, size: MapSize = 's', tier: BotSkill = 'hard',
 ): EvalResult {
-  const arena = new Arena({ seed, size, mode, players: 3, seconds: mode === 'ctf' ? 240 : 150 });
+  const arena = new Arena({ seed, size, mode, players: 3, seconds: mode === 'snd' ? 360 : mode === 'ctf' ? 240 : 150 });
   const obs = new Float32Array(OBS_SIZE);
   const mine = (i: number) => (mode === 'ffa' ? i === 0 : arena.agents[i]!.team === 'red');
   // Policies aim with the aim model at `tier` (the scripted bot aims its own way).
@@ -46,7 +46,7 @@ export function evaluateMatch(
       const play = (p: Policy) => {
         if (shouldTravel(obs)) return arena.travel(a, obs);
         const fight = p.sample(p.normalize(obs)).action;
-        return mode === 'ctf' && shouldPush(obs) ? pushAction(fight, obs) : fight;
+        return (mode === 'ctf' || mode === 'snd') && shouldPush(obs) ? pushAction(fight, obs) : fight;
       };
       if (mine(i)) return play(policy);
       return opponent ? play(opponent) : scriptedAction(obs);
@@ -62,6 +62,10 @@ export function evaluateMatch(
       result.against += a.captures;
     }
   }
+  if (mode === 'snd') {
+    result.captures = arena.score.red ?? 0;
+    result.against = arena.score.blue ?? 0;
+  }
   const score = (i: number) => (mode === 'ffa' ? arena.agents[i]!.kills : arena.score[arena.agents[i]!.team!] ?? 0);
   const ours = score(0);
   const theirs = Math.max(...arena.agents.filter((a) => !mine(a.index)).map((a) => score(a.index)));
@@ -70,7 +74,7 @@ export function evaluateMatch(
   return result;
 }
 
-/** Per-mode K/D (capped at 3) averaged over the modes played, plus a bit for CTF capture margin: one number to rank policies by. */
+/** Per-mode K/D (capped at 3) averaged over the modes played, plus a bit for CTF capture and S&D round margins: one number to rank policies by. */
 export function evalScore(results: readonly EvalResult[]): { score: number; byMode: Record<string, { kd: number; kills: number; deaths: number; captures: number; against: number }> } {
   const byMode: Record<string, { kd: number; kills: number; deaths: number; captures: number; against: number }> = {};
   for (const r of results) {
@@ -85,7 +89,7 @@ export function evalScore(results: readonly EvalResult[]): { score: number; byMo
   for (const mode of modes) {
     const m = byMode[mode]!;
     m.kd = m.kills / Math.max(1, m.deaths);
-    sum += Math.min(3, m.kd) + (mode === 'ctf' ? 0.25 * (m.captures - m.against) : 0);
+    sum += Math.min(3, m.kd) + (mode === 'ctf' || mode === 'snd' ? 0.25 * (m.captures - m.against) : 0);
   }
   return { score: modes.length ? sum / modes.length : 0, byMode };
 }

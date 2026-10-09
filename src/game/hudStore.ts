@@ -1,6 +1,7 @@
 import type { SlotView } from './abilities';
 import { baseRules, type ModeRules } from './rules';
-import type { GameMode, GunKind, PlayerState, Team, WeaponKind } from '../types';
+import type { SndPhase } from './snd';
+import type { GameMode, GunKind, PlayerState, SndRecord, Team, WeaponKind } from '../types';
 import type { MapSize, MapSpec } from './mapgen';
 
 const FEED_LIFETIME = 5_000;
@@ -56,6 +57,32 @@ export type FlagStatus =
   | { state: 'home' }
   | { state: 'dropped'; returnIn: number }
   | { state: 'carried'; carrier: string; mine: boolean };
+
+/** Search & Destroy: the round as the HUD shows it */
+export interface SndView {
+  /** From 1 */
+  round: number;
+  attackers: Team;
+  /** We're on the attacking team */
+  attacking: boolean;
+  phase: SndPhase;
+  /** Seconds on the clock that matters now (freeze, attack time or fuse) */
+  left: number;
+  /** Where the bomb is, as far as we know: defenders only learn where once it's planted */
+  bomb: 'mine' | 'carried' | 'ground' | 'planted' | 'hidden';
+  /** A teammate carrying it */
+  carrier: string | null;
+  /** 'A' or 'B' once planted */
+  site: string | null;
+  alive: Record<Team, { size: number; alive: number }>;
+  /** Planting or defusing, 0..1 */
+  channel: { kind: 'plant' | 'defuse'; progress: number } | null;
+  /** What the interact key would do here */
+  prompt: string | null;
+  over: { winner: Team; why: NonNullable<SndRecord['over']>['why'] } | null;
+  /** Out of this round, watching a teammate */
+  watching: boolean;
+}
 
 /** A red arc around the crosshair pointing at whoever just hurt us. */
 export interface DamageIndicator {
@@ -150,7 +177,10 @@ export interface HudState {
     head: boolean;
     /** Something fell out of our hands where we died */
     dropped: boolean;
+    /** Seconds; -1 = not until the next round (Search & Destroy) */
     respawnIn: number;
+    /** Not dead: joined (or switched team) in the middle of an S&D round */
+    late?: boolean;
   } | null;
   /** Watching the kill cam: who killed us, and how */
   killcam: { killerName: string; color: string; weapon: WeaponKind; head: boolean } | null;
@@ -185,6 +215,8 @@ export interface HudState {
   score: ScoreView;
   /** CTF only */
   flags: Record<Team, FlagStatus> | null;
+  /** Search & Destroy only */
+  snd: SndView | null;
   /** Seconds left in the round; null before the round clock is known */
   clock: { left: number; urgent: boolean } | null;
   /** Set while the round-over screen is up */
@@ -244,6 +276,7 @@ const initialState: HudState = {
   owner: null,
   score: { red: 0, blue: 0, mine: 0, leader: null },
   flags: null,
+  snd: null,
   clock: null,
   matchEnd: null,
   announce: null,

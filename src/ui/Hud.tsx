@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { LOW_HEALTH, type Game } from '../game/game';
-import type { FeedEntry, FlagStatus, HudState, MatchEnd } from '../game/hudStore';
+import type { FeedEntry, FlagStatus, HudState, MatchEnd, SndView } from '../game/hudStore';
 import { ABILITIES, type SlotView } from '../game/abilities';
 import { MVP_TIME, TEAM_INFO, otherTeam } from '../game/modes';
 import type { Team, WeaponKind } from '../types';
@@ -29,7 +29,7 @@ function useHud(game: Game): HudState {
 
 /** The icon the kill feed and death screen use for a weapon. */
 export const weaponIcon = (w: WeaponKind): string =>
-  (w === 'grenade' ? '💣' : w === 'knife' ? '🔪' : w === 'flag' ? '⚑' : w === 'molotov' ? '🔥' : w === 'turret' ? '🤖' : w === 'mine' ? '💥' : GUNS[w]?.icon ?? '▸');
+  (w === 'bomb' ? '🧨' : w === 'grenade' ? '💣' : w === 'knife' ? '🔪' : w === 'flag' ? '⚑' : w === 'molotov' ? '🔥' : w === 'turret' ? '🤖' : w === 'mine' ? '💥' : GUNS[w]?.icon ?? '▸');
 
 /** Copy (or, on phones, share) the invite link for this room. */
 export function useCopyInvite(game: Game, roomCode: string): { copy(): void; copied: boolean } {
@@ -135,8 +135,11 @@ export function Hud({ game, roomCode, onLeave }: Props) {
         </div>
       )}
       {/* Always mounted, so toasts show while spectating and during the MVP replay too. */}
-      {hud.gunPrompt && !hud.death && !hud.spectate && !hud.paused && (
-        <GunPrompt text={hud.gunPrompt} touch={game.touch} onTap={() => game.interact()} />
+      {(hud.snd?.prompt ?? hud.gunPrompt) && !hud.death && !hud.spectate && !hud.paused && (
+        <GunPrompt text={(hud.snd?.prompt ?? hud.gunPrompt)!} touch={game.touch} onTap={() => game.interact()} />
+      )}
+      {hud.snd?.channel && !hud.death && !hud.paused && (
+        <BombProgress channel={hud.snd.channel} touch={game.touch} onCancel={() => game.interact()} />
       )}
       <div id="toasts" aria-hidden="true">
         {/* While the menu is open its card shows the toast instead (nothing draws over the menu). */}
@@ -171,7 +174,9 @@ export function Hud({ game, roomCode, onLeave }: Props) {
           />
         </>
       )}
-      {hud.spectate && !hud.paused && hud.matchEnd?.phase !== 'mvp' && <SpectateBanner spectate={hud.spectate} touch={game.touch} />}
+      {hud.spectate && !hud.paused && hud.matchEnd?.phase !== 'mvp' && (
+        <SpectateBanner spectate={hud.spectate} touch={game.touch} label={hud.snd?.watching ? 'Out until next round' : 'Spectating'} />
+      )}
       {game.touch && (!hud.paused || intro) && !hud.connecting && !hud.death && !hud.inventoryOpen && !hud.spectate
         && hud.matchEnd?.phase !== 'mvp' && (
         <TouchControls game={game} aiming={hud.aiming} hasSpecial={!!hud.special} scoreboardOpen={hud.scoreboardOpen} />
@@ -263,8 +268,8 @@ export function Hud({ game, roomCode, onLeave }: Props) {
 function DeathOverlay({ death }: { death: NonNullable<HudState['death']> }) {
   return (
     <div id="death-overlay" className="overlay" role="status">
-      <h2>{death.self ? 'You took yourself out' : 'You were eliminated'}</h2>
-      {!death.self && (
+      <h2>{death.late ? 'Round in progress' : death.weapon === 'bomb' ? 'Caught in the blast' : death.self ? 'You took yourself out' : 'You were eliminated'}</h2>
+      {!death.self && !death.late && (
         <p>
           by <strong>{death.killerName}</strong>
           <span className="weapon" title={death.weapon}>{weaponIcon(death.weapon)}</span>
@@ -272,7 +277,7 @@ function DeathOverlay({ death }: { death: NonNullable<HudState['death']> }) {
         </p>
       )}
       {death.dropped && <p className="muted">Your gun and abilities dropped where you fell</p>}
-      <p className="muted">Respawning in {death.respawnIn}…</p>
+      <p className="muted">{death.respawnIn < 0 ? "You're in from the next round" : `Respawning in ${death.respawnIn}…`}</p>
     </div>
   );
 }
@@ -292,7 +297,7 @@ function KillcamBanner({ killcam, respawnIn, touch, onSkip }: {
           <span className="weapon" title={killcam.weapon}>{weaponIcon(killcam.weapon)}</span>
           {killcam.head && killcam.weapon !== 'grenade' && <span className="head">⌖ headshot</span>}
         </span>
-        <span className="muted">{respawnIn > 0 ? `Respawning in ${respawnIn}…` : 'Ready to respawn'}</span>
+        <span className="muted">{respawnIn < 0 ? 'Back next round' : respawnIn > 0 ? `Respawning in ${respawnIn}…` : 'Ready to respawn'}</span>
         <button type="button" className="skip" onPointerDown={(e) => { e.stopPropagation(); onSkip(); }}>
           Skip{touch ? '' : ` · ${keyLabel(bindings.jump)} / click`}
         </button>
@@ -301,12 +306,12 @@ function KillcamBanner({ killcam, respawnIn, touch, onSkip }: {
   );
 }
 
-function SpectateBanner({ spectate, touch }: { spectate: NonNullable<HudState['spectate']>; touch: boolean }) {
+function SpectateBanner({ spectate, touch, label }: { spectate: NonNullable<HudState['spectate']>; touch: boolean; label: string }) {
   const { bindings } = useSettings();
   const free = spectate.target === null;
   return (
     <div id="spectate">
-      <span className="label">Spectating</span>
+      <span className="label">{label}</span>
       <strong>{spectate.target ?? 'Free camera'}</strong>
       <span className="muted">
         {touch ? (
@@ -326,6 +331,7 @@ function SpectateBanner({ spectate, touch }: { spectate: NonNullable<HudState['s
 
 function ScoreBar({ hud }: { hud: HudState }) {
   const { team, score, flags, rules } = hud;
+  if (hud.snd) return <SndScoreBar hud={hud} snd={hud.snd} />;
   const { limit, short } = rules;
   /** Free-for-all: outright ahead of everyone else */
   const leading = score.mine > 0 && score.mine > (score.leader?.kills ?? 0);
@@ -381,6 +387,74 @@ function ScoreBar({ hud }: { hud: HudState }) {
       {flags?.[team].state === 'carried' && (
         <div className="flag-banner alert">Your flag was taken — get it back!</div>
       )}
+    </div>
+  );
+}
+
+/** Search & Destroy: rounds won, who's still standing on each side, the round's clock and the bomb. */
+function SndScoreBar({ hud, snd }: { hud: HudState; snd: SndView }) {
+  const { team, score, rules } = hud;
+  const teamBox = (t: Team) => (
+    <div className={`team ${t}${t === team ? ' mine' : ''}`}>
+      <span className="name">{TEAM_INFO[t].name}{t === team && ' (you)'} · {t === snd.attackers ? 'ATK' : 'DEF'}</span>
+      <strong>{score[t]}</strong>
+      <span className="alive-pips" aria-label={`${snd.alive[t].alive} of ${snd.alive[t].size} alive`}>
+        {Array.from({ length: Math.min(snd.alive[t].size, 8) }, (_, i) => <i key={i} className={i < snd.alive[t].alive ? 'up' : 'down'} />)}
+      </span>
+    </div>
+  );
+  const status = snd.phase === 'freeze' ? 'Get ready'
+    : snd.phase === 'planted' ? `💣 Planted at ${snd.site}`
+      : snd.phase === 'over' ? `${TEAM_INFO[snd.over!.winner].name} take round ${snd.round}`
+        : `Round ${snd.round}`;
+  // Out of the round, the spectate banner says enough.
+  let banner: { text: string; tone: 'carrying' | 'alert' } | null = null;
+  if (snd.watching) banner = null;
+  else if (snd.phase === 'planted') {
+    banner = snd.attacking
+      ? { text: `Bomb planted at ${snd.site} — hold the site until it blows`, tone: 'carrying' }
+      : { text: `Bomb planted at ${snd.site} — defuse it!`, tone: 'alert' };
+  } else if (snd.bomb === 'mine' && snd.phase !== 'over') {
+    banner = { text: 'You have the bomb — plant it at site A or B', tone: 'carrying' };
+  } else if (snd.attacking && snd.bomb === 'ground' && snd.phase === 'live') {
+    banner = { text: 'The bomb was dropped — pick it up!', tone: 'alert' };
+  }
+  return (
+    <div id="scorebar-wrap" className="snd">
+      <div id="scorebar">
+        {teamBox('red')}
+        <div className="center">
+          <span className="mode">{rules.short}</span>
+          <RoundClock clock={hud.clock} />
+          <span className={snd.phase === 'planted' ? 'phase planted' : 'phase muted'}>{status}</span>
+          <span className="muted">to {rules.limit}</span>
+        </div>
+        {teamBox('blue')}
+      </div>
+      {banner && <div className={`flag-banner ${banner.tone}`}>{banner.text}</div>}
+      {!banner && snd.attacking && snd.carrier && snd.phase === 'live' && (
+        <div className="flag-banner subtle">{snd.carrier} has the bomb</div>
+      )}
+    </div>
+  );
+}
+
+/** Planting or defusing: a bar that fills while the key is held. */
+function BombProgress({ channel, touch, onCancel }: { channel: NonNullable<SndView['channel']>; touch: boolean; onCancel(): void }) {
+  const label = channel.kind === 'plant' ? 'Planting the bomb' : 'Defusing the bomb';
+  return (
+    <div
+      id="bomb-progress"
+      className={channel.kind}
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(channel.progress * 100)}
+      onPointerDown={touch ? (e) => { e.preventDefault(); e.stopPropagation(); onCancel(); } : undefined}
+    >
+      <span>{label}…{touch ? ' (tap to stop)' : ''}</span>
+      <div className="bar"><div style={{ width: `${channel.progress * 100}%` }} /></div>
     </div>
   );
 }

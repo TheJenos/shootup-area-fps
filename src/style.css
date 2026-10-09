@@ -828,6 +828,7 @@ kbd {
 }
 .mode-badge.tdm { background: rgba(61, 139, 255, 0.18); color: #8fbaff; }
 .mode-badge.ctf { background: rgba(255, 77, 77, 0.18); color: #ff9a9a; }
+.mode-badge.snd { background: rgba(255, 176, 32, 0.18); color: #ffc861; }
 .mode-badge.gungame { background: rgba(255, 181, 71, 0.18); color: #ffd48a; }
 .mode-badge.sniper { background: rgba(167, 139, 255, 0.18); color: #c9b8ff; }
 .mode-badge.snipertdm { background: rgba(167, 139, 255, 0.18); color: #c9b8ff; }
@@ -1046,6 +1047,35 @@ kbd {
 .flag-banner.carrying { color: var(--good); border: 1px solid var(--good); }
 .flag-banner.alert { color: var(--danger); border: 1px solid var(--danger); }
 @keyframes pulse { from { opacity: 0.75; } to { opacity: 1; } }
+.flag-banner.subtle { color: var(--muted); font-weight: 600; animation: none; }
+
+/* Search & Destroy: who's still standing, and the round's state under the clock */
+#scorebar .alive-pips { display: flex; gap: 3px; margin-top: 3px; min-height: 8px; }
+#scorebar .alive-pips i { width: 8px; height: 8px; border-radius: 2px; background: var(--team); }
+#scorebar .alive-pips i.down { background: rgba(255, 255, 255, 0.15); }
+#scorebar .phase { font-size: 12px; white-space: nowrap; }
+#scorebar .phase.planted { color: #ffb020; font-weight: 700; }
+#bomb-progress {
+  position: absolute;
+  left: 50%;
+  bottom: 236px;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.6);
+  font-size: 14px;
+  font-weight: 700;
+  pointer-events: none;
+}
+#hud.touch #bomb-progress { pointer-events: auto; }
+#bomb-progress .bar { width: 220px; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
+#bomb-progress .bar > div { height: 100%; background: #ffb020; }
+#bomb-progress.defuse .bar > div { background: var(--good); }
 
 #round-over { background: rgba(8, 10, 14, 0.6); }
 #round-over h2 { font-size: 46px; }

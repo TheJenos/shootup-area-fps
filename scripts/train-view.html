@@ -96,8 +96,8 @@
   </section>
 </main>
 <script>
-const STAGES = ['aim', 'duel', 'tdm', 'ctf', 'mix'];
-const STAGE_TINT = { aim: '#3b82f6', duel: '#a855f7', tdm: '#ef4444', ctf: '#f59e0b', mix: '#10b981' };
+const STAGES = ['aim', 'duel', 'tdm', 'ctf', 'snd', 'mix'];
+const STAGE_TINT = { aim: '#3b82f6', duel: '#a855f7', tdm: '#ef4444', ctf: '#f59e0b', snd: '#eab308', mix: '#10b981' };
 const ROLE = {
   learner: { label: 'Learning policy', ring: '#ffffff', dash: [] },
   snapshot: { label: 'Older snapshot', ring: '#c084fc', dash: [6, 4] },
@@ -109,7 +109,7 @@ const CHARTS = [
   { key: 'rewardPerEpisode', name: 'Reward per episode', hint: 'everything the learners earned, per match', color: '#ffb547' },
   { key: 'killsPerEpisode', name: 'Kills per episode', hint: 'by the learning bots', color: '#4ade80' },
   { key: 'kdVsScripted', name: 'K/D vs scripted bot', hint: 'above 1: beats the hand-written bot', color: '#60a5fa', line: 1 },
-  { key: 'capturesPerEpisode', name: 'Flag captures per episode', hint: 'CTF stages', color: '#f472b6' },
+  { key: 'capturesPerEpisode', name: 'Objectives per episode', hint: 'flag captures (CTF), plants and defuses (S&D)', color: '#f472b6' },
   { key: 'entropy', name: 'Policy entropy', hint: 'falls as choices get confident', color: '#c084fc' },
   { key: 'sps', name: 'Steps per second', hint: 'decisions trained on, all workers', color: '#94a3b8', raw: true },
 ];
@@ -138,6 +138,7 @@ const EVAL_LINES = [
   { key: 'ffa', label: 'FFA K/D', color: '#22d3ee' },
   { key: 'tdm', label: 'TDM K/D', color: '#f87171' },
   { key: 'ctf', label: 'CTF K/D', color: '#f472b6' },
+  { key: 'snd', label: 'S&D K/D', color: '#eab308' },
   { key: 'score', label: 'score', color: '#fbbf24' },
 ];
 function drawEval() {
@@ -333,6 +334,24 @@ function drawArena() {
     }
   }
   if (!frame) return;
+  // S&D: the defenders' sites this round, and the bomb when it's lying around or planted
+  if (frame.snd) {
+    ctx.font = `bold ${Math.max(12, 1.6 * s)}px system-ui, sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (const id of ['a', 'b']) {
+      const site = frame.snd.sites[id];
+      const [px, pz] = P(site.x, site.z);
+      ctx.strokeStyle = '#ffb020'; ctx.lineWidth = 2; ctx.setLineDash([5, 4]);
+      ctx.beginPath(); ctx.arc(px, pz, 3.5 * s, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = '#ffd27a'; ctx.fillText(id.toUpperCase(), px, pz);
+    }
+    const b = frame.snd.bomb;
+    if (b && !b.by && typeof b.x === 'number') {
+      const [bx, bz] = P(b.x, b.z);
+      ctx.fillStyle = b.plantedAt !== undefined ? '#ff3030' : '#ffb020';
+      ctx.fillRect(bx - 5, bz - 5, 10, 10);
+    }
+  }
   // Tracers
   const now = performance.now();
   for (let i = tracers.length - 1; i >= 0; i--) {
@@ -372,6 +391,8 @@ function drawArena() {
     // Health
     ctx.strokeStyle = hp > 50 ? '#4ade80' : hp > 25 ? '#fbbf24' : '#f87171'; ctx.lineWidth = 3;
     ctx.beginPath(); ctx.arc(px, pz, r + 7, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.max(0, hp) / 100); ctx.stroke();
+    // Carrying the bomb (S&D)
+    if (frame.snd?.bomb?.by === `a${i}`) { ctx.fillStyle = '#ffb020'; ctx.fillRect(px + r - 4, pz - r - 4, 8, 8); }
     // Carrying a flag
     if (frame.flags) for (const team of ['red', 'blue']) {
       const f = frame.flags[team];

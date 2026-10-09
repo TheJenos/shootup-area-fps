@@ -40,7 +40,9 @@ export const STAGES: Stage[] = [
   { name: 'duel', modes: ['ffa'], sizes: ['s', 'm'], players: 3, dummies: 0, seconds: 90, guns: ['rifle', 'rifle', 'rifle', 'deagle', 'shotgun', 'sniper'], snapshotShare: 0.2, scriptedShare: 0.35 },
   { name: 'tdm', modes: ['tdm', 'tdm', 'ffa'], sizes: ['s', 'm'], players: 3, dummies: 0, seconds: 120, guns: ['rifle', 'rifle', 'rifle', 'deagle', 'sniper'], snapshotShare: 0.25, scriptedShare: 0.35 },
   { name: 'ctf', modes: ['ctf', 'ctf', 'ctf', 'tdm', 'ffa'], sizes: ['s', 'm', 'l'], players: 3, dummies: 0, seconds: 180, guns: ['rifle', 'rifle', 'rifle', 'sniper'], snapshotShare: 0.25, scriptedShare: 0.35 },
-  { name: 'mix', modes: ['ffa', 'tdm', 'ctf', 'ctf'], sizes: ['s', 'm', 'l'], players: 3, dummies: 0, seconds: 150, guns: ['rifle', 'rifle', 'rifle', 'deagle', 'shotgun', 'sniper'], snapshotShare: 0.25, scriptedShare: 0.3 },
+  // S&D: no respawns, so a death costs the round, and the bomb (not kills) decides it.
+  { name: 'snd', modes: ['snd', 'snd', 'snd', 'ctf', 'tdm', 'ffa'], sizes: ['s', 'm', 'l'], players: 3, dummies: 0, seconds: 300, guns: ['rifle', 'rifle', 'rifle', 'deagle', 'sniper'], snapshotShare: 0.25, scriptedShare: 0.35 },
+  { name: 'mix', modes: ['ffa', 'tdm', 'ctf', 'ctf', 'snd', 'snd'], sizes: ['s', 'm', 'l'], players: 3, dummies: 0, seconds: 150, guns: ['rifle', 'rifle', 'rifle', 'deagle', 'shotgun', 'sniper'], snapshotShare: 0.25, scriptedShare: 0.3 },
 ];
 
 export const stageByName = (name: string): Stage => {
@@ -197,7 +199,7 @@ export class Rollout {
             actions.push(arena.travel(a, this.raw));
             continue;
           }
-          if (arena.mode === 'ctf' && shouldPush(this.raw) && (role.kind === 'learner' || role.kind === 'snapshot')) {
+          if ((arena.mode === 'ctf' || arena.mode === 'snd') && shouldPush(this.raw) && (role.kind === 'learner' || role.kind === 'snapshot')) {
             // Pushing on to the objective while shooting: the feet aren't the policy's, so it isn't experience.
             if (traj && traj.length && !slot.traveling[a.index]) {
               policy.norm.normalize(this.raw, this.normed);

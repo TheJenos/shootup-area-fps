@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { loadPhysics } from '../../physics';
 import { groundHeight } from '../../mapgen';
@@ -61,6 +62,54 @@ describe('the training arena', () => {
     expect(steps).toBeGreaterThan(100);
     // Scripted bots fight: somebody got shot.
     expect(arena.agents.reduce((n, a) => n + a.deaths, 0)).toBeGreaterThan(0);
+    arena.dispose();
+  });
+
+  it('plays S&D with scripted bots: rounds without respawns, the bomb handed out, rounds decided', () => {
+    const rand = lcg(7);
+    const arena = new Arena({ seed: 'ARENA5', size: 's', mode: 'snd', players: 3, seconds: 240 }, rand);
+    const obs = arena.agents.map(() => new Float32Array(OBS_SIZE));
+    expect(arena.snd?.atk).toBe('red');
+    const carrier = arena.agents.find((a) => a.id === arena.snd?.bomb.by);
+    expect(carrier?.team).toBe('red');
+    let rounds = 0;
+    let lastN = 0;
+    while (!arena.done) {
+      arena.step(arena.agents.map((a, i) => scriptedAction(arena.observe(a, obs[i]!), rand)));
+      for (const v of obs[0]!) expect(Number.isFinite(v)).toBe(true);
+      // Nobody comes back during a round.
+      if (arena.snd && !arena.snd.over && arena.snd.n === lastN) {
+        for (const a of arena.agents) if (!a.alive) expect(a.respawnAt).toBe(Infinity);
+      }
+      if (arena.snd && arena.snd.n !== lastN) {
+        lastN = arena.snd.n;
+        rounds++;
+        expect(arena.agents.every((a) => a.alive)).toBe(true);
+      }
+    }
+    expect(rounds).toBeGreaterThan(0);
+    expect((arena.score.red ?? 0) + (arena.score.blue ?? 0)).toBeGreaterThan(0);
+    arena.dispose();
+  });
+
+  it('S&D: a bomb planted on a site goes off, wins the round and takes those near it along', () => {
+    const arena = new Arena({ seed: 'ARENA6', size: 's', mode: 'snd', players: 1, seconds: 200 }, lcg(9));
+    const [atk, def] = arena.agents as [typeof arena.agents[0], typeof arena.agents[0]];
+    const still: BotAction = { move: 0, sprint: false, jump: false, crouch: false, fire: false, aimYaw: 0, aimPitch: 0 };
+    const site = arena.sites!.a;
+    // Wait out the freeze, then stand the carrier on site A and the defender beside it, out of sight of each other's guns.
+    while (arena.time < 6) arena.step([still, still]);
+    atk.mover.teleport(new THREE.Vector3(site.x, site.y + 0.1, site.z));
+    def.mover.teleport(new THREE.Vector3(site.x + 6, site.y + 0.1, site.z));
+    while (arena.snd!.bomb.plantedAt === undefined && arena.time < 20) arena.step([still, still]);
+    expect(arena.snd!.bomb).toMatchObject({ site: 'a', planter: atk.id });
+    expect(atk.captures).toBe(1);
+    // Move the defender off the bomb so it isn't defused, but inside the blast.
+    def.mover.teleport(new THREE.Vector3(site.x + 8, site.y + 0.1, site.z));
+    while (!arena.snd!.over && arena.time < 80) arena.step([still, still]);
+    expect(arena.snd!.over).toMatchObject({ winner: 'red', why: 'bomb' });
+    expect(def.alive).toBe(false);
+    expect(arena.score.red).toBe(1);
     arena.dispose();
   });
 

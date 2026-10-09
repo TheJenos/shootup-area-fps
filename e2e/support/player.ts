@@ -30,6 +30,10 @@ export interface GameStateView {
   ammo: number;
   reserve: number | null;
   carryingFlag: boolean;
+  /** Search & Destroy: carrying the bomb, planting or defusing, and the defenders' sites this round */
+  carryingBomb: boolean;
+  channel: { kind: 'plant' | 'defuse'; t: number } | null;
+  sites: Record<'a' | 'b', { x: number; y: number; z: number }> | null;
   shield: number;
   slots: (string | null)[];
   mapSeed: string;
@@ -44,6 +48,13 @@ export interface GameStateView {
     score: Partial<Record<'red' | 'blue', number>>;
     flags: Partial<Record<'red' | 'blue', { by?: string; x?: number; y?: number; z?: number }>>;
     ended?: { winner: string; name: string; reason: 'time' | 'score'; at?: number };
+    snd?: {
+      n: number;
+      atk: 'red' | 'blue';
+      at: number;
+      bomb: { by?: string; x?: number; y?: number; z?: number; site?: 'a' | 'b'; plantedAt?: number; planter?: string };
+      over?: { winner: 'red' | 'blue'; why: 'elim' | 'bomb' | 'defuse' | 'time'; at: number };
+    };
   };
   rules: Record<string, unknown>;
 }

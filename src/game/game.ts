@@ -27,6 +27,12 @@ import { loadFpArms } from './fpArms';
 import { loadPropModels } from './props';
 import { GrenadeFx, simulateGrenade, THROW_LIFT, THROW_SPEED } from './grenades';
 import { FlagField, placementOf, type FlagPlacement } from './flags';
+import { BombField } from './bombsites';
+import {
+  BOMB_BLAST_RADIUS, BOMB_PICKUP_RADIUS, CHANNEL_SLIP, DEFUSE_RADIUS, DEFUSE_TIME, PLANT_TIME, ROUND_END_TIME, SITE_NAME,
+  attackersFor, bombHome, canJoin, bombPlacement, bombSites, decide, newRound as newSndRound, phaseOf, pickCarrier, secondsLeft, sidesSwapped, siteAt,
+  type Headcount, type Point,
+} from './snd';
 import {
   CLOCK_WARNING, FLAG_BASES, setFlagBases, FLAG_RADIUS, FLAG_RETURN_TIME, GUN_GAME_LADDER, KNIFE_COOLDOWN, KNIFE_DAMAGE, KNIFE_RANGE,
   MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_HEAD_DAMAGE,
@@ -52,7 +58,8 @@ import { StepTracker, type StepEvent } from './footsteps';
 import { hints, type HintId } from './hints';
 import { PERF_DEBUG, perfStats } from './perfStats';
 import type {
-  AbilityType, GameEvent, GameMode, GameState, GunKind, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, Team, Vec3Tuple, WeaponKind,
+  AbilityType, BombRecord, GameEvent, GameMode, GameState, GunKind, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, SiteId, SndRecord, Team,
+  Vec3Tuple, WeaponKind,
 } from '../types';
 
 const SEND_INTERVAL = 1 / 15;
@@ -62,7 +69,7 @@ const HEARTBEAT = 5;
 const STATS_INTERVAL = 1;
 /** Most damage one hit of each kind can deal; anything above that from another client is clamped. */
 const maxDamage = (weapon: WeaponKind) =>
-  (weapon === 'grenade' ? GRENADE_DAMAGE : weapon === 'mine' ? MINE_DAMAGE : weapon === 'flag' ? MELEE_HEAD_DAMAGE : weapon === 'knife' ? KNIFE_DAMAGE : weapon === 'molotov' ? FIRE_DAMAGE
+  (weapon === 'bomb' ? 1000 : weapon === 'grenade' ? GRENADE_DAMAGE : weapon === 'mine' ? MINE_DAMAGE : weapon === 'flag' ? MELEE_HEAD_DAMAGE : weapon === 'knife' ? KNIFE_DAMAGE : weapon === 'molotov' ? FIRE_DAMAGE
     : weapon === 'turret' ? TURRET_DAMAGE : maxShotDamage(weapon));
 /** One entry of the room's bot list, as the owner's panel shows it */
 export interface BotRow {
@@ -126,7 +133,7 @@ const RECORD_INTERVAL = 0.1;
 /** Fraction of full health a kill gives back */
 const KILL_HEAL = 0.5;
 /** How hard a killing hit shoves the body, per weapon (m/s at the chest) */
-const KNOCKBACK: Partial<Record<WeaponKind, number>> = { rifle: 3, deagle: 4, shotgun: 6, sniper: 6, grenade: 7, mine: 8, flag: 4.5 };
+const KNOCKBACK: Partial<Record<WeaponKind, number>> = { rifle: 3, deagle: 4, shotgun: 6, sniper: 6, grenade: 7, mine: 8, flag: 4.5, bomb: 12 };
 
 /** Fraction of full health at or below which the screen darkens at the edges and the heart pounds */
 export const LOW_HEALTH = 0.3;
@@ -308,6 +315,22 @@ export class Game {
   private flagHomeToast = false;
   /** When each flag was dropped, as seen by this client, so it can be sent home after a while */
   private flagDroppedAt: Partial<Record<Team, number>> = {};
+  // Search & Destroy
+  private bombField: BombField | null = null;
+  private bombBusy = false;
+  private sndRefereeBusy = false;
+  /** The S&D round we last set up for ("match round:round in it"), so each is set up once */
+  private sndKey = '';
+  /** The defenders' sites this round, and which map and side they were worked out for */
+  private sites: Record<SiteId, Point> | null = null;
+  private sitesKey = '';
+  /**
+   * Planting or defusing: what, where it started (moving away stops it) and how far along (s). Timed on
+   * the wall clock, like the fuse, so a slow frame rate doesn't make it take longer.
+   */
+  private channel: { kind: 'plant' | 'defuse'; site: SiteId; from: THREE.Vector3; since: number; t: number } | null = null;
+  /** The interact key is held (planting and defusing need it held the whole time; on touch, a tap starts it) */
+  private interactHeld = false;
 
   // MVP: our own highlights, everything we saw this round, and the replay when it's on
   private readonly moments = new MomentTracker();
@@ -700,6 +723,9 @@ export class Game {
         ammo: this.weapon.ammo,
         reserve: this.weapon.reserve,
         carryingFlag: this.carryingFlag(),
+        carryingBomb: this.carryingBomb(),
+        channel: this.channel ? { kind: this.channel.kind, t: this.channel.t } : null,
+        sites: this.siteSpots(),
         shield: this.shieldHp,
         slots: this.inventory.view(performance.now()).map((s) => s?.type ?? null),
         mapSeed: this.mapSpec.seed,
@@ -821,7 +847,7 @@ export class Game {
         if (this.locked && e.button === 0) this.skipKillcam();
         return;
       }
-      if (this.spectating) {
+      if (this.spectating || this.watchingTeam) {
         if (this.locked && (e.button === 0 || e.button === 2)) this.cycleSpectate(e.button === 0 ? 1 : -1);
         return;
       }
@@ -865,7 +891,10 @@ export class Game {
       if (action === 'reload' && this.alive && this.locked) this.weapon.reload();
       if (action === 'swap' && !e.repeat && this.locked) this.switchGun();
       if (action === 'knife' && !e.repeat && this.locked) this.knife();
-      if (action === 'interact' && !e.repeat && this.locked) this.interact();
+      if (action === 'interact' && !e.repeat && this.locked) {
+        this.interactHeld = true;
+        this.interact();
+      }
       const slot = action ? ABILITY_ACTIONS.indexOf(action) : -1;
       if (slot >= 0 && !e.repeat && this.alive && this.locked) this.useAbility(slot);
       if (action === 'inventory' && !e.repeat) {
@@ -886,6 +915,7 @@ export class Game {
     }, { signal });
     window.addEventListener('keyup', (e) => {
       if (actionFor(e.code) === 'scoreboard') this.hud.update({ scoreboardOpen: false });
+      if (actionFor(e.code) === 'interact') this.interactHeld = false;
     }, { signal });
 
     // Closing or reloading the tab mid-game (e.g. a stray Ctrl+W) asks first. Leaving through
@@ -927,6 +957,7 @@ export class Game {
     this.applyLoadout();
     if (MODES[this.mode].teams) this.setTeam(await this.pickTeam());
     if (this.mode === 'ctf') this.flagField = new FlagField(this.scene);
+    if (this.mode === 'snd') this.bombField = new BombField(this.scene);
     if (info) this.hud.update({ match: { roomName: info.name, startedAt: info.createdAt } });
     this.hud.update({ mode: this.mode, rules: this.rules });
     if (this.disposed) return;
@@ -970,6 +1001,7 @@ export class Game {
     this.specFree = false;
     this.specTarget = null;
     void this.dropFlag();
+    void this.dropBomb();
     this.clearAbilities();
     this.weapon.releaseTrigger();
     this.triggerHeld = false;
@@ -996,13 +1028,16 @@ export class Game {
     this.pov = null;
     this.hud.update({ spectate: null });
     void this.net.sendState({ spec: false });
-    this.respawn();
+    // Search & Destroy: back in at the start of the next round (straight away early in this one).
+    const snd = this.snd;
+    if (snd && !canJoin(snd, this.net.serverNow())) this.sitOut();
+    else this.respawn();
   }
 
   /** The players we can follow: everyone alive who isn't spectating themselves. */
   private spectatable(): string[] {
     return [...this.remotes.entries()]
-      .filter(([id, r]) => r.alive && !this.players[id]?.spec)
+      .filter(([id, r]) => r.alive && !this.players[id]?.spec && (!this.watchingTeam || this.isAlly(id)))
       .map(([id]) => id)
       .sort();
   }
@@ -1095,10 +1130,14 @@ export class Game {
   switchTeam(): void {
     if (!this.team || !this.joined) return;
     void this.dropFlag();
+    void this.dropBomb();
     this.setTeam(otherTeam(this.team));
     void this.net.sendState({ team: this.team, color: this.color });
     this.hud.toast(`Joined ${TEAM_INFO[this.team].name} team`);
-    if (this.alive) this.respawn();
+    // Search & Destroy: mid-round, the new team's next round is the first one to play.
+    const snd = this.snd;
+    if (snd && this.alive && !canJoin(snd, this.net.serverNow())) this.sitOut();
+    else if (this.alive) this.respawn();
   }
 
   /** A teammate (never ourselves). Teammates can't hurt each other. */
@@ -1145,6 +1184,9 @@ export class Game {
       colorFor,
       creditKill: (killerId, victimTeam) => this.creditKiller(killerId, victimTeam),
       finishRound: (g, winner, name, reason) => this.finishRound(g, winner, name, reason),
+      sites: () => this.siteSpots(),
+      endSndRound: (g, winner, why) => this.endSndRound(g, winner, why),
+      headcount: () => this.headcount(),
       maxDamage,
       pickups: () => this.pickups.list(),
       scatterAround: (x, z, n) => this.pickups.scatterAround(x, z, n),
@@ -1546,6 +1588,7 @@ export class Game {
         if (!first && !newRound) this.announceFlag(team, was, is);
       }
     }
+    if (this.mode === 'snd') this.onSnd(prev.snd, next.snd, first);
     this.refreshScore();
   }
 
@@ -1559,7 +1602,7 @@ export class Game {
     if (this.kills + this.deaths + this.stats.captures === 0 && performance.now() - this.joinedAt < 60_000) return;
     this.rankedRound = this.game.round;
     const won = ended.winner !== 'draw' && (this.team ? ended.winner === this.team : ended.winner === this.playerId);
-    recordRound(this.profileId, this.name, { kills: this.kills, deaths: this.deaths, captures: this.stats.captures, won }, this.guildId)
+    recordRound(this.profileId, this.name, { kills: this.kills, deaths: this.deaths, captures: Math.min(10, this.stats.captures), won }, this.guildId)
       .catch((err: unknown) => console.warn('Could not update the leaderboard', err));
   }
 
@@ -1665,6 +1708,14 @@ export class Game {
       this.flagField?.dispose();
       this.flagField = null;
     }
+    if (this.mode === 'snd' && !this.bombField) this.bombField = new BombField(this.scene);
+    else if (this.mode !== 'snd' && this.bombField) {
+      this.bombField.dispose();
+      this.bombField = null;
+    }
+    this.sitesKey = '';
+    this.sndKey = '';
+    this.channel = null;
     this.hud.update({ mode: this.mode, rules });
     if (announce) this.hud.announce(rules.name.toUpperCase(), goalOf(rules));
   }
@@ -1765,6 +1816,7 @@ export class Game {
       delete g.ended;
       g.score = {};
       g.flags = {};
+      delete g.snd;
       return true;
     })
       .then((committed) => {
@@ -2085,17 +2137,22 @@ export class Game {
       : null;
 
     let clock: HudState['clock'] = null;
-    if (g.startedAt) {
+    const snd = this.sndView(now);
+    if (snd && !g.ended) {
+      // S&D shows the round's own clock (the freeze, the attackers' time or the fuse); the match limit still applies.
+      const live = snd.phase === 'live' || snd.phase === 'planted';
+      clock = { left: snd.left, urgent: live && snd.left <= (snd.phase === 'planted' ? CLOCK_WARNING : 15) };
+    } else if (g.startedAt) {
       const left = g.ended ? 0 : Math.max(0, Math.ceil((g.startedAt + this.rules.minutes * 60_000 - now) / 1000));
       clock = { left, urgent: !g.ended && left <= CLOCK_WARNING };
     }
 
     const matchEnd = this.matchEndView(now);
     const playerCount = Object.values(this.players).filter((p) => !p.spec).length;
-    const key = JSON.stringify([score, flags, clock, matchEnd, playerCount]);
+    const key = JSON.stringify([score, flags, clock, matchEnd, playerCount, snd]);
     if (key === this.lastScoreKey) return;
     this.lastScoreKey = key;
-    this.hud.update({ score, flags, clock, matchEnd, playerCount });
+    this.hud.update({ score, flags, clock, matchEnd, playerCount, snd });
   }
 
   private matchEndView(now: number): MatchEnd | null {
@@ -2111,7 +2168,7 @@ export class Game {
     const top = this.scoreRows().slice(0, 3).map((r) => ({
       name: r.name,
       color: r.color,
-      score: ctf ? `${r.captures} cap · ${r.kills} K` : `${r.kills} K / ${r.deaths} D`,
+      score: ctf ? `${r.captures} cap · ${r.kills} K` : this.mode === 'snd' ? `${r.kills} K · ${r.captures} obj` : `${r.kills} K / ${r.deaths} D`,
     }));
     const mvp = ended.mvp
       ? {
@@ -2296,6 +2353,426 @@ export class Game {
     }
   }
 
+  // ---------------------------------------------------------------- search & destroy
+
+  /** This S&D round (null in other modes, or before the first round is set up) */
+  private get snd(): SndRecord | null {
+    return this.mode === 'snd' ? this.game.snd ?? null : null;
+  }
+
+  /** Held where we stand: S&D's freeze before a round, or while planting or defusing */
+  private get frozen(): boolean {
+    const snd = this.snd;
+    return !!this.channel || (!!snd && phaseOf(snd, this.net.serverNow()) === 'freeze');
+  }
+
+  /** S&D: out of this round (dead, not spectating), so we watch a teammate until the next one */
+  private get watchingTeam(): boolean {
+    return this.mode === 'snd' && this.joined && !this.alive && !this.spectating;
+  }
+
+  /** The defenders' two sites this round; worked out again when the map or the sides change */
+  private siteSpots(): Record<SiteId, Point> | null {
+    const snd = this.snd;
+    const map = this.map;
+    if (!snd || !map) return null;
+    const key = `${map.spec.seed}:${map.hash}:${snd.atk}`;
+    if (key !== this.sitesKey || !this.sites) {
+      this.sitesKey = key;
+      this.sites = bombSites(map, otherTeam(snd.atk));
+      this.bombField?.setSites(this.sites);
+    }
+    return this.sites;
+  }
+
+  private carryingBomb(): boolean {
+    return this.snd?.bomb.by === this.playerId;
+  }
+
+  /** The S&D record changed: set up a new round, or tell everyone what happened to the bomb and the round. */
+  private onSnd(prev: SndRecord | undefined, next: SndRecord | undefined, first: boolean): void {
+    this.bombField?.setBomb(bombPlacement(next?.bomb));
+    if (!next) return;
+    this.siteSpots();
+    const key = `${this.game.round}:${next.n}`;
+    if (key !== this.sndKey) {
+      this.sndKey = key;
+      this.channel = null;
+      // Joining in the middle of a round: we play from the next one (early on, straight away).
+      if (first) {
+        if (!canJoin(next, this.net.serverNow())) this.sitOut();
+      } else {
+        this.startSndRound(next);
+      }
+      return;
+    }
+    if (first || !prev) return;
+    this.announceBomb(next, prev.bomb, next.bomb);
+    if (next.over && !prev.over) this.sndRoundOver(next);
+  }
+
+  /** A new S&D round: everyone back at their spawn, full health, held there until the fight starts. */
+  private startSndRound(s: SndRecord): void {
+    this.bots.startSndRound();
+    if (this.spectating) return;
+    this.stopKillcam();
+    if (this.alive) {
+      // Survivors keep their guns and abilities.
+      const spawn = this.pickSpawn();
+      this.player.teleport(spawn, Math.atan2(spawn.x, spawn.z));
+      this.hp = this.rules.health;
+      this.hitSources.clear();
+      this.hud.update({ hp: this.hp });
+      void this.net.sendState({ ...this.poseState(), hp: this.hp });
+    } else {
+      this.respawn();
+    }
+    const attacking = this.team === s.atk;
+    const title = sidesSwapped(s.n, this.rules.limit) ? 'SIDES SWITCHED' : `ROUND ${s.n + 1}`;
+    const sub = !attacking ? 'Defend sites A and B'
+      : s.bomb.by === this.playerId ? `You have the bomb — plant it at A or B (hold ${this.touch ? '✋' : keyLabel(keyFor('interact'))})`
+        : 'Attack — get the bomb to site A or B';
+    this.hud.announce(title, sub, 3200);
+    sfx.playRoundStart();
+  }
+
+  /** Out of the current round without dying (joined or switched team mid-round): back in the next one. */
+  private sitOut(): void {
+    if (this.spectating || !this.alive) return;
+    this.alive = false;
+    this.hp = 0;
+    this.respawnTimer = Infinity;
+    this.channel = null;
+    this.triggerHeld = false;
+    this.aimHeld = false;
+    void this.dropBomb();
+    void this.net.sendState({ alive: false, hp: 0, shield: false });
+    this.hud.update({
+      hp: 0, death: { killerName: '', self: false, weapon: 'rifle', head: false, dropped: false, respawnIn: -1, late: true },
+    });
+  }
+
+  /** Back to our own eyes after watching a teammate. */
+  private stopWatching(): void {
+    if (this.spectating) return;
+    this.specTarget = null;
+    this.specFree = false;
+    this.specKey = '';
+    this.specLost = null;
+    if (this.pov && !this.playback) {
+      this.pov.setFirstPerson(false);
+      this.pov = null;
+      this.camera.fov = settings.get().fov;
+      this.camera.updateProjectionMatrix();
+    }
+    if (this.hud.get().spectate) this.hud.update({ spectate: null });
+  }
+
+  /** Feed lines and banners for the bomb changing hands. Defenders only hear about it once it's planted. */
+  private announceBomb(s: SndRecord, was: BombRecord, is: BombRecord): void {
+    const a = bombPlacement(was);
+    const b = bombPlacement(is);
+    if (!b || JSON.stringify(a) === JSON.stringify(b)) return;
+    const who = (id: string | null) => (id === this.playerId ? 'You' : (id && this.players[id]?.name) || 'Someone');
+    const attacking = this.team === s.atk;
+    if (b.at === 'carried') {
+      if (b.carrier === this.playerId) {
+        sfx.playPickup();
+        this.hud.announce('YOU HAVE THE BOMB', `Plant it at A or B — hold ${this.touch ? '✋' : keyLabel(keyFor('interact'))} on the site`);
+      } else if (attacking && a?.at === 'ground') {
+        this.hud.pushInfo(`${who(b.carrier)} picked up the bomb`);
+      }
+    } else if (b.at === 'ground' && a?.at === 'carried') {
+      if (attacking) this.hud.pushInfo(`${who(a.carrier)} dropped the bomb`);
+    } else if (b.at === 'planted') {
+      this.hud.pushInfo(`${who(b.planter)} planted the bomb at ${SITE_NAME[b.site]}`);
+      this.hud.announce('BOMB PLANTED', attacking ? `Site ${SITE_NAME[b.site]} — hold it until it blows` : `Site ${SITE_NAME[b.site]} — defuse it!`);
+      if (attacking) sfx.playAbility();
+      else sfx.playDenied();
+    }
+  }
+
+  /** The round was decided: the bomb goes off if that's how, and everyone hears who took it. */
+  private sndRoundOver(s: SndRecord): void {
+    const over = s.over;
+    if (!over) return;
+    this.channel = null;
+    if (over.why === 'bomb') this.explodeBomb(s);
+    // The last round: the match result says it all.
+    if (this.game.ended) return;
+    const won = this.team === over.winner;
+    const how = { elim: 'Team eliminated', bomb: 'The bomb went off', defuse: 'The bomb was defused', time: 'Time ran out' }[over.why];
+    const score = `${TEAM_INFO.red.name} ${this.game.score.red ?? 0} – ${this.game.score.blue ?? 0} ${TEAM_INFO.blue.name}`;
+    this.hud.announce(this.team ? (won ? 'ROUND WON' : 'ROUND LOST') : `${TEAM_INFO[over.winner].name.toUpperCase()} WINS THE ROUND`, `${how} · ${score}`, 3500);
+    this.hud.pushInfo(`${TEAM_INFO[over.winner].name} team wins round ${s.n + 1} (${how.toLowerCase()})`);
+    if (this.team) sfx.playRoundEnd(won ? 'won' : 'lost');
+  }
+
+  /** The fuse ran out: a big blast that takes everyone close by with it. */
+  private explodeBomb(s: SndRecord): void {
+    const b = bombPlacement(s.bomb);
+    if (b?.at !== 'planted') return;
+    const at = new THREE.Vector3(b.x, b.y + 0.4, b.z);
+    this.grenades.explode(`bomb-${this.game.round}-${s.n}`, at, BOMB_BLAST_RADIUS, 0xff7020);
+    this.debris.blast(at, BOMB_BLAST_RADIUS);
+    for (const r of this.remotes.values()) {
+      if (!r.alive && r.position.distanceTo(at) < BOMB_BLAST_RADIUS * 1.2) r.knockback(at, 14, false, true);
+    }
+    sfx.playExplosion(Math.min(1.5, 2 / (1 + at.distanceTo(this.camera.position) / 30)));
+    this.shake = Math.min(1, this.shake + 1.2 - Math.min(1, at.distanceTo(this.camera.position) / 60));
+    this.bots.bombBlast(at, BOMB_BLAST_RADIUS, b.planter);
+    if (this.alive && !this.roundOver && this.player.position.distanceTo(at) < BOMB_BLAST_RADIUS) this.die(b.planter ?? '', false, 'bomb');
+  }
+
+  /** Who's on each team, and how many of them are still alive */
+  private headcount(): Headcount {
+    const heads: Headcount = { red: { size: 0, alive: 0 }, blue: { size: 0, alive: 0 } };
+    for (const [id, p] of Object.entries(this.players)) {
+      const me = id === this.playerId;
+      if (me ? this.spectating : p.spec) continue;
+      const team = me ? this.team : p.team;
+      if (!team) continue;
+      heads[team].size++;
+      if (me ? this.alive : p.alive) heads[team].alive++;
+    }
+    return heads;
+  }
+
+  /** S&D round `n`, ready to be written: the attackers' bomb goes to one of them. */
+  private freshSnd(n: number): SndRecord {
+    const limit = this.rules.limit;
+    const atk = attackersFor(n, limit);
+    return newSndRound(n, limit, this.net.serverNow(), pickCarrier(this.teamIds(atk), n), this.map ? bombHome(this.map, atk) : { x: 0, y: 0, z: 0 });
+  }
+
+  /** Everyone playing on `team` (bots included) */
+  private teamIds(team: Team): string[] {
+    return Object.entries(this.players)
+      .filter(([id, p]) => (id === this.playerId ? !this.spectating && this.team === team : !p.spec && p.team === team))
+      .map(([id]) => id);
+  }
+
+  /** Mark the S&D round won by `winner` (inside a transaction); the round that reaches the limit ends the match. */
+  private endSndRound(g: GameState, winner: Team, why: NonNullable<SndRecord['over']>['why']): void {
+    if (!g.snd) return;
+    g.snd.over = { winner, why, at: this.net.serverNow() };
+    const score = (g.score[winner] ?? 0) + 1;
+    g.score[winner] = score;
+    if (score >= this.rules.limit) this.finishRound(g, winner, TEAM_INFO[winner].name, 'score');
+  }
+
+  /**
+   * Leader only: set the first round up, decide rounds (fuse, clock, eliminations), start the next one
+   * after a pause, and bring a bomb back when its carrier left.
+   */
+  private refereeSnd(): void {
+    if (this.sndRefereeBusy || this.roundOver || !this.isLeader() || !this.map) return;
+    if (performance.now() - this.joinedAt < REFEREE_GRACE_MS) return;
+    const g = this.game;
+    const s = g.snd;
+    const round = g.round;
+    const now = this.net.serverNow();
+    const live = (next: GameState) => next.round === round && !next.ended;
+    let change: ((next: GameState) => boolean) | null = null;
+    if (!s) {
+      change = (next) => {
+        if (!live(next) || next.snd) return false;
+        next.snd = this.freshSnd(0);
+        return true;
+      };
+    } else if (s.over) {
+      if (now < s.over.at + ROUND_END_TIME * 1000) return;
+      change = (next) => {
+        if (!live(next) || next.snd?.n !== s.n || !next.snd.over) return false;
+        next.snd = this.freshSnd(s.n + 1);
+        return true;
+      };
+    } else if (!s.bomb.by && s.bomb.plantedAt === undefined && phaseOf(s, now) === 'freeze' && this.teamIds(s.atk).length) {
+      // Nobody on the attacking side was known when the round was set up: hand it to one of them now.
+      const carrier = pickCarrier(this.teamIds(s.atk), s.n);
+      change = (next) => {
+        if (!live(next) || next.snd?.n !== s.n || next.snd.bomb.by || next.snd.bomb.plantedAt !== undefined) return false;
+        next.snd.bomb = { by: carrier! };
+        return true;
+      };
+    } else if (s.bomb.by && !this.players[s.bomb.by]) {
+      const carrier = s.bomb.by;
+      const home = bombHome(this.map, s.atk);
+      change = (next) => {
+        if (!live(next) || next.snd?.n !== s.n || next.snd.bomb.by !== carrier) return false;
+        next.snd.bomb = { x: home.x, y: home.y, z: home.z };
+        return true;
+      };
+    } else {
+      const heads = this.headcount();
+      if (!decide(s, now, heads)) return;
+      change = (next) => {
+        const ns = next.snd;
+        if (!live(next) || ns?.n !== s.n) return false;
+        const result = decide(ns, this.net.serverNow(), heads);
+        if (!result) return false;
+        this.endSndRound(next, result.winner, result.why);
+        return true;
+      };
+    }
+    this.sndRefereeBusy = true;
+    this.net.mutateGame(change)
+      .catch((err: unknown) => console.warn('Could not update the S&D round', err))
+      .finally(() => { this.sndRefereeBusy = false; });
+  }
+
+  /** What the interact key does here: plant (carrying the bomb, on a site) or defuse (defending, at the planted bomb) */
+  private sndAction(): { kind: 'plant' | 'defuse'; site: SiteId } | null {
+    const s = this.snd;
+    if (!s || !this.alive || !this.team || this.roundOver) return null;
+    const phase = phaseOf(s, this.net.serverNow());
+    const me = this.player.position;
+    if (this.team === s.atk) {
+      if (phase !== 'live' || !this.carryingBomb()) return null;
+      const sites = this.siteSpots();
+      const site = sites && siteAt(sites, me);
+      return site ? { kind: 'plant', site } : null;
+    }
+    const b = bombPlacement(s.bomb);
+    if (phase !== 'planted' || b?.at !== 'planted') return null;
+    return Math.hypot(b.x - me.x, b.z - me.z) < DEFUSE_RADIUS && Math.abs(b.y - me.y) < 1.8 ? { kind: 'defuse', site: b.site } : null;
+  }
+
+  /** The interact key in S&D: start planting or defusing (on touch, a second tap stops). True if it was used. */
+  private sndInteract(): boolean {
+    if (this.channel) {
+      if (this.touch) this.channel = null;
+      return true;
+    }
+    const action = this.sndAction();
+    if (!action) return false;
+    if (!this.player.onGround) return true;
+    this.channel = { kind: action.kind, site: action.site, from: this.player.position.clone(), since: performance.now(), t: 0 };
+    this.triggerHeld = false;
+    this.aimHeld = false;
+    this.weapon.releaseTrigger();
+    return true;
+  }
+
+  /** Every frame in S&D: pick up a dropped bomb (attackers), and keep a plant or defuse going until it's done. */
+  private updateBomb(): void {
+    const s = this.snd;
+    const team = this.team;
+    if (!s || !team || !this.alive || this.roundOver) {
+      this.channel = null;
+      return;
+    }
+    const phase = phaseOf(s, this.net.serverNow());
+    const me = this.player.position;
+    const b = bombPlacement(s.bomb);
+    const round = this.game.round;
+    const n = s.n;
+    const same = (next: GameState) => next.round === round && !next.ended && next.snd?.n === n && !next.snd.over;
+    if (team === s.atk && b?.at === 'ground' && phase !== 'over' && !this.bombBusy
+      && Math.hypot(b.x - me.x, b.z - me.z) < BOMB_PICKUP_RADIUS && Math.abs(b.y - me.y) < 1.8) {
+      this.bombTransaction((next) => {
+        if (!same(next) || next.snd!.bomb.by || next.snd!.bomb.plantedAt !== undefined) return false;
+        next.snd!.bomb = { by: this.playerId };
+        return true;
+      });
+    }
+    // Holding the key from before we could (still landing, not yet on the site) starts it as soon as we can.
+    if (!this.channel && this.interactHeld && !this.touch && this.locked) this.sndInteract();
+    const ch = this.channel;
+    if (!ch) return;
+    const action = this.sndAction();
+    const holding = this.touch || this.interactHeld;
+    if (!holding || !this.locked || action?.kind !== ch.kind || me.distanceTo(ch.from) > CHANNEL_SLIP) {
+      this.channel = null;
+      return;
+    }
+    ch.t = (performance.now() - ch.since) / 1000;
+    if (ch.t < (ch.kind === 'plant' ? PLANT_TIME : DEFUSE_TIME) || this.bombBusy) return;
+    this.channel = null;
+    if (ch.kind === 'plant') this.plantBomb(ch.site, same);
+    else this.defuseBomb(same);
+  }
+
+  private plantBomb(site: SiteId, same: (g: GameState) => boolean): void {
+    const p = this.player.position;
+    const spot = { x: r2(p.x), y: r2(this.groundBelow(p)), z: r2(p.z) };
+    this.bombTransaction((next) => {
+      if (!same(next) || next.snd!.bomb.by !== this.playerId || phaseOf(next.snd!, this.net.serverNow()) !== 'live') return false;
+      next.snd!.bomb = { ...spot, site, plantedAt: this.net.serverNow(), planter: this.playerId };
+      return true;
+    }, () => {
+      this.stats.captures++;
+    });
+  }
+
+  private defuseBomb(same: (g: GameState) => boolean): void {
+    const team = this.team;
+    if (!team) return;
+    this.bombTransaction((next) => {
+      // Too late once the fuse is out: the referee's blast wins.
+      if (!same(next) || phaseOf(next.snd!, this.net.serverNow()) !== 'planted') return false;
+      if (decide(next.snd!, this.net.serverNow(), this.headcount())?.why === 'bomb') return false;
+      this.endSndRound(next, team, 'defuse');
+      return true;
+    }, () => {
+      this.stats.captures++;
+      sfx.playKill();
+    });
+  }
+
+  private bombTransaction(change: (g: GameState) => boolean, onCommit?: () => void): void {
+    this.bombBusy = true;
+    this.net.mutateGame(change)
+      .then((committed) => { if (committed) onCommit?.(); })
+      .catch((err: unknown) => console.warn('Bomb update failed', err))
+      .finally(() => { this.bombBusy = false; });
+  }
+
+  /** Drop the bomb where we stand (on death, switching team, spectating or leaving). */
+  private dropBomb(): Promise<unknown> {
+    if (!this.carryingBomb()) return Promise.resolve();
+    const p = this.player.position;
+    const spot = { x: r2(p.x), y: r2(this.groundBelow(p)), z: r2(p.z) };
+    return this.net.mutateGame((g) => {
+      if (g.snd?.bomb.by !== this.playerId) return false;
+      g.snd.bomb = spot;
+      return true;
+    }).catch((err: unknown) => console.warn('Could not drop the bomb', err));
+  }
+
+  /** What the HUD shows for the S&D round */
+  private sndView(now: number): HudState['snd'] {
+    const s = this.snd;
+    if (!s) return null;
+    const phase = phaseOf(s, now);
+    const b = bombPlacement(s.bomb);
+    const attacking = this.team === s.atk;
+    let bomb: NonNullable<HudState['snd']>['bomb'] = 'hidden';
+    if (b?.at === 'planted') bomb = 'planted';
+    else if (attacking || !this.team) bomb = b?.at === 'carried' ? (b.carrier === this.playerId ? 'mine' : 'carried') : b ? 'ground' : 'hidden';
+    const carrier = b?.at === 'carried' && bomb === 'carried' ? this.players[b.carrier]?.name || 'Someone' : null;
+    const action = this.sndAction();
+    const ch = this.channel;
+    const key = this.touch ? '✋' : keyLabel(keyFor('interact'));
+    return {
+      round: s.n + 1,
+      attackers: s.atk,
+      attacking,
+      phase,
+      left: secondsLeft(s, now),
+      bomb,
+      carrier,
+      site: b?.at === 'planted' ? SITE_NAME[b.site] : null,
+      alive: this.headcount(),
+      channel: ch ? { kind: ch.kind, progress: Math.min(1, ch.t / (ch.kind === 'plant' ? PLANT_TIME : DEFUSE_TIME)) } : null,
+      prompt: ch || !action ? null : action.kind === 'plant'
+        ? `${this.touch ? 'Tap' : 'Hold'} ${key} to plant the bomb at ${SITE_NAME[action.site]}`
+        : `${this.touch ? 'Tap' : 'Hold'} ${key} to defuse the bomb`,
+      over: s.over ? { winner: s.over.winner, why: s.over.why } : null,
+      watching: this.watchingTeam,
+    };
+  }
+
   // ---------------------------------------------------------------- combat
 
   /** @param source where the hit came from (the shooter's muzzle, or the grenade blast) */
@@ -2330,7 +2807,10 @@ export class Game {
     this.alive = false;
     this.hp = 0;
     this.deaths++;
-    this.respawnTimer = this.rules.respawn;
+    // Search & Destroy: no respawns, the next round brings everyone back.
+    const waiting = this.mode === 'snd';
+    this.respawnTimer = waiting ? Infinity : this.rules.respawn;
+    this.channel = null;
     this.triggerHeld = false;
     this.aimHeld = false;
     // Our picked-up gun and abilities fall around the body for anyone to grab; their effects end.
@@ -2340,6 +2820,7 @@ export class Game {
     this.moments.onDeath();
     this.carry = null;
     void this.dropFlag();
+    void this.dropBomb();
     void this.net.sendState({ alive: false, hp: 0, deaths: this.deaths, shield: false });
     this.net.sendEvent({ type: 'kill', killer: killerId, victim: this.playerId, head, weapon });
     if (killerId && killerId !== this.playerId) this.creditKiller(killerId);
@@ -2347,10 +2828,10 @@ export class Game {
     this.hud.update({
       hp: 0,
       death: {
-        killerName: self ? '' : this.players[killerId]?.name || 'someone', self, weapon, head, dropped, respawnIn: this.rules.respawn,
+        killerName: self ? '' : this.players[killerId]?.name || 'someone', self, weapon, head, dropped, respawnIn: waiting ? -1 : this.rules.respawn,
       },
     });
-    if (!self) this.startKillcam(killerId, weapon, head);
+    if (!self && weapon !== 'bomb') this.startKillcam(killerId, weapon, head);
   }
 
   /** Scatter the picked-up gun and abilities (with their ammo / uses left) on the floor around where we died. */
@@ -2372,8 +2853,8 @@ export class Game {
   private creditKiller(killerId: string, victimTeam: Team | null = this.team): void {
     const round = this.game.round;
     const killer = this.players[killerId];
-    // Team modes without flags score a point per kill (TDM, Sniper TDM).
-    if (MODES[this.mode].teams && this.mode !== 'ctf' && killer?.team && killer.team !== victimTeam) this.addTeamScore(killer.team);
+    // Team deathmatch modes score a point per kill (CTF scores captures, S&D rounds).
+    if (this.mode === 'tdm' && killer?.team && killer.team !== victimTeam) this.addTeamScore(killer.team);
     this.net.creditKill(killerId)
       .then((kills) => {
         if (!MODES[this.mode].teams && kills !== null && kills >= this.rules.limit) {
@@ -2394,6 +2875,7 @@ export class Game {
   }
 
   private respawn(): void {
+    this.stopWatching();
     const spawn = this.pickSpawn();
     this.player.teleport(spawn, Math.atan2(spawn.x, spawn.z));
     this.hp = this.rules.health;
@@ -3396,6 +3878,8 @@ export class Game {
    */
   interact(): void {
     if (!this.joined || !this.alive) return;
+    // S&D: planting or defusing comes before anything lying around.
+    if (this.mode === 'snd' && this.sndInteract()) return;
     // Carrying the flag, E puts it down (to pass it to a teammate, or to get our guns back).
     if (this.carryingFlag()) {
       this.putFlagDown();
@@ -3494,7 +3978,7 @@ export class Game {
   }
 
   private update(dt: number): void {
-    if (!this.alive && this.joined && !this.spectating) {
+    if (!this.alive && this.joined && !this.spectating && this.mode !== 'snd') {
       this.respawnTimer -= dt;
       const respawnIn = Math.max(0, Math.ceil(this.respawnTimer));
       const death = this.hud.get().death;
@@ -3516,8 +4000,8 @@ export class Game {
     if (aiming) {
       this.hint('ads', () => `Aiming down sights: tighter spread, slower moves${settings.get().aimToggle ? ' — right-click again to stop' : ''}`);
     }
-    // Nobody moves between rounds.
-    this.player.update(dt, this.alive && !this.roundOver);
+    // Nobody moves between rounds, while S&D holds everyone at spawn, or while planting or defusing.
+    this.player.update(dt, this.alive && !this.roundOver && !this.frozen);
     this.bots.update(dt);
     // Bodies and loose props, after we've moved (our body shoves props out of the way).
     this.physics?.update(dt);
@@ -3530,6 +4014,8 @@ export class Game {
       pos.z = THREE.MathUtils.clamp(pos.z, -edge, edge);
     }
     if (this.spectating && !this.replay) this.updateSpectator(dt);
+    // S&D: out of this round, so watch a teammate (once the kill cam is done).
+    else if (this.watchingTeam && !this.replay && !this.killcam) this.updateSpectator(dt);
     this.applyShake(dt);
     this.updateHeartbeat(dt);
     const speed = this.player.horizontalSpeed;
@@ -3649,7 +4135,7 @@ export class Game {
     const playback = this.playback;
     const target = playback
       ? playback.pov
-      : this.spectating && !this.specFree && this.specTarget ? this.remotes.get(this.specTarget) ?? null : null;
+      : (this.spectating || this.watchingTeam) && !this.specFree && this.specTarget ? this.remotes.get(this.specTarget) ?? null : null;
     if (target !== this.pov) {
       this.pov?.setFirstPerson(false);
       this.pov = target;
@@ -3880,6 +4366,7 @@ export class Game {
   }
 
   private updateMode(): void {
+    this.bombField?.update(performance.now() / 1000, this.net.serverNow());
     if (this.flagField) {
       this.flagField.update(performance.now() / 1000, (id) => {
         // During the replay, carried flags ride on the replay's stand-ins (including ours).
@@ -3893,6 +4380,11 @@ export class Game {
     if (this.mode === 'ctf') {
       if (this.alive) this.updateFlags();
       this.refereeFlags();
+    }
+    if (this.mode === 'snd') {
+      this.siteSpots();
+      this.updateBomb();
+      this.refereeSnd();
     }
     this.ensureRoundClock();
     this.checkTimeLimit();
@@ -3980,12 +4472,13 @@ export class Game {
     this.turrets.clear();
     this.mines.clear();
     this.stopReplay();
+    this.bombField?.dispose();
     this.flagField?.dispose();
     this.world.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
     this.hud.dispose();
-    await this.dropFlag();
+    await Promise.all([this.dropFlag(), this.dropBomb()]);
     await this.net.leave();
   }
 }
