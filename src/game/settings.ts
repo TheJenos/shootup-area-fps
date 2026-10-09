@@ -1,7 +1,7 @@
 /** Player preferences (mouse + key bindings), saved in this browser. */
 
 export type Action =
-  | 'forward' | 'back' | 'left' | 'right' | 'jump' | 'sprint' | 'crouch' | 'reload' | 'swap'
+  | 'forward' | 'back' | 'left' | 'right' | 'jump' | 'sprint' | 'crouch' | 'reload' | 'swap' | 'knife'
   | 'interact' | 'ability1' | 'ability2' | 'ability3' | 'inventory' | 'scoreboard';
 
 export const ACTIONS: { action: Action; label: string }[] = [
@@ -14,6 +14,7 @@ export const ACTIONS: { action: Action; label: string }[] = [
   { action: 'crouch', label: 'Crouch (slide while sprinting)' },
   { action: 'reload', label: 'Reload' },
   { action: 'swap', label: 'Switch gun' },
+  { action: 'knife', label: 'Knife' },
   { action: 'interact', label: 'Pick up / swap gun, drop flag' },
   { action: 'ability1', label: 'Ability slot 1' },
   { action: 'ability2', label: 'Ability slot 2' },
@@ -55,6 +56,8 @@ export interface Settings {
   hudScale: number;
   /** Frames-per-second counter in the top-right corner */
   showFps: boolean;
+  /** After being killed, replay the last moments through the killer's eyes (skippable) */
+  killcam: boolean;
   /** 0..1 */
   sfxVolume: number;
   musicVolume: number;
@@ -95,6 +98,7 @@ export const DEFAULT_BINDINGS: Bindings = {
   crouch: 'ControlLeft',
   reload: 'KeyR',
   swap: 'KeyQ',
+  knife: 'KeyV',
   interact: 'KeyE',
   ability1: 'Digit1',
   ability2: 'Digit2',
@@ -111,7 +115,7 @@ const DEFAULTS: Settings = {
   fov: FOV_DEFAULT, crosshairColor: '#ffffff', crosshairSize: 1,
   // Phones start low; they can turn it up.
   quality: COARSE ? 'low' : 'high', screenShake: !MOTION_QUERY?.matches, sfxVolume: 1, musicVolume: 0.7,
-  reduceMotion: 'system', hudScale: 1, showFps: true,
+  reduceMotion: 'system', hudScale: 1, showFps: true, killcam: true,
   bindings: DEFAULT_BINDINGS,
 };
 
@@ -155,6 +159,7 @@ function load(): Settings {
       reduceMotion: MOTION_OPTIONS.some((o) => o.value === saved.reduceMotion) ? (saved.reduceMotion as MotionPref) : DEFAULTS.reduceMotion,
       hudScale: num(saved.hudScale, HUD_SCALE_MIN, HUD_SCALE_MAX, DEFAULTS.hudScale),
       showFps: typeof saved.showFps === 'boolean' ? saved.showFps : DEFAULTS.showFps,
+      killcam: typeof saved.killcam === 'boolean' ? saved.killcam : DEFAULTS.killcam,
       sfxVolume: num(saved.sfxVolume, 0, 1, DEFAULTS.sfxVolume),
       musicVolume: num(saved.musicVolume, 0, 1, DEFAULTS.musicVolume),
       // Start from the defaults so actions added later still get a key.

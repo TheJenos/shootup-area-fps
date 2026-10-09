@@ -90,6 +90,13 @@ export const MELEE_RANGE = 2.4;
 /** Seconds between swings */
 export const MELEE_COOLDOWN = 0.7;
 
+/** The knife (V): always carried, a quick slash at arm's length. Damage per hit, head or body. */
+export const KNIFE_DAMAGE = 50;
+/** Reach of a slash from the eyes (m) */
+export const KNIFE_RANGE = 2.2;
+/** Seconds from one slash to the next */
+export const KNIFE_COOLDOWN = 0.6;
+
 /** Distance at which a player touches a flag */
 export const FLAG_RADIUS = 1.5;
 /** A dropped flag goes back to its base after this long */

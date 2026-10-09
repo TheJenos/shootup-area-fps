@@ -17,6 +17,18 @@ const ADS_SPEED = 14;
 const SWITCH_TIME = 0.35;
 /** One swing of the flag, start to finish (s) */
 const SWING_TIME = 0.4;
+/** One knife slash, start to finish: in from below, across the view, and away (s) */
+const KNIFE_TIME = 0.42;
+/**
+ * The knife in first person, in the hand's "gun space" (x right, y up, -z forward; the right hand closes
+ * round a point 7 cm under the origin, as on a pistol grip): where the handle runs through the fist,
+ * and how far the blade is tipped forward from upright.
+ */
+const KNIFE_GRIP = new THREE.Vector3(0, 0, 0.03);
+const KNIFE_TIP_FORWARD = 0.5;
+/** Ready (start of the slash, up on the right) and follow-through (low on the left), camera space */
+const KNIFE_FROM = { x: 0.26, y: -0.1, z: -0.42, roll: 1.0, yaw: 0.35 };
+const KNIFE_TO = { x: -0.14, y: -0.26, z: -0.42, roll: 1.5, yaw: -0.25 };
 /** First-person flag: pole length (m), where its foot is held (camera space) and how it leans */
 const FLAG_POLE = 1.5;
 const FLAG_HOLD = { x: 0.22, y: -0.5, z: -0.38, pitch: -0.1, yaw: 0, roll: -0.06 };
@@ -78,6 +90,10 @@ export class Weapon {
   private arms: FpArms | null = null;
   private swingTimer = 0;
   private swingCooldown = 0;
+  /** The knife: mid-slash for this long (the gun is lowered meanwhile), and its model */
+  private knifeTimer = 0;
+  private knifeCooldown = 0;
+  private knifeView: THREE.Group | null = null;
 
   constructor(aspect: number) {
     this.camera = new THREE.PerspectiveCamera(VIEW_FOV, aspect, 0.01, 10);
@@ -228,10 +244,37 @@ export class Weapon {
 
   reload(): void {
     const held = this.held;
-    if (this.melee) return;
+    if (this.melee || this.knifing) return;
     if (this.reloading || this.switching || held.mag === GUNS[held.kind].mag || held.reserve <= 0) return;
     this.reloadTimer = GUNS[held.kind].reloadTime;
     playReload(1, held.kind);
+  }
+
+  /** Mid-slash with the knife */
+  get knifing(): boolean {
+    return this.knifeTimer > 0;
+  }
+
+  /** The knife can slash again */
+  get knifeReady(): boolean {
+    return !this.melee && this.knifeTimer <= 0 && this.knifeCooldown <= 0;
+  }
+
+  /**
+   * Slash with the knife: the gun drops out of view (a reload in progress is abandoned), the knife
+   * comes up on the right and cuts across. False while the last slash is still recovering, or when
+   * holding the flag. `cooldown`: seconds before the next one (0 when just showing someone else's).
+   */
+  startKnife(cooldown: number): boolean {
+    if (this.melee || this.knifeTimer > 0 || this.knifeCooldown > 0) return false;
+    this.knifeTimer = KNIFE_TIME;
+    this.knifeCooldown = cooldown;
+    this.reloadTimer = 0;
+    this.aim = 0;
+    this.triggerLatched = true;
+    this.knife().visible = true;
+    for (const v of this.views.values()) v.group.visible = false;
+    return true;
   }
 
   /** Show your arms holding the gun. */
@@ -285,7 +328,7 @@ export class Weapon {
   /** Returns true if a shot should be fired this frame (the trigger is held). */
   tryFire(): boolean {
     const def = GUNS[this.gun];
-    if (this.melee || this.reloading || this.switching || this.cooldown > 0) return false;
+    if (this.melee || this.knifing || this.reloading || this.switching || this.cooldown > 0) return false;
     if (!def.auto && this.triggerLatched) return false;
     if (this.held.mag <= 0) {
       playEmpty();
@@ -325,13 +368,21 @@ export class Weapon {
     this.cooldown = 0;
     this.switchTimer = 0;
     this.kick = 0;
+    this.knifeTimer = 0;
+    this.knifeCooldown = 0;
+    if (this.knifeView) this.knifeView.visible = false;
     this.showModel();
   }
 
   /** @param aiming aim down the sights (blends in over a moment) */
   update(dt: number, speed: number, sprinting: boolean, aiming = false): void {
+    this.knifeCooldown = Math.max(0, this.knifeCooldown - dt);
     if (this.melee) {
       this.updateFlag(dt, speed, sprinting);
+      return;
+    }
+    if (this.knifeTimer > 0) {
+      this.updateKnife(dt);
       return;
     }
     const def = GUNS[this.gun];
@@ -423,6 +474,53 @@ export class Weapon {
     }
   }
 
+  /**
+   * The knife slash: up from below on the right, a fast cut across and down to the left, then out of
+   * view while the gun comes back up.
+   */
+  private updateKnife(dt: number): void {
+    this.knifeTimer = Math.max(0, this.knifeTimer - dt);
+    const g = this.knife();
+    if (this.knifeTimer === 0) {
+      // Done: the gun comes back up.
+      g.visible = false;
+      this.switchTimer = SWITCH_TIME;
+      this.showModel();
+      return;
+    }
+    const k = 1 - this.knifeTimer / KNIFE_TIME;
+    // 0..0.25 raise into the ready spot, 0.25..0.65 the cut, then drop away.
+    const cut = k < 0.25 ? 0 : k < 0.65 ? easeInOut((k - 0.25) / 0.4) : 1;
+    const raise = k < 0.25 ? 1 - k / 0.25 : k > 0.75 ? (k - 0.75) / 0.25 : 0;
+    const lerp = THREE.MathUtils.lerp;
+    g.position.set(
+      lerp(KNIFE_FROM.x, KNIFE_TO.x, cut),
+      lerp(KNIFE_FROM.y, KNIFE_TO.y, cut) - raise * 0.3,
+      lerp(KNIFE_FROM.z, KNIFE_TO.z, cut),
+    );
+    g.rotation.set(-0.15 - raise * 0.6, lerp(KNIFE_FROM.yaw, KNIFE_TO.yaw, cut), lerp(KNIFE_FROM.roll, KNIFE_TO.roll, cut));
+    if (this.arms) {
+      this.arms.visible = true;
+      g.updateMatrixWorld(true);
+      this.arms.holdGun(g, KNIFE_GRIP, KNIFE_GRIP, 0, true);
+    }
+  }
+
+  /** The knife model: a dark grip through the fist, a guard, and the blade standing up out of the hand. */
+  private knife(): THREE.Group {
+    if (this.knifeView) return this.knifeView;
+    const group = new THREE.Group();
+    const inner = buildKnifeModel();
+    // The handle runs through the fist (7 cm under the origin), the blade tipped forward from upright.
+    inner.position.set(KNIFE_GRIP.x + 0.03, KNIFE_GRIP.y - 0.065, KNIFE_GRIP.z - 0.01);
+    inner.rotation.x = -KNIFE_TIP_FORWARD;
+    group.add(inner);
+    group.visible = false;
+    this.camera.add(group);
+    this.knifeView = group;
+    return group;
+  }
+
   private flag(): { group: THREE.Group; cloth: THREE.MeshStandardMaterial } {
     if (this.flagView) return this.flagView;
     const group = new THREE.Group();
@@ -479,6 +577,36 @@ export class Weapon {
     const current = this.view();
     for (const v of this.views.values()) v.group.visible = v === current && !this.melee;
   }
+}
+
+const easeInOut = (t: number) => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2);
+
+/**
+ * A combat knife, life size, standing up along +Y from the middle of its handle (origin): a rubbery
+ * black handle, a steel guard, and a blade with a darker spine and a point.
+ */
+export function buildKnifeModel(): THREE.Group {
+  const group = new THREE.Group();
+  const handleMat = new THREE.MeshStandardMaterial({ color: 0x1d1f22, roughness: 0.85 });
+  const steel = new THREE.MeshStandardMaterial({ color: 0xc9ced4, metalness: 0.85, roughness: 0.25 });
+  const spineMat = new THREE.MeshStandardMaterial({ color: 0x5b6168, metalness: 0.8, roughness: 0.4 });
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.016, 0.11, 10), handleMat);
+  const pommel = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.015, 0.012, 10).translate(0, -0.061, 0), steel);
+  const guard = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.008, 0.022).translate(0, 0.058, 0), steel);
+  // The blade: flat (thin along z), edge toward -z, tapering to a point.
+  const shape = new THREE.Shape();
+  shape.moveTo(-0.004, 0);
+  shape.lineTo(0.016, 0);
+  shape.lineTo(0.016, 0.12);
+  shape.quadraticCurveTo(0.012, 0.15, -0.004, 0.17);
+  shape.lineTo(-0.004, 0);
+  const blade = new THREE.Mesh(new THREE.ExtrudeGeometry(shape, { depth: 0.003, bevelEnabled: false }), steel);
+  blade.geometry.translate(0, 0, -0.0015);
+  blade.rotation.y = Math.PI / 2;
+  blade.position.y = 0.062;
+  const spine = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.11, 0.005).translate(0, 0.117, 0.003), spineMat);
+  group.add(handle, pommel, guard, blade, spine);
+  return group;
 }
 
 interface Effect {

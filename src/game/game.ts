@@ -28,7 +28,8 @@ import { loadPropModels } from './props';
 import { GrenadeFx, simulateGrenade, THROW_LIFT, THROW_SPEED } from './grenades';
 import { FlagField, placementOf, type FlagPlacement } from './flags';
 import {
-  CLOCK_WARNING, FLAG_BASES, setFlagBases, FLAG_RADIUS, FLAG_RETURN_TIME, GUN_GAME_LADDER, MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_HEAD_DAMAGE,
+  CLOCK_WARNING, FLAG_BASES, setFlagBases, FLAG_RADIUS, FLAG_RETURN_TIME, GUN_GAME_LADDER, KNIFE_COOLDOWN, KNIFE_DAMAGE, KNIFE_RANGE,
+  MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_HEAD_DAMAGE,
   MELEE_RANGE, MODES, MVP_TIME, RESULTS_TIME, TEAMS, TEAM_INFO, gunGameGun, otherTeam, teamSpawns,
 } from './modes';
 import { MomentTracker } from './moments';
@@ -61,7 +62,7 @@ const HEARTBEAT = 5;
 const STATS_INTERVAL = 1;
 /** Most damage one hit of each kind can deal; anything above that from another client is clamped. */
 const maxDamage = (weapon: WeaponKind) =>
-  (weapon === 'grenade' ? GRENADE_DAMAGE : weapon === 'mine' ? MINE_DAMAGE : weapon === 'flag' ? MELEE_HEAD_DAMAGE : weapon === 'molotov' ? FIRE_DAMAGE
+  (weapon === 'grenade' ? GRENADE_DAMAGE : weapon === 'mine' ? MINE_DAMAGE : weapon === 'flag' ? MELEE_HEAD_DAMAGE : weapon === 'knife' ? KNIFE_DAMAGE : weapon === 'molotov' ? FIRE_DAMAGE
     : weapon === 'turret' ? TURRET_DAMAGE : maxShotDamage(weapon));
 /** One entry of the room's bot list, as the owner's panel shows it */
 export interface BotRow {
@@ -106,6 +107,9 @@ const DROP_DISTANCE = 1.6;
 const DEPLOY_MAX_SLOPE = 0.6;
 const ABILITY_ACTIONS: Action[] = ['ability1', 'ability2', 'ability3'];
 const UNKNOWN_PLAYER = { name: '?', color: '#888888' };
+/** Kill cam: how much before the kill it shows, and after (ms) */
+const KILLCAM_BEFORE = 3_500;
+const KILLCAM_AFTER = 1_000;
 const EMPTY_STATS: PlayerStats = { damage: 0, shots: 0, hits: 0, headshots: 0, streak: 0, best: 0, captures: 0 };
 const EMPTY_MY_MATCH: MyMatch = { pickups: 0, abilitiesUsed: 0, dropped: 0 };
 /** Before trusting that a flag carrier has left, give the player list time to load */
@@ -309,6 +313,8 @@ export class Game {
   private readonly moments = new MomentTracker();
   private readonly recorder = new ReplayRecorder();
   private replay: ReplayDirector | null = null;
+  /** After being killed: the last moments through the killer's eyes, while we wait to respawn */
+  private killcam: ReplayDirector | null = null;
   private replayRound = -1;
   private recordTimer = 0;
   /** When we took the enemy flag, and kills since (for flag-run highlights) */
@@ -682,6 +688,7 @@ export class Game {
         team: this.team,
         locked: this.locked,
         spectating: this.spectating,
+        killcam: !!this.killcam,
         leader: this.isLeader(),
         pos: this.player.position.toArray(),
         yaw: this.player.yaw,
@@ -810,6 +817,10 @@ export class Game {
     let rightFires = false;
     window.addEventListener('mousedown', (e) => {
       if (e.button === 2) rightFires = isFire(e);
+      if (this.killcam) {
+        if (this.locked && e.button === 0) this.skipKillcam();
+        return;
+      }
       if (this.spectating) {
         if (this.locked && (e.button === 0 || e.button === 2)) this.cycleSpectate(e.button === 0 ? 1 : -1);
         return;
@@ -850,8 +861,10 @@ export class Game {
         e.preventDefault();
         this.hud.update({ scoreboardOpen: true, scoreboard: this.scoreRows() });
       }
+      if (action === 'jump' && !e.repeat && this.killcam) this.skipKillcam();
       if (action === 'reload' && this.alive && this.locked) this.weapon.reload();
       if (action === 'swap' && !e.repeat && this.locked) this.switchGun();
+      if (action === 'knife' && !e.repeat && this.locked) this.knife();
       if (action === 'interact' && !e.repeat && this.locked) this.interact();
       const slot = action ? ABILITY_ACTIONS.indexOf(action) : -1;
       if (slot >= 0 && !e.repeat && this.alive && this.locked) this.useAbility(slot);
@@ -1201,7 +1214,7 @@ export class Game {
     if (!this.character) return;
     this.remotes.get(id)?.dispose();
     const remote = new RemotePlayer(id, data, this.scene, this.character);
-    remote.setVisible(!data.spec && !this.replay);
+    remote.setVisible(!data.spec && !this.playback);
     this.remotes.set(id, remote);
     if (this.joined && performance.now() - this.joinedAt > 1000) this.hud.pushInfo(`${data.name} joined`);
   }
@@ -1221,7 +1234,7 @@ export class Game {
     }
     const remote = this.remotes.get(id);
     remote?.setData(data);
-    if (remote && !this.replay) remote.setVisible(!data.spec);
+    if (remote && !this.playback) remote.setVisible(!data.spec);
     if (!data.spec) this.recorder.pose(id, data, this.net.serverNow());
   }
 
@@ -1278,12 +1291,15 @@ export class Game {
       const weapon: WeaponKind = evt.tur ? 'turret' : gun;
       for (const e of [evt.e, ...(evt.ends ?? [])]) {
         const end = fromArr(e);
-        this.effects.tracer(origin, end, 0xffa27a);
-        this.effects.impact(end, evt.hit || evt.hits ? 0xff3b3b : 0xffc35c);
+        // (Watching the kill cam, the shots on screen are the replay's.)
+        if (!this.killcam) {
+          this.effects.tracer(origin, end, 0xffa27a);
+          this.effects.impact(end, evt.hit || evt.hits ? 0xff3b3b : 0xffc35c);
+        }
         this.debris.shot(origin, end);
       }
       const dist = origin.distanceTo(this.camera.position);
-      sfx.playShot(1 / (1 + dist / 10), gun);
+      if (!this.killcam) sfx.playShot(1 / (1 + dist / 10), gun);
       // Turret shots never carry this; a player's can (at most a full shotgun blast per barrier or turret).
       if (evt.dep && !evt.tur) this.damageDeployables(evt.dep, evt.from, maxShotDamage(gun) * GUNS[gun].pellets);
       // Shotguns send damage per player hit; everything else a single hit.
@@ -1296,11 +1312,18 @@ export class Game {
     } else if (evt.type === 'melee') {
       if (evt.from === this.playerId || !evt.o) return;
       const origin = fromArr(evt.o);
+      const knife = evt.w === 'knife';
       const heard = this.heardFrom(origin);
-      if (heard) sfx.playSwing(heard.volume * 1.6, heard.pan);
+      if (heard && knife) sfx.playKnife(heard.volume * 1.6, heard.pan);
+      else if (heard) sfx.playSwing(heard.volume * 1.6, heard.pan);
+      if (knife) {
+        this.remotes.get(evt.from)?.noteKnife();
+        this.recorder.event({ t, kind: 'knife', from: evt.from });
+      }
       if (evt.hit === this.playerId) {
-        sfx.playMeleeHit(0.9);
-        this.takeDamage(evt.dmg, evt.from, !!evt.head, 'flag', origin);
+        if (knife) sfx.playKnifeHit(0.9);
+        else sfx.playMeleeHit(0.9);
+        this.takeDamage(evt.dmg, evt.from, !!evt.head, knife ? 'knife' : 'flag', origin);
       }
     } else if (evt.type === 'smoke') {
       if (evt.from === this.playerId) return;
@@ -1509,7 +1532,7 @@ export class Game {
       for (const team of TEAMS) {
         const was = placementOf(prev.flags[team]);
         const is = placementOf(next.flags[team]);
-        if (!this.replay) this.flagField?.set(team, is);
+        if (!this.playback) this.flagField?.set(team, is);
         if (is.at !== 'ground') delete this.flagDroppedAt[team];
         else if (first || !samePlacement(was, is)) this.flagDroppedAt[team] = now;
         if (!samePlacement(was, is)) this.recorder.event({ t, kind: 'flag', team, placement: is });
@@ -1884,19 +1907,10 @@ export class Game {
     const phase = this.intermissionPhase();
     if (phase === 'mvp' && mvp && !this.replay && this.replayRound !== this.game.round && this.character) {
       this.replayRound = this.game.round;
+      this.stopKillcam();
       this.replay = new ReplayDirector({
+        ...this.replayScene(this.character),
         mvp,
-        recorder: this.recorder,
-        scene: this.scene,
-        camera: this.camera,
-        character: this.character,
-        effects: this.effects,
-        grenades: this.grenades,
-        colliders: this.colliders,
-        terrainAt: this.world.terrainAt,
-        solids: this.solids,
-        flagField: this.flagField,
-        smoke: this.smoke,
         onKill: (killer, victim, head) => {
           const k = this.players[killer] ?? this.recorder.tracks.get(killer) ?? UNKNOWN_PLAYER;
           const v = this.players[victim] ?? this.recorder.tracks.get(victim) ?? UNKNOWN_PLAYER;
@@ -1908,6 +1922,83 @@ export class Game {
     }
     if (phase !== 'mvp' && this.replay) this.stopReplay();
     this.replay?.update(dt);
+  }
+
+  /** What any replay (the MVP's, the kill cam) plays in */
+  private replayScene(character: CharacterAsset) {
+    return {
+      recorder: this.recorder, scene: this.scene, camera: this.camera, character, effects: this.effects, grenades: this.grenades,
+      colliders: this.colliders, terrainAt: this.world.terrainAt, solids: this.solids, flagField: this.flagField, smoke: this.smoke,
+    };
+  }
+
+  /** Whichever replay is on screen: the MVP's, or our kill cam */
+  private get playback(): ReplayDirector | null {
+    return this.replay ?? this.killcam;
+  }
+
+  /**
+   * Just killed: replay the last few seconds through the killer's eyes, while the respawn timer runs
+   * (we respawn once both are done; skipping ends it early). Not for our own doing, turrets (nobody's
+   * eyes to look through), or when there's no recording of the killer (they just joined), or it's off
+   * in the settings.
+   */
+  private startKillcam(killerId: string, weapon: WeaponKind, head: boolean): void {
+    if (!settings.get().killcam || !this.character || this.replay || this.roundOver || this.spectating) return;
+    if (!killerId || killerId === this.playerId || weapon === 'turret' || !this.remotes.has(killerId)) return;
+    this.stopKillcam();
+    const now = this.net.serverNow();
+    // From when we have them on record, if that's later (no eyes to look through before that).
+    const first = this.recorder.tracks.get(killerId)?.samples[0]?.t ?? now;
+    const director = new ReplayDirector({
+      ...this.replayScene(this.character),
+      mvp: { id: killerId, start: Math.max(now - KILLCAM_BEFORE, first), end: now },
+      leadIn: 0,
+      leadOut: KILLCAM_AFTER,
+      // Real time: the end of it is still being recorded as it plays.
+      maxLength: Infinity,
+      // The kill feed already has these.
+      onKill: () => {},
+    });
+    if (!director.hasFootage) {
+      director.dispose();
+      return;
+    }
+    this.killcam = director;
+    for (const r of this.remotes.values()) r.setVisible(false);
+    const killer = this.players[killerId];
+    this.hud.update({ killcam: { killerName: killer?.name || 'someone', color: killer?.color ?? '#ffffff', weapon, head } });
+  }
+
+  /** Skip the kill cam (Space, a click or the Skip button): back to the death screen, or straight in if it's time. */
+  skipKillcam(): void {
+    this.stopKillcam();
+  }
+
+  private updateKillcam(dt: number): void {
+    if (!this.killcam) return;
+    if (this.alive || this.roundOver || this.spectating || !this.joined) {
+      this.stopKillcam();
+      return;
+    }
+    this.killcam.update(dt);
+    if (this.killcam.finished) this.stopKillcam();
+  }
+
+  private stopKillcam(): void {
+    if (!this.killcam) return;
+    // (Our eyes were the killer's stand-in, which goes with it.)
+    this.pov = null;
+    this.killcam.dispose();
+    this.killcam = null;
+    if (!this.replay) {
+      for (const [id, r] of this.remotes) r.setVisible(!this.players[id]?.spec);
+      for (const team of TEAMS) this.flagField?.set(team, placementOf(this.game.flags[team]));
+    }
+    this.hud.update({ killcam: null });
+    // Back to our own eyes (the respawn puts the camera right, but until then: where we fell).
+    this.camera.fov = settings.get().fov;
+    this.camera.updateProjectionMatrix();
   }
 
   private stopReplay(): void {
@@ -2212,8 +2303,8 @@ export class Game {
     dmg: number | undefined, fromId: string, head: boolean, weapon: WeaponKind, source: THREE.Vector3,
   ): void {
     if (!this.alive || this.roundOver || this.isAlly(fromId)) return;
-    // Headshots-only modes: body hits and blasts don't count (the flag club still does).
-    if (this.rules.headshotsOnly && !head && weapon !== 'flag') return;
+    // Headshots-only modes: body hits and blasts don't count (the flag club and the knife still do).
+    if (this.rules.headshotsOnly && !head && weapon !== 'flag' && weapon !== 'knife') return;
     // Never trust the number another client sent beyond what the game allows.
     let amount = Math.min(Math.max(Number(dmg) || 0, 0), maxDamage(weapon));
     // Show where it came from even when the shield soaks it up.
@@ -2259,6 +2350,7 @@ export class Game {
         killerName: self ? '' : this.players[killerId]?.name || 'someone', self, weapon, head, dropped, respawnIn: this.rules.respawn,
       },
     });
+    if (!self) this.startKillcam(killerId, weapon, head);
   }
 
   /** Scatter the picked-up gun and abilities (with their ammo / uses left) on the floor around where we died. */
@@ -2320,7 +2412,7 @@ export class Game {
       if (this.bots.has(id)) continue;
       const data = this.players[id];
       const p = r.position;
-      yield { id, x: p.x, y: p.y, z: p.z, stance: data?.stance ?? 'stand', solid: r.alive && !data?.spec && !this.replay };
+      yield { id, x: p.x, y: p.y, z: p.z, stance: data?.stance ?? 'stand', solid: r.alive && !data?.spec && !this.playback };
     }
   }
 
@@ -2442,22 +2534,7 @@ export class Game {
     this.endCloak();
     this.throws++;
     const origin = this.camera.getWorldPosition(new THREE.Vector3());
-    const forward = this.camera.getWorldDirection(new THREE.Vector3());
-    const targets: THREE.Object3D[] = [...this.world.solids];
-    for (const [id, r] of this.remotes) if (!this.isAlly(id)) targets.push(...r.hitboxes);
-    this.raycaster.far = MELEE_RANGE;
-    let best: { id: string; head: boolean; distance: number } | null = null;
-    for (const yaw of [0, -0.22, 0.22, -0.42, 0.42]) {
-      for (const pitch of [0, -0.18]) {
-        const dir = forward.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
-        dir.y += pitch;
-        this.raycaster.set(origin, dir.normalize());
-        const hit = this.raycaster.intersectObjects(targets, false)[0];
-        const box = hit?.object.userData as Partial<HitboxData> | undefined;
-        if (!hit || !box?.playerId) continue;
-        if (!best || hit.distance < best.distance) best = { id: box.playerId, head: !!box.head, distance: hit.distance };
-      }
-    }
+    const best = this.meleeTarget(origin, MELEE_RANGE);
     sfx.playSwing(0.8);
     this.stats.shots++;
     const dmg = best ? (best.head ? MELEE_HEAD_DAMAGE : MELEE_DAMAGE) : 0;
@@ -2473,6 +2550,62 @@ export class Game {
       sfx.playMeleeHit();
     }
     this.net.sendEvent({ type: 'melee', o: toArr(origin), hit: best?.id ?? null, dmg, head: !!best?.head });
+  }
+
+  /**
+   * The nearest enemy a close-range strike from `origin` (our eyes) reaches: short rays fanned across
+   * the view (forgiving to aim); walls in the way block it.
+   */
+  private meleeTarget(origin: THREE.Vector3, range: number): { id: string; head: boolean; distance: number } | null {
+    const forward = this.camera.getWorldDirection(new THREE.Vector3());
+    const targets: THREE.Object3D[] = [...this.world.solids];
+    for (const [id, r] of this.remotes) if (!this.isAlly(id)) targets.push(...r.hitboxes);
+    this.raycaster.far = range;
+    let best: { id: string; head: boolean; distance: number } | null = null;
+    for (const yaw of [0, -0.22, 0.22, -0.42, 0.42]) {
+      for (const pitch of [0, -0.18]) {
+        const dir = forward.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+        dir.y += pitch;
+        this.raycaster.set(origin, dir.normalize());
+        const hit = this.raycaster.intersectObjects(targets, false)[0];
+        const box = hit?.object.userData as Partial<HitboxData> | undefined;
+        if (!hit || !box?.playerId) continue;
+        if (!best || hit.distance < best.distance) best = { id: box.playerId, head: !!box.head, distance: hit.distance };
+      }
+    }
+    return best;
+  }
+
+  /**
+   * V (or the touch knife button): a quick knife slash, 50 damage to the nearest enemy within reach,
+   * head or body. The gun drops for a moment. Carrying the flag, the flag is swung instead.
+   */
+  knife(): void {
+    if (!this.alive || !this.joined || this.roundOver || this.inventoryOpen) return;
+    if (this.carryingFlag()) {
+      if (this.weapon.trySwing(MELEE_COOLDOWN)) this.swingFlag();
+      return;
+    }
+    if (!this.weapon.startKnife(KNIFE_COOLDOWN)) return;
+    this.endCloak();
+    this.aimHeld = false;
+    const origin = this.camera.getWorldPosition(new THREE.Vector3());
+    const best = this.meleeTarget(origin, KNIFE_RANGE);
+    sfx.playKnife();
+    this.stats.shots++;
+    const dmg = best ? KNIFE_DAMAGE : 0;
+    if (best) {
+      this.stats.hits++;
+      const target = this.remotes.get(best.id);
+      if (target) {
+        this.stats.damage += Math.min(dmg, target.displayedHp);
+        target.reveal(dmg);
+      }
+      this.hud.hitmarker(false);
+      sfx.playKnifeHit();
+    }
+    this.net.sendEvent({ type: 'melee', w: 'knife', o: toArr(origin), hit: best?.id ?? null, dmg, head: !!best?.head });
+    this.recorder.event({ t: this.net.serverNow(), kind: 'knife', from: this.playerId });
   }
 
   /** Q / mouse wheel / the touch swap button: rifle <-> picked-up gun. */
@@ -3366,7 +3499,8 @@ export class Game {
       const respawnIn = Math.max(0, Math.ceil(this.respawnTimer));
       const death = this.hud.get().death;
       if (death && death.respawnIn !== respawnIn) this.hud.update({ death: { ...death, respawnIn } });
-      if (this.respawnTimer <= 0) this.respawn();
+      // (The kill cam plays to the end, or until it's skipped, before we're back.)
+      if (this.respawnTimer <= 0 && !this.killcam) this.respawn();
     }
 
     if (this.joined && this.locked && !this.introDone) {
@@ -3465,6 +3599,7 @@ export class Game {
     this.updateMode();
     // After the player update, so the replay's camera wins.
     this.updateReplay(dt);
+    this.updateKillcam(dt);
     this.applyPov(dt);
     this.recordSelf(dt);
 
@@ -3511,8 +3646,9 @@ export class Game {
    * first person (raised when they aim, flashing when they fire, zoomed like theirs).
    */
   private applyPov(dt: number): void {
-    const target = this.replay
-      ? this.replay.pov
+    const playback = this.playback;
+    const target = playback
+      ? playback.pov
       : this.spectating && !this.specFree && this.specTarget ? this.remotes.get(this.specTarget) ?? null : null;
     if (target !== this.pov) {
       this.pov?.setFirstPerson(false);
@@ -3527,12 +3663,13 @@ export class Game {
     const gun = target.heldGun;
     const pv = this.povWeapon;
     // A flag carrier holds the flag they took, in its team's colour.
-    const carried = this.replay
-      ? this.replay.carriedFlag(this.replay.mvpId)
+    const carried = playback
+      ? playback.carriedFlag(playback.mvpId)
       : this.specTarget ? TEAMS.find((t) => this.game.flags[t]?.by === this.specTarget) : undefined;
     pv.setMelee(target.carryingFlag, carried ? TEAM_INFO[carried].color : undefined);
     pv.showGun(gun);
     if (target.consumeShotFlash()) pv.flashShot();
+    if (target.consumeKnife()) pv.startKnife(0);
     const aim = target.aimAmount;
     pv.update(dt, target.moveSpeed, target.sprinting && aim < 0.5, aim > 0.5);
     const fov = THREE.MathUtils.lerp(settings.get().fov, GUNS[gun].adsFov, aim);
@@ -3549,7 +3686,7 @@ export class Game {
       return;
     }
     this.shake *= Math.exp(-6 * dt);
-    if (!settings.get().screenShake || this.replay) return;
+    if (!settings.get().screenShake || this.playback) return;
     const a = this.shake * 0.035;
     const t = performance.now() / 1000;
     this.camera.rotation.x += Math.sin(t * 61) * a;
@@ -3746,7 +3883,8 @@ export class Game {
     if (this.flagField) {
       this.flagField.update(performance.now() / 1000, (id) => {
         // During the replay, carried flags ride on the replay's stand-ins (including ours).
-        if (this.replay) return this.replay.carrier(id);
+        const playback = this.playback;
+        if (playback) return playback.carrier(id);
         const r = id === this.playerId ? undefined : this.remotes.get(id);
         return r?.alive ? { position: r.position, yaw: r.yaw, hand: r.handPosition(new THREE.Vector3()), swing: r.flagSwing } : null;
       });

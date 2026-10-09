@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import { Mover } from '../movement';
 import { GUNS, shotDamage } from '../gunStats';
-import { FLAG_BASES, FLAG_RADIUS, MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_RANGE, MODES, TEAM_INFO, gunGameGun, otherTeam } from '../modes';
+import {
+  FLAG_BASES, FLAG_RADIUS, KNIFE_COOLDOWN, KNIFE_DAMAGE, KNIFE_RANGE, MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_RANGE, MODES, TEAM_INFO, gunGameGun, otherTeam,
+} from '../modes';
 import { placementOf } from '../flags';
 import { BOT_PREFIX, randomId, type RoomConnection } from '../../net/network';
 import { DECISION_DT, Policy, type PolicyJson } from './policy';
@@ -36,6 +38,8 @@ import type { AbilityType, GameEvent, GameState, GunKind, PickupType, PlayerStat
 /** Stats go out at most this often (s), like a player's */
 const STATS_INTERVAL = 1;
 /** Pose updates per second for each bot */
+/** A knife slash, start to finish (the gun waits) (s) */
+const KNIFE_SLASH = 0.42;
 const SEND_RATE = 10;
 /** How often the number of bots is checked against the room (s) */
 const SYNC_INTERVAL = 1;
@@ -45,6 +49,8 @@ const SPAWN_CLEARANCE = 1.2;
 /** Pickups this close (m) are worth a detour; a medkit for a hurt bot, this close */
 const DETOUR_RANGE = 14;
 const MEDKIT_DETOUR = 25;
+/** CTF: the flags come first, so only a pickup this close (practically on the way) is worth a detour */
+const CTF_DETOUR_RANGE = 6;
 /** Touching a pickup: as the player's (pickups.ts) */
 const PICKUP_RADIUS = 1.1;
 /** A throw is only made if it can land this close to where it's meant to (m) */
@@ -426,7 +432,7 @@ export class BotHost {
       const shoot = bot.brain.action.fire && (this.carrying(bot) || (aim.engaged && aim.onTarget));
       if (!shoot || roundOver || blind) bot.burst = 0;
       else if (this.carrying(bot)) this.swing(bot);
-      else this.fire(bot);
+      else if (!this.stab(bot)) this.fire(bot);
       if (rules.base === 'ctf' && !roundOver) this.updateFlags(bot);
     }
 
@@ -641,8 +647,35 @@ export class BotHost {
     bot.meleeCooldown = MELEE_COOLDOWN;
     this.endCloak(bot);
     const eye = this.eye(bot);
+    const best = this.inReach(bot, MELEE_RANGE);
+    this.api.net.sendEventAs(bot.id, { type: 'melee', o: arr(eye.x, eye.y, eye.z), hit: best, dmg: best ? MELEE_DAMAGE : 0, head: false });
+  }
+
+  /**
+   * Someone right in the bot's face: knife them instead of shooting (as players do). Returns whether
+   * it slashed; the gun waits until the slash is over.
+   */
+  private stab(bot: HostedBot): boolean {
+    if (bot.meleeCooldown > 0) return false;
+    const best = this.inReach(bot, KNIFE_RANGE * 0.8);
+    if (!best) return false;
+    bot.meleeCooldown = KNIFE_COOLDOWN;
+    bot.cooldown = Math.max(bot.cooldown, KNIFE_SLASH);
+    bot.burst = 0;
+    this.endCloak(bot);
+    const eye = this.eye(bot);
+    bot.stats.shots++;
+    bot.stats.hits++;
+    bot.stats.damage += Math.min(KNIFE_DAMAGE, this.api.players()[best]?.hp ?? KNIFE_DAMAGE);
+    this.api.net.sendEventAs(bot.id, { type: 'melee', w: 'knife', o: arr(eye.x, eye.y, eye.z), hit: best, dmg: KNIFE_DAMAGE, head: false });
+    return true;
+  }
+
+  /** The nearest enemy within `range` of the bot's eyes, roughly where it looks. */
+  private inReach(bot: HostedBot, range: number): string | null {
+    const eye = this.eye(bot);
     let best: string | null = null;
-    let bestD = MELEE_RANGE;
+    let bestD = range;
     for (const b of this.others(bot)) {
       if (!b.alive || !this.isEnemyOf(bot, b.id)) continue;
       const d = Math.hypot(b.x - eye.x, b.y + 1 - eye.y, b.z - eye.z);
@@ -652,7 +685,7 @@ export class BotHost {
       best = b.id;
       bestD = d;
     }
-    this.api.net.sendEventAs(bot.id, { type: 'melee', o: arr(eye.x, eye.y, eye.z), hit: best, dmg: best ? MELEE_DAMAGE : 0, head: false });
+    return best;
   }
 
   /** Every event in the room: the ones that hurt our bots are applied here (we're their client). */
@@ -682,7 +715,7 @@ export class BotHost {
       }
     } else if (evt.type === 'melee' && evt.hit) {
       const bot = this.bots.get(evt.hit);
-      if (bot) this.hurt(bot, evt.dmg, evt.from, !!evt.head, 'flag', evt.o);
+      if (bot) this.hurt(bot, evt.dmg, evt.from, !!evt.head, evt.w === 'knife' ? 'knife' : 'flag', evt.o);
     } else if (evt.type === 'blast' && evt.hits) {
       for (const bot of this.bots.values()) {
         const dmg = evt.hits[bot.id];
@@ -696,7 +729,7 @@ export class BotHost {
     if (!bot.alive || api.roundOver()) return;
     // Teammates can't hurt each other (and a bot can't shoot itself).
     if (fromId === bot.id || (bot.team && !this.isEnemyOf(bot, fromId))) return;
-    if (api.rules().headshotsOnly && !head && weapon !== 'flag') return;
+    if (api.rules().headshotsOnly && !head && weapon !== 'flag' && weapon !== 'knife') return;
     let amount = Math.min(Math.max(Number(dmg) || 0, 0), api.maxDamage(weapon));
     if (!amount) return;
     // A shield soaks it up first.
@@ -891,18 +924,19 @@ export class BotHost {
   }
 
   /**
-   * A worthwhile pickup close by, to fetch on the way (none for a flag carrier, or while our flag is away:
-   * those have better things to do). One bot per pickup.
+   * A worthwhile pickup close by, to fetch on the way. In CTF only one practically on the way, and none
+   * while a flag is on the move (carried or lying loose: a carrier to escort or chase, a flag to race
+   * for). One bot per pickup.
    */
   private detourFor(bot: HostedBot, ctf: CtfView | null): Point | null {
-    if (this.carrying(bot) || (ctf && ctf.own.at !== 'base')) return null;
+    if (this.carrying(bot) || (ctf && (ctf.own.at !== 'base' || ctf.enemy.at !== 'base'))) return null;
     const rules = this.pickupRules();
     const p = bot.mover.position;
     const taken = new Set([...this.bots.values()].filter((b) => b !== bot && b.detour).map((b) => b.detour));
     let best: { id: string; x: number; y: number; z: number } | null = null;
-    let bestD = DETOUR_RANGE;
-    // Hurt with nothing to heal with: a medkit is worth going further for (and comes first).
-    const needsHealing = bot.hp / this.api.rules().health < 0.5 && !bot.gear.has('medkit');
+    let bestD = ctf ? CTF_DETOUR_RANGE : DETOUR_RANGE;
+    // Hurt with nothing to heal with: a medkit is worth going further for (and comes first), except in CTF.
+    const needsHealing = !ctf && bot.hp / this.api.rules().health < 0.5 && !bot.gear.has('medkit');
     for (const k of this.api.pickups()) {
       if (taken.has(k.id) || Math.abs(k.y - p.y) > 3 || !bot.gear.wants(k.type, rules)) continue;
       const medkit = needsHealing && k.type === 'medkit';

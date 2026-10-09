@@ -17,6 +17,7 @@ export interface GameStateView {
   team: 'red' | 'blue' | null;
   locked: boolean;
   spectating: boolean;
+  killcam: boolean;
   leader: boolean;
   pos: Vec3;
   yaw: number;
@@ -48,7 +49,8 @@ export interface GameStateView {
 }
 
 export const SETTINGS = {
-  fullscreen: false, quality: 'low', sfxVolume: 0, musicVolume: 0, screenShake: false, showFps: false, version: 2,
+  // (The kill cam is off: tests expect the death screen straight away; killcam.spec turns it on.)
+  fullscreen: false, quality: 'low', sfxVolume: 0, musicVolume: 0, screenShake: false, showFps: false, killcam: false, version: 2,
 };
 const HINTS = ['slide', 'gun-swap', 'ads', 'full-slots', ...[
   'medkit', 'shield', 'speed', 'dash', 'grenade', 'smoke', 'wall', 'cloak', 'scan', 'molotov', 'flash', 'turret', 'mine', 'lifesteal',

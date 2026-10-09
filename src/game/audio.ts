@@ -206,6 +206,16 @@ export function playSwing(volume = 1, pan = 0): void {
   play('swing', { volume: 0.6 * volume, pan, rate: 1.3 * vary() });
 }
 
+/** A knife slash: a quick, light whoosh. */
+export function playKnife(volume = 1, pan = 0): void {
+  play('swing', { volume: 0.5 * volume, pan, rate: 1.9 * vary() });
+}
+
+/** The knife connecting: a sharp, short hit (the club's thump, higher and lighter). */
+export function playKnifeHit(volume = 1, pan = 0): void {
+  play('melee_hit', { volume: 0.7 * volume, pan, rate: 1.6 * vary(0.08) });
+}
+
 /** The pole connecting: a heavy thump. */
 export function playMeleeHit(volume = 1, pan = 0): void {
   play('melee_hit', { volume: 0.9 * volume, pan, rate: vary(0.08), bass: 4 });

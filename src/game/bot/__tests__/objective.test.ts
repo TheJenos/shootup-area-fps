@@ -71,16 +71,52 @@ describe('the objective layer (CTF)', () => {
       patrolPoints: [], patrol: patrol2, now,
     });
     expect(h(0)).toMatchObject({ z: 6 });
-    expect(h(20)).toEqual(bases.enemyBase);
+    expect(h(5)).toEqual(bases.enemyBase);
   });
 
-  it('sends a badly hurt bot back to its team', () => {
-    const mate = body('r2', 'red', 0, 25);
-    const g = goalFor({
-      self: { id: 'r1', team: 'red', x: 0, y: 0, z: -10, carrying: false }, others: [mate, body('r3', 'red', 9, 26)], mode: 'ctf', ctf: home,
-      patrolPoints: [], patrol: newPatrol(), now: 0, hp: 0.2,
+  it('races for their dropped flag without waiting for company', () => {
+    const ctf: CtfView = { ...home, enemy: { at: 'ground', x: 3, y: 0, z: -12 } };
+    expect(goal({ id: 'r1', x: 0, z: 20 }, [body('r2', 'red', 0, 29), body('r3', 'red', 0, 28)], ctf)).toEqual(ctf.enemy);
+  });
+
+  it('plays for the flags, not for kills: attackers ignore fights off their route and keep going when hurt', () => {
+    const g = (known: { x: number; y: number; z: number }[], hp = 1) => goalFor({
+      self: { id: 'r1', team: 'red', x: 0, y: 0, z: -10, carrying: false },
+      others: [body('r2', 'red', 0, 25), body('r3', 'red', 9, 26), body('r4', 'red', 2, -8)], mode: 'ctf', ctf: home,
+      patrolPoints: [], patrol: { ...newPatrol(), rallied: true }, now: 0, hp, known,
     });
-    expect(Math.hypot(g.x - mate.x, g.z - mate.z)).toBeLessThan(3);
+    // An enemy called out 10 m to the side: still the flag.
+    expect(g([{ x: 10, y: 0, z: -10 }])).toEqual(bases.enemyBase);
+    // Badly hurt: still the flag (no falling back to heal).
+    expect(g([], 0.2)).toEqual(bases.enemyBase);
+  });
+
+  it('clears the guards off their flag before grabbing it, but not forever', () => {
+    const patrol = { ...newPatrol(), rallied: true };
+    const g = (z: number, known: { x: number; y: number; z: number }[], now: number) => goalFor({
+      self: { id: 'r1', team: 'red', x: 0, y: 0, z, carrying: false },
+      others: [body('r2', 'red', 0, 25), body('r3', 'red', 9, 26), body('r4', 'red', 2, -8)], mode: 'ctf', ctf: home,
+      patrolPoints: [], patrol, now, known,
+    });
+    const guard = [{ x: 3, y: 0, z: -33 }];
+    // 20 m out with someone at their flag: hold 10 m short of it and fight.
+    expect(g(-10, guard, 0)).toMatchObject({ x: 0, z: -20 });
+    // Nobody there any more: go and take it.
+    expect(g(-20, [], 1)).toEqual(bases.enemyBase);
+    // Still guarded after a long wait: go anyway.
+    expect(g(-20, guard, 2)).toMatchObject({ z: -20 });
+    expect(g(-20, guard, 30)).toEqual(bases.enemyBase);
+  });
+
+  it('has defenders go for enemies closing in on the flag, but not for fights elsewhere', () => {
+    const g = (known: { x: number; y: number; z: number }[]) => goalFor({
+      self: { id: 'r2', team: 'red', x: 0, y: 0, z: 24, carrying: false }, others: [body('r1', 'red', 0, 0), body('r3', 'red', 2, 0)],
+      mode: 'ctf', ctf: home, patrolPoints: [], patrol: newPatrol(), now: 0, known,
+    });
+    // Someone 8 m from our flag: go get them.
+    expect(g([{ x: 6, y: 0, z: 25 }])).toMatchObject({ x: 6, z: 24 });
+    // A fight 12 m from the defender but 25 m from the flag: hold the spot.
+    expect(g([{ x: 0, y: 0, z: 12 }])).toMatchObject({ x: 0, z: 24 });
   });
 });
 
@@ -116,5 +152,38 @@ describe('travelling', () => {
     }
     expect(red.captures).toBeGreaterThan(0);
     arena.dispose();
+  });
+});
+
+describe('pushing (CTF)', () => {
+  it('keeps heading for the objective with enemies around, and only stands to fight one right on top of it', async () => {
+    const { OBS_LAYOUT } = await import('../observe');
+    const { shouldPush, pushAction } = await import('../objective');
+    const obs = new Float32Array(OBS_SIZE);
+    const E = OBS_LAYOUT.enemies;
+    obs[OBS_LAYOUT.attack + 1] = 1; // the route goes straight ahead
+    obs[OBS_LAYOUT.attack + 2] = 20 / 60; // 20 m to go
+    obs[OBS_LAYOUT.attack + 3] = 1;
+    obs[E] = 1; // an enemy in view...
+    obs[E + 4] = 10 / 60; // ...10 m away
+    expect(shouldPush(obs)).toBe(true);
+    const fight = { move: 3, sprint: true, jump: false, crouch: false, fire: true, aimYaw: 0.2, aimPitch: 0 } as unknown as BotAction;
+    const a = pushAction(fight, obs);
+    // Walks the route (forward), shooting, not sprinting while someone's in view.
+    expect(a.move).toBe(1);
+    expect(a.fire).toBe(true);
+    expect(a.sprint).toBe(false);
+    // 4 m away: stand and fight.
+    obs[E + 4] = 4 / 60;
+    expect(shouldPush(obs)).toBe(false);
+    // In view but far, or only remembered: sprint.
+    obs[E + 4] = 30 / 60;
+    expect(pushAction(fight, obs).sprint).toBe(true);
+    obs[E] = 0;
+    obs[E + 4] = 30 / 60;
+    expect(pushAction(fight, obs).sprint).toBe(true);
+    // At the goal (a defender at its spot): the policy fights.
+    obs[OBS_LAYOUT.attack + 2] = 2 / 60;
+    expect(shouldPush(obs)).toBe(false);
   });
 });

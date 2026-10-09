@@ -223,6 +223,14 @@ export function SettingsPanel({ onClose }: Props) {
             />
             <span>Show FPS counter</span>
           </label>
+          <label className="setting check">
+            <input
+              type="checkbox"
+              checked={current.killcam}
+              onChange={(e) => settings.update({ killcam: e.target.checked })}
+            />
+            <span>Kill cam (see how you died, through your killer's eyes)</span>
+          </label>
         </section>
         <section>
           <h4>Crosshair</h4>

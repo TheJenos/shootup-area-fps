@@ -29,7 +29,7 @@ function useHud(game: Game): HudState {
 
 /** The icon the kill feed and death screen use for a weapon. */
 export const weaponIcon = (w: WeaponKind): string =>
-  (w === 'grenade' ? '💣' : w === 'flag' ? '⚑' : w === 'molotov' ? '🔥' : w === 'turret' ? '🤖' : w === 'mine' ? '💥' : GUNS[w]?.icon ?? '▸');
+  (w === 'grenade' ? '💣' : w === 'knife' ? '🔪' : w === 'flag' ? '⚑' : w === 'molotov' ? '🔥' : w === 'turret' ? '🤖' : w === 'mine' ? '💥' : GUNS[w]?.icon ?? '▸');
 
 /** Copy (or, on phones, share) the invite link for this room. */
 export function useCopyInvite(game: Game, roomCode: string): { copy(): void; copied: boolean } {
@@ -89,6 +89,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
 
   const classes = [
     hud.matchEnd?.phase === 'mvp' && 'cinematic', // the MVP replay hides the crosshair, panels and abilities
+    hud.killcam && 'killcam', // the kill cam hides our own panels (it's the killer's view)
     game.touch && 'touch',
     hud.paused && 'paused',
     hud.cloaked && 'cloaked',
@@ -204,7 +205,9 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       {hud.matchEnd?.phase === 'results' && !hud.scoreboardOpen && <RoundResults end={hud.matchEnd} touch={game.touch} />}
       {hud.matchEnd?.phase === 'mvp' && <MvpShowcase end={hud.matchEnd} />}
 
-      {hud.death && !hud.paused && !hud.matchEnd && !hud.spectate && <DeathOverlay death={hud.death} />}
+      {hud.death && !hud.paused && !hud.matchEnd && !hud.spectate && (hud.killcam
+        ? <KillcamBanner killcam={hud.killcam} respawnIn={hud.death.respawnIn} touch={game.touch} onSkip={() => game.skipKillcam()} />
+        : <DeathOverlay death={hud.death} />)}
 
       {intro && !hud.connecting && (
         <TouchIntro hasSpecial={!!hud.special} onDone={() => { writeFlag(TOUCH_INTRO_KEY); setIntro(false); }} />
@@ -271,6 +274,30 @@ function DeathOverlay({ death }: { death: NonNullable<HudState['death']> }) {
       {death.dropped && <p className="muted">Your gun and abilities dropped where you fell</p>}
       <p className="muted">Respawning in {death.respawnIn}…</p>
     </div>
+  );
+}
+
+/** Watching how we died, through the killer's eyes: who, with what, and how to skip it. */
+function KillcamBanner({ killcam, respawnIn, touch, onSkip }: {
+  killcam: NonNullable<HudState['killcam']>; respawnIn: number; touch: boolean; onSkip(): void;
+}) {
+  const { bindings } = useSettings();
+  return (
+    <>
+      <div id="killcam-frame" aria-hidden="true" />
+      <div id="killcam" role="status">
+        <span className="label">Kill cam</span>
+        <strong style={{ color: killcam.color }}>{killcam.killerName}</strong>
+        <span className="how">
+          <span className="weapon" title={killcam.weapon}>{weaponIcon(killcam.weapon)}</span>
+          {killcam.head && killcam.weapon !== 'grenade' && <span className="head">⌖ headshot</span>}
+        </span>
+        <span className="muted">{respawnIn > 0 ? `Respawning in ${respawnIn}…` : 'Ready to respawn'}</span>
+        <button type="button" className="skip" onPointerDown={(e) => { e.stopPropagation(); onSkip(); }}>
+          Skip{touch ? '' : ` · ${keyLabel(bindings.jump)} / click`}
+        </button>
+      </div>
+    </>
   );
 }
 

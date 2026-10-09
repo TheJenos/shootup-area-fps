@@ -9,7 +9,8 @@ import type { Team } from '../mapgen/types';
  * objective (CTF roles: carry the flag home, return ours, chase their carrier, escort ours, attack or
  * hold the base; elsewhere: patrol toward where enemies are likely to be) and, while the bot knows of no
  * enemy at all, walks it there along the map's paths. Once an enemy is seen, remembered or shooting at
- * it, the policy takes over.
+ * it, the policy takes over, except in CTF: there the flags come first, so a bot keeps heading for its
+ * objective and shoots on the way (see shouldPush), and only stops to fight someone right on top of it.
  */
 
 export interface Point {
@@ -25,9 +26,11 @@ export interface Patrol {
   /** CTF attackers: when this one started waiting at the rally point, and whether it has pushed on */
   rallySince: number | null;
   rallied: boolean;
+  /** CTF attackers: since when it's been clearing the guards off their flag before grabbing it */
+  clearingSince: number | null;
 }
 
-export const newPatrol = (): Patrol => ({ target: null, until: 0, rallySince: null, rallied: false });
+export const newPatrol = (): Patrol => ({ target: null, until: 0, rallySince: null, rallied: false, clearingSince: null });
 
 /** Give up on a patrol point after this long (s), or once this close (m) */
 const PATROL_TIME = 25;
@@ -38,10 +41,21 @@ const HELP_RANGE = 30;
 const RETREAT_HP = 0.35;
 /** CTF: attackers gather this far along the way to the enemy base, wait up to this long for a second (s) */
 const RALLY_SHARE = 0.4;
-const RALLY_WAIT = 8;
+const RALLY_WAIT = 4;
 const RALLY_BUDDY = 12;
 /** CTF defenders hold a spot this far in front of their flag, toward the middle (m) */
 const DEFEND_OFFSET = 6;
+/** CTF defenders go for enemies this close to their flag (m) */
+const GUARD_RANGE = 18;
+/**
+ * CTF attackers: an enemy known within GUARDED of their flag is guarding it. Grabbing it under their nose
+ * gets the carrier killed on the spot, so from within CLEAR_FROM the attacker holds this far short of it
+ * (STAGE) and fights until nobody's left there, or CLEAR_WAIT has passed (m, s).
+ */
+const GUARDED = 12;
+const CLEAR_FROM = 25;
+const STAGE = 10;
+const CLEAR_WAIT = 8;
 
 export interface GoalInput {
   self: { id: string; team: Team | null; x: number; y: number; z: number; carrying: boolean };
@@ -90,6 +104,12 @@ function fight(input: GoalInput, range: number): Point | null {
   return near.sort((a, b) => flat(a, input.self) - flat(b, input.self))[0] ?? null;
 }
 
+/** CTF defender: an enemy we know of closing in on our flag (the nearest to it). */
+function intruder(input: GoalInput, flag: Point): Point | null {
+  const near = (input.known ?? []).filter((k) => flat(k, flag) < GUARD_RANGE);
+  return near.sort((a, b) => flat(a, flag) - flat(b, flag))[0] ?? null;
+}
+
 /** Where this bot should be heading right now. */
 export function goalFor(input: GoalInput): Point {
   const { self, others, mode, ctf } = input;
@@ -104,6 +124,11 @@ export function goalFor(input: GoalInput): Point {
   return patrolGoal(input, mates);
 }
 
+/**
+ * CTF: the flags, not kills. Every bot has a job with a flag in it (carry, return, chase the thief,
+ * escort, guard, attack); fights are what happens on the way. Nobody wanders off to a fight away from
+ * its job or falls back to heal: an attacker low on health still goes for the flag.
+ */
 function ctfGoal(input: GoalInput, mates: readonly BodyView[], everyone: readonly BodyView[], ctf: CtfView): Point {
   const { self, patrol, now } = input;
   // Carrying their flag: home (and wait there for ours if it's away).
@@ -120,21 +145,22 @@ function ctfGoal(input: GoalInput, mates: readonly BodyView[], everyone: readonl
     const carrier = mates.find((o) => o.id === (ctf.enemy as { carrier: string }).carrier);
     if (carrier) return follow(carrier);
   }
-  const back = retreat(input, mates);
-  if (back) return back;
-  // One in three holds a spot in front of our flag, covering the way in; it goes for anyone close.
+  // One in three holds a spot in front of our flag, covering the way in; it goes for anyone closing in on the flag.
   const defenders = Math.floor((mates.filter((m) => m.alive).length + 1) / 3);
   if (defenders > 0 && amongNearest(self, mates, ctf.ownBase, defenders)) {
-    const close = fight(input, 15);
+    const close = intruder(input, ctf.ownBase);
     if (close) return follow(close);
     const toMiddle = Math.hypot(ctf.ownBase.x, ctf.ownBase.z) || 1;
     return { x: ctf.ownBase.x * (1 - DEFEND_OFFSET / toMiddle), y: ctf.ownBase.y, z: ctf.ownBase.z * (1 - DEFEND_OFFSET / toMiddle) };
   }
-  // A fight right next to us comes first.
-  const close = fight(input, 15);
-  if (close) return follow(close);
+  // Everyone else attacks: straight for their flag.
   const flag = ctf.enemy.at === 'ground' ? ctf.enemy : ctf.enemyBase;
-  // Attackers go in pairs: gather at a rally point, push once a second one arrives (or after a while).
+  // Their flag lying loose: a race, no waiting for company.
+  if (ctf.enemy.at === 'ground') return flag;
+  // Close to it with someone guarding it: take them out first, then grab it.
+  const clear = clearFirst(input, ctf);
+  if (clear) return clear;
+  // Attackers go in pairs: gather at a rally point, push once a second one arrives (or after a short wait).
   if (flat(self, ctf.ownBase) < 10) {
     patrol.rallied = false;
     patrol.rallySince = null;
@@ -151,6 +177,27 @@ function ctfGoal(input: GoalInput, mates: readonly BodyView[], everyone: readonl
     patrol.rallied = true;
   }
   return flag;
+}
+
+/**
+ * A CTF attacker near their flag while someone's guarding it: hold a spot short of the flag (fight from
+ * there) until the guards are gone or it's waited long enough. Null: go for the flag.
+ */
+function clearFirst(input: GoalInput, ctf: CtfView): Point | null {
+  const { self, patrol, now } = input;
+  const base = ctf.enemyBase;
+  const toFlag = flat(self, base);
+  const guarded = (input.known ?? []).some((k) => flat(k, base) < GUARDED);
+  if (!guarded || toFlag > CLEAR_FROM) {
+    if (toFlag > CLEAR_FROM) patrol.clearingSince = null;
+    return null;
+  }
+  patrol.clearingSince ??= now;
+  if (now - patrol.clearingSince > CLEAR_WAIT / (input.aggression ?? 1)) return null;
+  // Where we are if already that close, else STAGE short of it on our side.
+  if (toFlag <= STAGE) return { x: self.x, y: self.y, z: self.z };
+  const k = STAGE / toFlag;
+  return { x: base.x + (self.x - base.x) * k, y: base.y, z: base.z + (self.z - base.z) * k };
 }
 
 /**
@@ -197,22 +244,29 @@ export function shouldTravel(obs: Float32Array): boolean {
   return carrying(obs) || !enemyKnown(obs);
 }
 
-/** Run and gun from this far from the goal, at enemies at least this far away (m) */
-const PUSH_GOAL = 8;
-const PUSH_ENEMY = 12;
+/** CTF: run and gun until this close to the goal; only an enemy this close stops the bot to fight (m) */
+const PUSH_GOAL = 3;
+const PUSH_ENEMY = 5;
 
 /**
- * CTF: an objective to get to and nobody close: keep moving along the route while the policy aims and
- * shoots. (Left to the policy alone, attackers stop to trade shots and never reach the flag.)
+ * CTF: the objective comes first. Anywhere short of the goal, the bot keeps moving along the route
+ * while the policy aims and shoots; it only stands and fights someone right on top of it (or once it's
+ * there: a defender at its spot). Left to the policy, bots stop to trade shots and never score.
  */
 export function shouldPush(obs: Float32Array): boolean {
-  return obs[OBS_LAYOUT.attack + 2]! > PUSH_GOAL / 60 && obs[E + 4]! > PUSH_ENEMY / 60;
+  // (No enemy in the list, e.g. only just shot from somewhere unseen: nobody close.)
+  const nearest = obs[E + 4]! || 1;
+  return obs[OBS_LAYOUT.attack + 2]! > PUSH_GOAL / 60 && nearest > PUSH_ENEMY / 60;
 }
 
-/** The policy's aim and trigger, the route's feet. */
+/** Pushing, sprint unless someone in view is closer than this (m): then walk, for a steadier aim */
+const PUSH_WALK = 20;
+
+/** The policy's aim and trigger, the route's feet: sprinting, unless someone in view is close enough to shoot it out with. */
 export function pushAction(fight: BotAction, obs: Float32Array): BotAction {
   const walk = travelAction(obs);
-  return { ...fight, move: walk.move, sprint: false, jump: walk.jump, crouch: false };
+  const close = obs[E]! > 0.5 && obs[E + 4]! < PUSH_WALK / 60;
+  return { ...fight, move: walk.move, sprint: walk.sprint && !close, jump: walk.jump, crouch: false };
 }
 
 /** The 8-way move closest to a direction (right, forward) in the bot's frame */

@@ -427,6 +427,7 @@ Discord, with no website to visit.
 | Ctrl (hold) | Crouch; press while sprinting to slide |
 | R | Reload |
 | Q / mouse wheel | Switch between the rifle and a picked-up gun |
+| V | Knife: a quick slash at arm's length, 50 damage a hit |
 | 1 / 2 / 3 | Use the ability in that slot |
 | I | Inventory (details + drop items) |
 | Tab (hold) | Match summary |
@@ -503,6 +504,14 @@ doesn't. The match keeps running while the menu is open. Round results and the M
   during the MVP replay.
 - The death screen says who got you, with what and whether it was a headshot ("You took yourself out" for your
   own grenade), and whether your gun and abilities dropped where you fell. Respawning flashes the screen edges.
+- **Kill cam.** Killed by another player (or bot), you first watch the last 3.5 s before the kill and 1 s after
+  through the killer's eyes: their gun, their aim, your own body going down, with letterbox bars and a card
+  saying who and with what. The respawn timer runs underneath; you're back once both are done, so the cam can
+  add a little to a short respawn. **Space** (the jump key), a click or the **Skip** button ends it early, back
+  to the death screen (or straight in if the timer's already up). It's skipped for your own doing, turret kills,
+  the end of a round, and killers there's no recording of (they just joined). Turn it off in Settings → Video
+  → Kill cam. It's the MVP replay's machinery (`ReplayDirector`) pointed at your killer, played in real time
+  as the recording catches up.
 - Pressing an empty ability slot or one on cooldown says so (and shakes the slot). The ammo panel shows
   "R TO RELOAD", "NO AMMO — FIND A BOX" or "LOW AMMO" under the count.
 - In CTF, taking, losing, capturing and returning flags get centre-screen banners, and a dropped flag's icon
@@ -566,6 +575,14 @@ stocked separately from abilities) and go into a second slot when you stand on o
 | 💥 | Shotgun | Pump, 9 pellets | 12 / 18 per pellet | 6 + 12 | Falls off from 7 m to 25% at 28 m; ~100+ up close |
 | 🎯 | Sniper | Bolt action | 75 / 150 | 5 + 10 | Scope zooms to an 18° view; wild from the hip; falls off from 80 m to 80% at 160 m (a headshot still kills) |
 | 🔫 | Deagle | Semi-auto | 40 / 90 | 7 + 21 | Heavy recoil; falls off from 15 m to 50% at 45 m |
+
+**Knife.** Everyone always has one: **V** (rebindable as "Knife"; 🔪 on touch screens) slashes at the nearest
+enemy within 2.2 m in front of you for a flat **50 damage**, head or body (it still counts in headshots-only
+modes), so two hits kill from full health. The gun drops while the knife cuts across the view (about 0.4 s; a
+reload in progress is abandoned), and you can slash again 0.6 s after the last one. Walls block it. Others see
+your free hand cut across with the knife, the kill feed shows 🔪, and bots knife back when you get in their face.
+Carrying the flag, **V** swings the flag instead. It goes out as a `melee` event with `w: 'knife'`; whoever is hit
+caps the damage at 50.
 
 Damage falloff is per bullet (or pellet), from the distance the shot travelled: full damage up close, fading
 linearly to a fraction of it at long range, so each gun has a range it's best at (`falloff` in `src/game/guns.ts`).
@@ -715,13 +732,20 @@ run the leader's chores and never touch the leaderboard. See `game/bot/botHost.t
 
 **How they think.** Three parts.
 
-- *Where to go* is scripted (`game/bot/objective.ts`). In CTF: the carrier takes the flag home, the nearest
-  teammate returns a dropped flag, the two nearest chase whoever has ours, the rest escort our carrier; attackers
-  gather at a rally point and push in pairs, and one in three holds a spot in front of our flag. In FFA and TDM:
-  patrol between spawns and pickup spots (toward the enemy's half in team modes, keeping near the team). Bots go
-  to fights a teammate called out or they heard, and fall back to a teammate when badly hurt. While a bot knows of
+- *Where to go* is scripted (`game/bot/objective.ts`). In CTF the flags come first, not kills: the carrier takes
+  the flag home, the nearest teammate returns a dropped flag, the two nearest chase whoever has ours, the rest
+  escort our carrier; one in three holds a spot in front of our flag and only goes for enemies closing in on it;
+  everyone else attacks. Attackers gather briefly at a rally point and push in pairs, race straight for a dropped
+  enemy flag, and don't detour to fights off their route or fall back to heal. Close to the enemy flag with a
+  guard there, an attacker holds 10 m short and fights until it's clear (or 8 s pass), then grabs it. They only
+  stop for pickups practically on the way, and not at all while a flag is on the move. In FFA and TDM: patrol
+  between spawns and pickup spots (toward the enemy's half in team modes, keeping near the team). Bots go to
+  fights a teammate called out or they heard, and fall back to a teammate when badly hurt. While a bot knows of
   no enemy, this layer also walks it there along the map's walk grid, glancing to the sides now and then and
   getting itself unstuck if it wedges into a gap.
+- *Fighting on the move (CTF)*: with an enemy around, a CTF bot doesn't stop to trade shots; its feet follow the
+  route to its objective while the policy and the aim model shoot (sprinting unless someone in view is within
+  20 m). It only stands and fights someone within 5 m, or once it's where it's going (a defender at its spot).
 - *Aiming* is a model of how people aim (`game/bot/aim.ts`): pick a target (whoever is shooting at us, a flag
   carrier first), take a moment to react, put the crosshair roughly on them, settle in, lag behind someone
   strafing, turn no faster than a person can, fight the recoil. The trigger is only pulled with the crosshair on

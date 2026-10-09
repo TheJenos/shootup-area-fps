@@ -40,6 +40,7 @@ interface Track {
 export type ReplayEvent =
   | { t: number; kind: 'shot'; o: Vec3Tuple; e: Vec3Tuple; hit: boolean; w?: GunKind; ends?: Vec3Tuple[]; from?: string }
   | { t: number; kind: 'kill'; killer: string; victim: string; head: boolean }
+  | { t: number; kind: 'knife'; from: string }
   | { t: number; kind: 'grenade'; id: string; o: Vec3Tuple; v: Vec3Tuple }
   | { t: number; kind: 'blast'; id: string; p: Vec3Tuple }
   | { t: number; kind: 'smoke'; id: string; o: Vec3Tuple; v: Vec3Tuple }
@@ -129,7 +130,12 @@ function sampleAt(samples: PoseSample[], t: number): PoseSample | null {
 const fromArr = (a: Vec3Tuple) => new THREE.Vector3(a[0], a[1], a[2]);
 
 export interface ReplayOptions {
-  mvp: MvpInfo;
+  /** Whose eyes, and the moment to show (server ms) */
+  mvp: Pick<MvpInfo, 'id' | 'start' | 'end'>;
+  /** Context before and after the moment (ms), and the longest the replay may take (it plays faster to fit) */
+  leadIn?: number;
+  leadOut?: number;
+  maxLength?: number;
   recorder: ReplayRecorder;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
@@ -168,9 +174,9 @@ export class ReplayDirector {
   constructor(opts: ReplayOptions) {
     this.opts = opts;
     const { mvp, recorder } = opts;
-    this.start = mvp.start - LEAD_IN;
-    this.end = mvp.end + LEAD_OUT;
-    this.rate = Math.max(1, (this.end - this.start) / MAX_REPLAY);
+    this.start = mvp.start - (opts.leadIn ?? LEAD_IN);
+    this.end = mvp.end + (opts.leadOut ?? LEAD_OUT);
+    this.rate = Math.max(1, (this.end - this.start) / (opts.maxLength ?? MAX_REPLAY));
     this.time = this.start;
 
     const track = recorder.tracks.get(mvp.id);
@@ -221,6 +227,11 @@ export class ReplayDirector {
     }
   }
 
+  /** Played to the end (it holds on the last frame after that) */
+  get finished(): boolean {
+    return !this.hasFootage || this.time >= this.end;
+  }
+
   /** Whose highlight this is */
   get mvpId(): string {
     return this.opts.mvp.id;
@@ -262,6 +273,9 @@ export class ReplayDirector {
           effects.impact(end, e.hit ? 0xff3b3b : 0xffc35c);
         }
         sfx.playShot(0.6 / (1 + o.distanceTo(camera.position) / 10), e.w ?? 'rifle');
+      } else if (e.kind === 'knife') {
+        this.ghosts.get(e.from)?.noteKnife();
+        sfx.playKnife(0.8 / (1 + (this.ghosts.get(e.from)?.position.distanceTo(camera.position) ?? 0) / 10));
       } else if (e.kind === 'kill') {
         onKill(e.killer, e.victim, e.head);
         // The victim's stand-in goes down as a ragdoll, shoved away from the killer.

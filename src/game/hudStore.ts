@@ -152,6 +152,8 @@ export interface HudState {
     dropped: boolean;
     respawnIn: number;
   } | null;
+  /** Watching the kill cam: who killed us, and how */
+  killcam: { killerName: string; color: string; weapon: WeaponKind; head: boolean } | null;
   /** Increments when we come back from the dead (for a flash) */
   respawnFlash: number;
   /** Health given back for a kill; `n` restarts the "+50 HP" animation */
@@ -222,6 +224,7 @@ const initialState: HudState = {
   scoreboardOpen: false,
   scoreboard: [],
   death: null,
+  killcam: null,
   respawnFlash: 0,
   heal: null,
   slotDenied: null,

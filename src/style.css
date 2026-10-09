@@ -946,6 +946,37 @@ kbd {
 #spectate .muted { font-size: 14px; }
 #match-summary tr.spectating td { color: var(--muted); font-style: italic; }
 
+/* Kill cam: letterbox bars and a card at the bottom (who, how, skip); our own panels make way */
+#hud.killcam .panel,
+#hud.killcam #abilities { display: none; }
+#killcam-frame {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 56px 0 rgba(0, 0, 0, 0.55), inset 0 -56px 0 rgba(0, 0, 0, 0.55);
+}
+#killcam {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 20px;
+  border-radius: 10px;
+  background: rgba(10, 12, 18, 0.66);
+  pointer-events: none;
+}
+#killcam .label { font-size: 13px; letter-spacing: 3px; text-transform: uppercase; color: var(--danger); font-weight: 800; }
+#killcam strong { font-size: 22px; }
+#killcam .how { display: flex; align-items: center; gap: 8px; }
+#killcam .weapon { font-size: 20px; }
+#killcam .head { color: var(--danger); font-weight: 700; }
+#killcam .muted { font-size: 14px; }
+#killcam .skip { pointer-events: auto; margin-top: 6px; padding: 6px 14px; font-size: 14px; }
+
 #scorebar-wrap {
   position: absolute;
   top: 14px;
@@ -1295,6 +1326,7 @@ kbd {
 /* Right cluster: nothing left of W-202px, so the centre column (abilities, health, toasts) fits a 667px phone */
 #touch-controls .crouch { width: 58px; height: 58px; right: calc(env(safe-area-inset-right) + 50px); bottom: 24px; }
 #touch-controls .reload { width: 52px; height: 52px; right: calc(env(safe-area-inset-right) + 54px); bottom: 204px; }
+#touch-controls .knife { width: 48px; height: 48px; right: calc(env(safe-area-inset-right) + 56px); bottom: 266px; font-size: 20px; }
 #touch-controls .top-buttons { position: absolute; top: 12px; left: calc(env(safe-area-inset-left) + 12px); display: flex; gap: 10px; pointer-events: auto; }
 /* 44px: the smallest a thumb hits reliably (Apple's minimum); a missed tap on Menu pauses the game */
 #touch-controls .tbtn.small { position: static; width: 44px; height: 44px; font-size: 15px; border-radius: 10px; }

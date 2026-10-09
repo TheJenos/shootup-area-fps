@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { NameTag } from './nameTag';
 import { makeXrayMaterial, makeXrayMeshes } from './xray';
 import { GUNS, buildRemoteGun, remoteGunLength } from './guns';
+import { buildKnifeModel } from './weapon';
 import { reach, setWorldQuaternion } from './ik';
 import { Ragdoll, type RagdollBones } from './ragdoll';
 import { BONES, cloneCharacter, GAITS, type CharacterAsset, type Gait } from './character';
@@ -58,6 +59,10 @@ const _tmp = new THREE.Vector3();
 const _color = new THREE.Color();
 /** Lengths of the switch dip and the throw swing (s) */
 const SWITCH_LEN = 0.4;
+/** A knife slash with the free hand (s) */
+const KNIFE_LEN = 0.42;
+const _bladeDir = new THREE.Vector3();
+const UP_Y = new THREE.Vector3(0, 1, 0);
 const THROW_LEN = 0.55;
 /** A carried flag's swing: tipped back this far over the shoulder, then through this far forward (radians) */
 const FLAG_WIND = 0.9;
@@ -184,6 +189,11 @@ export class RemotePlayer {
   private reloadStarted = false;
   /** Throw animation: seconds since it started, or -1 */
   private throwTime = -1;
+  /** Knife slash: seconds since it started, or -1; the knife in their free hand (made on first slash) */
+  private knifeTime = -1;
+  private knifeMesh: THREE.Group | null = null;
+  /** A slash not yet shown in the first-person view of this player */
+  private knifeFlash = false;
   private flagSwingNow = 0;
   /** 0..1 blend from carrying the flag to swinging it, so the arm eases back after a strike */
   private swingAmount = 0;
@@ -571,6 +581,21 @@ export class RemotePlayer {
     this.shotFlash = true;
   }
 
+  /** They slashed with the knife: the free hand cuts across, knife in hand. */
+  noteKnife(): void {
+    if (!this.alive) return;
+    this.knifeTime = 0;
+    this.knifeFlash = true;
+  }
+
+  /** True once per knife slash (to slash in the first-person view of this player too). */
+  consumeKnife(): boolean {
+    // (Only while it's still going: not one from before we started watching.)
+    const slash = this.knifeFlash && this.knifeTime >= 0;
+    this.knifeFlash = false;
+    return slash;
+  }
+
   /** True once per shot (for the muzzle flash when watching through their eyes). */
   consumeShotFlash(): boolean {
     const flash = this.shotFlash;
@@ -800,7 +825,7 @@ export class RemotePlayer {
   private applyAim(dt: number): void {
     const shooting = performance.now() - this.firedAt < SHOOT_HOLD_MS;
     const ready = !this.alive ? 0
-      : this.carrying ? 1
+      : this.carrying || this.knifeTime >= 0 ? 1
         : this.aiming || shooting || (this.gait !== 'Run' && this.slideAmount < 0.5) ? 1 : 0;
     // Snap up fast for a strike or a shot (the first bullets shouldn't leave from the hip), ease otherwise.
     const speed = this.carrying || shooting ? 16 : READY_SPEED;
@@ -808,8 +833,12 @@ export class RemotePlayer {
     this.adsAmount += ((this.aiming && this.alive ? 1 : 0) - this.adsAmount) * (1 - Math.exp(-ADS_SPEED * dt));
     this.bend(this.head, -this.pitch * HEAD_PITCH);
     this.flagSwingNow = 0;
+    if (this.knifeTime >= 0) this.knifeTime = this.knifeTime + dt > KNIFE_LEN || !this.alive || this.carrying ? -1 : this.knifeTime + dt;
     const w = this.readyAmount;
-    if (w < 0.01) return;
+    if (w < 0.01) {
+      this.showKnife(false);
+      return;
+    }
 
     const bones = [...this.rightArm, ...this.leftArm];
     bones.forEach((b, i) => this.armAnim[i]!.copy(b.quaternion));
@@ -898,10 +927,45 @@ export class RemotePlayer {
       const target = release > 0 ? back.lerp(fwd, 1 - (1 - release) ** 2) : _support.clone().lerp(back, wind);
       _support.copy(target);
     }
+    const knifePhase = this.knifeTime >= 0 ? this.knifeTime / KNIFE_LEN : -1;
+    if (knifePhase >= 0) {
+      // The free hand comes up on the left, then cuts across in front and down to the right.
+      this.head.getWorldPosition(_tmp);
+      const cut = knifePhase < 0.3 ? 0 : Math.min(1, (knifePhase - 0.3) / 0.4);
+      const ready = _tmp.clone().addScaledVector(_dir, 0.3).addScaledVector(WORLD_UP, 0.05).addScaledVector(_right, -0.35);
+      const through = _tmp.clone().addScaledVector(_dir, 0.6).addScaledVector(WORLD_UP, -0.3).addScaledVector(_right, 0.2);
+      const at = ready.lerp(through, 1 - (1 - cut) ** 2);
+      // In from the support grip, and back to it at the end.
+      const blend = Math.min(1, knifePhase / 0.2, (1 - knifePhase) / 0.15);
+      _support.lerp(at, blend);
+    }
     _pole.copy(_right).multiplyScalar(-0.6).addScaledVector(WORLD_UP, -1);
     reach(this.leftArm[0], this.leftArm[1], this.leftArm[2], _support, _pole);
 
     this.blendArms(6, w);
+    this.showKnife(knifePhase >= 0);
+  }
+
+  /**
+   * The knife in the free hand while slashing: out of the fist, pointing forward and the way the cut
+   * goes (so it reads from any side, not just end-on). Uses the aim frame applyAim just set.
+   */
+  private showKnife(on: boolean): void {
+    if (!on || this.firstPerson || this.cloakHidden) {
+      if (this.knifeMesh) this.knifeMesh.visible = false;
+      return;
+    }
+    if (!this.knifeMesh) {
+      this.knifeMesh = buildKnifeModel();
+      this.scene.add(this.knifeMesh);
+    }
+    const knife = this.knifeMesh;
+    this.group.updateMatrixWorld(true);
+    this.leftArm[2].getWorldPosition(_handAt);
+    _bladeDir.copy(_dir).multiplyScalar(0.6).addScaledVector(_right, 0.7).addScaledVector(_up, 0.25).normalize();
+    knife.position.copy(_handAt).addScaledVector(_dir, 0.05).addScaledVector(_bladeDir, 0.03);
+    knife.quaternion.setFromUnitVectors(UP_Y, _bladeDir);
+    knife.visible = true;
   }
 
   /** Close hand 0 (right) or 1 (left) into a fist, `amount` 0..1 of the way. */
@@ -1041,6 +1105,7 @@ export class RemotePlayer {
   dispose(): void {
     this.ragdoll?.dispose();
     this.ragdoll = null;
+    if (this.knifeMesh) this.scene.remove(this.knifeMesh);
     this.mixer.stopAllAction();
     this.mixer.uncacheRoot(this.model);
     this.scene.remove(this.group);

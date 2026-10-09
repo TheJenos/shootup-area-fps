@@ -119,8 +119,8 @@ export interface ShotEvent {
 /** Guns a player can hold. The rifle is always carried; the others are picked up on the map. */
 export type GunKind = 'rifle' | 'shotgun' | 'sniper' | 'deagle';
 
-/** What can kill: a gun, a grenade, or the enemy flag swung as a club (CTF carriers) */
-export type WeaponKind = GunKind | 'grenade' | 'flag' | 'molotov' | 'turret' | 'mine';
+/** What can kill: a gun, the knife, a grenade, or the enemy flag swung as a club (CTF carriers) */
+export type WeaponKind = GunKind | 'knife' | 'grenade' | 'flag' | 'molotov' | 'turret' | 'mine';
 
 export interface KillEvent {
   type: 'kill';
@@ -138,9 +138,11 @@ export interface GrenadeEvent {
   v: Vec3Tuple;
 }
 
-/** A flag carrier swung the flag; `hit` took `dmg` (melee range only). */
+/** A flag carrier swung the flag, or someone slashed with the knife (`w`); `hit` took `dmg` (melee range only). */
 export interface MeleeEvent {
   type: 'melee';
+  /** Set for the knife (missing: the flag) */
+  w?: 'knife';
   /** Where the swing came from (the swinger's eyes) */
   o: Vec3Tuple;
   hit: string | null;

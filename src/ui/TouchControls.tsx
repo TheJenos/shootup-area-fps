@@ -10,7 +10,7 @@ type PointerHandler = (e: ReactPointerEvent<HTMLElement>) => void;
  * On-screen controls for phones and tablets:
  * - left half: a move stick that appears wherever the thumb lands (push fully forward to sprint)
  * - right half: drag to look around
- * - buttons: fire (drag on it to keep aiming while shooting), aim, jump, crouch / slide, reload,
+ * - buttons: fire (drag on it to keep aiming while shooting), aim, jump, crouch / slide, reload, knife,
  *   plus the scoreboard and menu up top. Ability slots are tapped directly in the HUD.
  * Uses pointer events, so several fingers work at once.
  */
@@ -146,6 +146,9 @@ export function TouchControls(
       </button>
       <button type="button" className="tbtn reload" aria-label="Reload" onPointerDown={tap(() => game.touchReload())}>
         ↻
+      </button>
+      <button type="button" className="tbtn knife" aria-label="Knife" onPointerDown={tap(() => game.knife())}>
+        🔪
       </button>
       {hasSpecial && (
         <button type="button" className="tbtn swap" aria-label="Switch gun" onPointerDown={tap(() => game.switchGun())}>
