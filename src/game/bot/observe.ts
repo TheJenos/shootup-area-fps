@@ -70,6 +70,8 @@ export interface BodyView {
   team: Team | null;
   /** Carrying a flag */
   carrying: boolean;
+  /** A person, not a bot (the objective layer plans around where people go, it can't send them anywhere) */
+  human?: boolean;
 }
 
 export type FlagState =

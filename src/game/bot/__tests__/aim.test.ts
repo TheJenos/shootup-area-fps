@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AIM_SKILLS, AimController, BOT_SKILLS, type AimCandidate, type AimSelf } from '../aim';
-import { aimAngles, wrapAngle, CHEST_Y } from '../hitscan';
+import { aimAngles, spreadOf, wrapAngle, CHEST_Y } from '../hitscan';
+import type { GunKind } from '../../../types';
 
 function lcg(seed = 1): () => number {
   let s = seed >>> 0;
@@ -42,8 +43,10 @@ describe('the aim model', () => {
   });
 
   it('gets there faster and closer on harder tiers', () => {
+    // Inside hip-fire range: how fast the crosshair gets there, without waiting on the sights.
+    const close: AimCandidate = { ...still, z: -7 };
     const settleTime = (skill: keyof typeof AIM_SKILLS) => {
-      const { on } = track(skill, () => still, 3, 7);
+      const { on } = track(skill, () => close, 3, 7);
       return on.indexOf(true) / 60;
     };
     const times = BOT_SKILLS.map(settleTime);
@@ -89,5 +92,67 @@ describe('the aim model', () => {
     expect(aim.engaged).toBe(true);
     aim.update(1 / 60, 1, self(), []);
     expect(aim.engaged).toBe(false);
+  });
+
+  describe('aiming down the sights', () => {
+    /** Engage a still target `dist` m away with `gun` for `seconds`: how far the sights got, and when it first fired */
+    function ads(gun: GunKind, dist: number, skill: keyof typeof AIM_SKILLS = 'expert', seconds = 1.5) {
+      const aim = new AimController(AIM_SKILLS[skill], lcg(5));
+      const s = { ...self(), gun };
+      const c: AimCandidate = { id: 'e', x: 0, y: 0, z: -dist, stance: 'stand' };
+      let firstOn: number | null = null;
+      let adsAtFirstOn = 0;
+      for (let t = 0; t < seconds; t += 1 / 60) {
+        const r = aim.update(1 / 60, t, s, [c]);
+        s.yaw = r.yaw;
+        s.pitch = r.pitch;
+        if (aim.onTarget && firstOn === null) {
+          firstOn = t;
+          adsAtFirstOn = aim.ads;
+        }
+      }
+      return { aim, firstOn, adsAtFirstOn };
+    }
+
+    it('raises the sights at range, and holds fire until they are up', () => {
+      const { aim, firstOn, adsAtFirstOn } = ads('rifle', 30);
+      expect(aim.ads).toBeGreaterThan(0.95);
+      expect(firstOn).not.toBeNull();
+      expect(adsAtFirstOn).toBeGreaterThanOrEqual(0.8);
+    });
+
+    it('fights up close from the hip, except through the scope', () => {
+      expect(ads('rifle', 4).aim.ads).toBe(0);
+      expect(ads('shotgun', 10).aim.ads).toBe(0);
+      expect(ads('sniper', 4, 'easy').aim.ads).toBeGreaterThan(0.95);
+    });
+
+    it('lowers them with nobody to aim at, or while reloading', () => {
+      const { aim } = ads('rifle', 30);
+      const s = { ...self(), gun: 'rifle' as const, reloading: true };
+      for (let i = 0; i < 30; i++) aim.update(1 / 60, 2 + i / 60, s, [{ id: 'e', x: 0, y: 0, z: -30, stance: 'stand' }]);
+      expect(aim.ads).toBeLessThan(0.05);
+    });
+
+    it('better bots use them more often', () => {
+      const share = (skill: keyof typeof AIM_SKILLS) => {
+        let up = 0;
+        for (let seed = 1; seed <= 200; seed++) {
+          const aim = new AimController(AIM_SKILLS[skill], lcg(seed));
+          for (let t = 0; t < 0.5; t += 1 / 60) aim.update(1 / 60, t, self(), [{ id: 'e', x: 0, y: 0, z: -30, stance: 'stand' }]);
+          if (aim.ads > 0.5) up++;
+        }
+        return up / 200;
+      };
+      const [easy, expert] = [share('easy'), share('expert')];
+      expect(easy).toBeGreaterThan(0.2);
+      expect(easy).toBeLessThan(0.6);
+      expect(expert).toBe(1);
+    });
+
+    it('tightens the spread as the player\'s does', () => {
+      expect(spreadOf('sniper', false, true, 'stand', 0, 1)).toBeCloseTo(spreadOf('sniper', false, true, 'stand', 0) * 0.015);
+      expect(spreadOf('rifle', true, true, 'stand', 0, 1)).toBeLessThan(spreadOf('rifle', true, true, 'stand', 0));
+    });
   });
 });

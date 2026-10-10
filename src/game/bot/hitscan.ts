@@ -84,10 +84,11 @@ export function hitPlayer(r: Ray, t: Target, max: number): { dist: number; head:
   return { dist, head: head <= body };
 }
 
-/** Spread (radians) for a shot, as the player's gun has it (bots never aim down sights). */
-export function spreadOf(gun: GunKind, moving: boolean, onGround: boolean, stance: Stance, burst: number): number {
+/** Spread (radians) for a shot, as the player's gun has it; `aim` is how far the sights are up (0..1). */
+export function spreadOf(gun: GunKind, moving: boolean, onGround: boolean, stance: Stance, burst: number, aim = 0): number {
   const def = GUNS[gun];
-  const steady = stance === 'crouch' ? 0.6 : 1;
+  // As the player's (game.ts shoot): crouching steadies, aiming down the sights (0..1 up) tightens it far more.
+  const steady = (stance === 'crouch' ? 0.6 : 1) * (1 + (def.adsSpread - 1) * aim);
   return (def.spread
     + (moving ? def.movingSpread : 0)
     + (onGround ? 0 : def.airSpread)

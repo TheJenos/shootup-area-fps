@@ -59,5 +59,8 @@ test.describe('free-for-all scoring', () => {
     await expect.poll(() => alice.messages()).toContainEqual(expect.stringMatching(/^Round 2 · .* — fight!$/));
     await expect(alice.page.locator('#round-over')).toHaveCount(0);
     await waitForValue(`lobby/${code}/seed`, (s) => s === next.seed);
+    // Everyone respawns at once on the new map, spread apart rather than on the same spot.
+    const [a, b] = await Promise.all([alice.state(), bob.state()]);
+    expect(Math.hypot(a.pos[0] - b.pos[0], a.pos[2] - b.pos[2])).toBeGreaterThan(10);
   });
 });

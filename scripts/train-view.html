@@ -24,6 +24,12 @@
   .phase.offline .dot { background: var(--red); }
   @keyframes pulse { to { opacity: 0.35; } }
   .stages { display: flex; gap: 4px; margin-left: auto; }
+  button.pill { border: 1px solid transparent; font: inherit; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+  button.pill:hover { border-color: var(--line); }
+  button.pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #wake.held { color: var(--text); }
+  #wake.held .dot { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  #wake:disabled { cursor: default; opacity: 0.6; }
   .stage { padding: 3px 9px; border-radius: 6px; font-size: 12px; color: var(--muted); border: 1px solid var(--line); }
   .stage.done { color: var(--text); border-color: #36425a; }
   .stage.now { color: #1a1205; background: var(--accent); border-color: transparent; font-weight: 700; }
@@ -67,6 +73,10 @@
   <span class="pill">Steps <b id="steps">–</b></span>
   <span class="pill">Speed <b id="sps">–</b></span>
   <span class="pill">Training time <b id="elapsed">–</b></span>
+  <button type="button" class="pill" id="wake" aria-pressed="true"
+    title="Keeps the screen (and so the computer) from going to sleep while training runs and this tab is showing">
+    <span class="dot"></span><span id="wake-text">Keep screen awake</span>
+  </button>
   <div class="stages" id="stages"></div>
 </header>
 <main>
@@ -173,7 +183,7 @@ function drawEval() {
     g.fillText(l.label, lx, 12); lx += g.measureText(l.label).width + 14;
   }
   const last = evals[evals.length - 1];
-  $('eval-value').textContent = `${last.score.toFixed(2)} (best ${last.best.toFixed(2)})`;
+  $('eval-value').textContent = `${last.score.toFixed(2)}${last.smoothed != null ? ` · avg ${last.smoothed.toFixed(2)}` : ''}${last.best != null ? ` (best ${last.best.toFixed(2)})` : ''}`;
 }
 const charts = CHARTS.map((c) => {
   const el = document.createElement('div');
@@ -459,7 +469,7 @@ function connect() {
     addRow(evals, r);
     drawEval();
     const parts = Object.entries(r.byMode).map(([m, v]) => `${m} ${v.kd.toFixed(2)}`).join(' · ');
-    log(`<b>eval</b> at ${fmt(r.steps)}: ${parts} · score ${r.score.toFixed(2)}${r.score >= r.best ? ' — new best' : ''}`);
+    log(`<b>eval</b> at ${fmt(r.steps)}: ${parts} · score ${r.score.toFixed(2)}${r.best != null && (r.smoothed ?? r.score) >= r.best ? ' — new best' : ''}`);
   });
   es.addEventListener('iteration', (e) => {
     const r = JSON.parse(e.data);
@@ -490,10 +500,76 @@ function connect() {
     $('phase-text').textContent = s.phase === 'playing' ? `Playing matches (${s.workers} workers)` : s.phase === 'learning' ? 'Learning from them'
       : s.phase === 'evaluating' ? 'Testing on unseen maps' : 'Finished';
     setStage(s.stage);
+    trainingDone = s.phase === 'done';
+    syncWakeLock();
   });
   es.onerror = () => { $('phase').className = 'pill phase offline'; $('phase-text').textContent = 'Trainer not running — retrying…'; };
 }
 connect();
+
+// ------------------------------------------------------------ keep awake
+
+/*
+ * A screen wake lock while training runs, so the display (and with it, on most systems, the machine)
+ * doesn't sleep through a long run. Browsers drop the lock whenever the tab is hidden, so it's taken
+ * again when the tab shows; it's let go once training finishes. The choice is remembered.
+ */
+const WAKE_KEY = 'train-view-wake';
+let wakeWanted = true;
+try { wakeWanted = localStorage.getItem(WAKE_KEY) !== 'off'; } catch { /* storage unavailable */ }
+let wakeLock = null;
+let wakeBusy = false;
+let trainingDone = false;
+/** The browser turned the last request down */
+let wakeRefused = false;
+const wakeSupported = 'wakeLock' in navigator;
+
+function showWake() {
+  const btn = $('wake');
+  const held = !!wakeLock && !wakeLock.released;
+  btn.classList.toggle('held', held);
+  btn.setAttribute('aria-pressed', String(wakeWanted));
+  $('wake-text').textContent = !wakeSupported ? 'Keep awake: not supported here'
+    : !wakeWanted ? 'Keep screen awake: off'
+      : held ? 'Keeping screen awake'
+        : trainingDone ? 'Keep screen awake (training finished)'
+          : document.visibilityState !== 'visible' ? 'Keep screen awake (tab hidden)'
+            : wakeRefused ? 'Keep awake: refused by the browser'
+              : 'Keep screen awake: waiting…';
+  btn.disabled = !wakeSupported;
+}
+
+async function syncWakeLock() {
+  if (!wakeSupported || wakeBusy) return showWake();
+  const want = wakeWanted && !trainingDone && document.visibilityState === 'visible';
+  const held = !!wakeLock && !wakeLock.released;
+  wakeBusy = true;
+  try {
+    if (want && !held) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', showWake);
+      wakeRefused = false;
+    } else if (!want && held) {
+      await wakeLock.release();
+      wakeLock = null;
+    }
+  } catch (err) {
+    // Refused (battery saver, policy, or the tab lost focus meanwhile): try again on the next change.
+    wakeRefused = true;
+    console.warn('Wake lock unavailable', err);
+  } finally {
+    wakeBusy = false;
+  }
+  showWake();
+}
+
+$('wake').addEventListener('click', () => {
+  wakeWanted = !wakeWanted;
+  try { localStorage.setItem(WAKE_KEY, wakeWanted ? 'on' : 'off'); } catch { /* storage unavailable */ }
+  syncWakeLock();
+});
+document.addEventListener('visibilitychange', syncWakeLock);
+syncWakeLock();
 </script>
 </body>
 </html>

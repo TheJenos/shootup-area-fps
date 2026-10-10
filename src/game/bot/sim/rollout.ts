@@ -35,6 +35,9 @@ export interface Stage {
  * Later stages keep some of the earlier modes in the mix: trained on one mode alone, the policy forgets how
  * to fight the moment a new mode's inputs show up (it happened at both TDM and CTF).
  */
+/** The shortest S&D training match (s): long enough for a few rounds */
+const SND_SECONDS = 300;
+
 export const STAGES: Stage[] = [
   { name: 'aim', modes: ['ffa'], sizes: ['s'], players: 4, dummies: 3, seconds: 45, guns: ['rifle'], snapshotShare: 0, scriptedShare: 0 },
   { name: 'duel', modes: ['ffa'], sizes: ['s', 'm'], players: 3, dummies: 0, seconds: 90, guns: ['rifle', 'rifle', 'rifle', 'deagle', 'shotgun', 'sniper'], snapshotShare: 0.2, scriptedShare: 0.35 },
@@ -42,7 +45,9 @@ export const STAGES: Stage[] = [
   { name: 'ctf', modes: ['ctf', 'ctf', 'ctf', 'tdm', 'ffa'], sizes: ['s', 'm', 'l'], players: 3, dummies: 0, seconds: 180, guns: ['rifle', 'rifle', 'rifle', 'sniper'], snapshotShare: 0.25, scriptedShare: 0.35 },
   // S&D: no respawns, so a death costs the round, and the bomb (not kills) decides it.
   { name: 'snd', modes: ['snd', 'snd', 'snd', 'ctf', 'tdm', 'ffa'], sizes: ['s', 'm', 'l'], players: 3, dummies: 0, seconds: 300, guns: ['rifle', 'rifle', 'rifle', 'deagle', 'sniper'], snapshotShare: 0.25, scriptedShare: 0.35 },
-  { name: 'mix', modes: ['ffa', 'tdm', 'ctf', 'ctf', 'snd', 'snd'], sizes: ['s', 'm', 'l'], players: 3, dummies: 0, seconds: 150, guns: ['rifle', 'rifle', 'rifle', 'deagle', 'shotgun', 'sniper'], snapshotShare: 0.25, scriptedShare: 0.3 },
+  // An even share of play for every mode (S&D matches last twice as long, so they come up half as often): with
+  // FFA at one match in eight of the time, its held-out K/D slid from 0.85 to 0.56 in 10M steps.
+  { name: 'mix', modes: ['ffa', 'ffa', 'tdm', 'tdm', 'ctf', 'ctf', 'snd'], sizes: ['s', 'm', 'l'], players: 3, dummies: 0, seconds: 150, guns: ['rifle', 'rifle', 'rifle', 'deagle', 'shotgun', 'sniper'], snapshotShare: 0.25, scriptedShare: 0.3 },
 ];
 
 export const stageByName = (name: string): Stage => {
@@ -127,7 +132,9 @@ export class Rollout {
       players: mode === 'ffa' ? stage.players : Math.max(1, Math.round(stage.players * (0.67 + rand() * 0.66))),
       dummies: mode === 'ffa' ? stage.dummies : 0,
       gun: pick(stage.guns, rand),
-      seconds: stage.seconds,
+      // An S&D round alone can take 2½ minutes (freeze, attack clock, fuse): shorter matches end before
+      // rounds are decided, so the round rewards that teach the bomb never come.
+      seconds: mode === 'snd' ? Math.max(stage.seconds, SND_SECONDS) : stage.seconds,
     }, rand);
     const opponentRole = (): Role => {
       const r = rand();

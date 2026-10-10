@@ -39,6 +39,7 @@ import {
   MELEE_RANGE, MODES, MVP_TIME, RESULTS_TIME, TEAMS, TEAM_INFO, gunGameGun, otherTeam, teamSpawns,
 } from './modes';
 import { MomentTracker } from './moments';
+import { roundSpawn, spawnSalt } from './spawnPlan';
 import { ReplayDirector, ReplayRecorder } from './replay';
 import { RoomConnection, isBotId, randomId } from '../net/network';
 import { BotHost } from './bot/botHost';
@@ -1185,6 +1186,7 @@ export class Game {
       creditKill: (killerId, victimTeam) => this.creditKiller(killerId, victimTeam),
       finishRound: (g, winner, name, reason) => this.finishRound(g, winner, name, reason),
       sites: () => this.siteSpots(),
+      roundSpawn: (id, team) => this.roundSpawnFor(id, team),
       endSndRound: (g, winner, why) => this.endSndRound(g, winner, why),
       headcount: () => this.headcount(),
       maxDamage,
@@ -1670,7 +1672,7 @@ export class Game {
     this.leadKnown = false;
     this.clearAbilities();
     this.hud.update({ myMatch: this.myMatch });
-    this.respawn();
+    this.respawn(this.roundSpawnFor(this.playerId, this.team));
     this.bots.startRound();
     this.cloakUntil = 0;
     this.hud.update({ cloaked: false });
@@ -2418,14 +2420,14 @@ export class Game {
     this.stopKillcam();
     if (this.alive) {
       // Survivors keep their guns and abilities.
-      const spawn = this.pickSpawn();
+      const spawn = this.roundSpawnFor(this.playerId, this.team) ?? this.pickSpawn();
       this.player.teleport(spawn, Math.atan2(spawn.x, spawn.z));
       this.hp = this.rules.health;
       this.hitSources.clear();
       this.hud.update({ hp: this.hp });
       void this.net.sendState({ ...this.poseState(), hp: this.hp });
     } else {
-      this.respawn();
+      this.respawn(this.roundSpawnFor(this.playerId, this.team));
     }
     const attacking = this.team === s.atk;
     const title = sidesSwapped(s.n, this.rules.limit) ? 'SIDES SWITCHED' : `ROUND ${s.n + 1}`;
@@ -2874,9 +2876,10 @@ export class Game {
     this.player.speedMultiplier = 1;
   }
 
-  private respawn(): void {
+  /** @param at where to come back (a round start's planned spot); otherwise picked here */
+  private respawn(at: THREE.Vector3 | null = null): void {
     this.stopWatching();
-    const spawn = this.pickSpawn();
+    const spawn = at ?? this.pickSpawn();
     this.player.teleport(spawn, Math.atan2(spawn.x, spawn.z));
     this.hp = this.rules.health;
     this.alive = true;
@@ -2896,6 +2899,30 @@ export class Game {
       const p = r.position;
       yield { id, x: p.x, y: p.y, z: p.z, stance: data?.stance ?? 'stand', solid: r.alive && !data?.spec && !this.playback };
     }
+  }
+
+  /**
+   * Where `id` (us or a bot we play) starts a round, so that everyone starting at once spreads over the map
+   * (FFA) or their team's spawns, the same on every client (see spawnPlan.ts). Null if there are no spawns.
+   */
+  private roundSpawnFor(id: string, team: Team | null): THREE.Vector3 | null {
+    // Free-for-all: the map's spawns sit mostly around the two team bases, so the pickup spots (reachable,
+    // clear, all over the map) are starting places too. Team modes start at their own base.
+    const points = team
+      ? this.world.spawns.filter((s) => s.team === team)
+      : [...this.world.spawns, ...this.world.pickupSpots.map((p) => ({ pos: new THREE.Vector3(p.x, p.y, p.z), team: null }))];
+    const teamOf = (pid: string, p: PlayerState) => (pid === this.playerId ? this.team : p.team ?? null);
+    const ids = Object.entries(this.players)
+      .filter(([pid, p]) => (pid === this.playerId ? !this.spectating : !p.spec) && (!team || teamOf(pid, p) === team))
+      .map(([pid]) => pid);
+    if (!ids.includes(id)) ids.push(id);
+    const salt = spawnSalt(`${this.game.round}:${this.game.snd?.n ?? 0}:${this.mapSpec.seed}`);
+    const plan = roundSpawn(points.map((s) => ({ x: s.pos.x, z: s.pos.z })), ids, id, salt);
+    if (!plan) return null;
+    const at = points[plan.index]!.pos.clone();
+    at.x += plan.dx;
+    at.z += plan.dz;
+    return at;
   }
 
   /** Prefer spawn points far away from living enemies, and never one someone is standing on. */

@@ -4,7 +4,7 @@ import { scriptedAction } from '../scripted';
 import { pushAction, shouldPush, shouldTravel } from '../objective';
 import { AIM_SKILLS, AimController, type BotSkill } from '../aim';
 import type { Policy } from '../policy';
-import type { GameMode } from '../../../types';
+import type { GameMode, GunKind } from '../../../types';
 import type { MapSize } from '../../mapgen';
 
 /*
@@ -32,9 +32,9 @@ export interface EvalResult {
  * opponents). `opponent` null: the scripted bot.
  */
 export function evaluateMatch(
-  policy: Policy, opponent: Policy | null, mode: GameMode, seed: string, size: MapSize = 's', tier: BotSkill = 'hard',
+  policy: Policy, opponent: Policy | null, mode: GameMode, seed: string, size: MapSize = 's', tier: BotSkill = 'hard', gun: GunKind = 'rifle',
 ): EvalResult {
-  const arena = new Arena({ seed, size, mode, players: 3, seconds: mode === 'snd' ? 360 : mode === 'ctf' ? 240 : 150 });
+  const arena = new Arena({ seed, size, mode, players: 3, gun, seconds: mode === 'snd' ? 360 : mode === 'ctf' ? 240 : 150 });
   const obs = new Float32Array(OBS_SIZE);
   const mine = (i: number) => (mode === 'ffa' ? i === 0 : arena.agents[i]!.team === 'red');
   // Policies aim with the aim model at `tier` (the scripted bot aims its own way).
@@ -74,7 +74,11 @@ export function evaluateMatch(
   return result;
 }
 
-/** Per-mode K/D (capped at 3) averaged over the modes played, plus a bit for CTF capture and S&D round margins: one number to rank policies by. */
+/**
+ * Per-mode K/D (capped at 3) averaged over the modes played, plus up to ±0.5 for the CTF capture and S&D
+ * round margins (as a share of everything scored, so one lopsided set of matches can't swing it by more):
+ * one number to rank policies by.
+ */
 export function evalScore(results: readonly EvalResult[]): { score: number; byMode: Record<string, { kd: number; kills: number; deaths: number; captures: number; against: number }> } {
   const byMode: Record<string, { kd: number; kills: number; deaths: number; captures: number; against: number }> = {};
   for (const r of results) {
@@ -89,7 +93,8 @@ export function evalScore(results: readonly EvalResult[]): { score: number; byMo
   for (const mode of modes) {
     const m = byMode[mode]!;
     m.kd = m.kills / Math.max(1, m.deaths);
-    sum += Math.min(3, m.kd) + (mode === 'ctf' || mode === 'snd' ? 0.25 * (m.captures - m.against) : 0);
+    const margin = (m.captures - m.against) / Math.max(1, m.captures + m.against);
+    sum += Math.min(3, m.kd) + (mode === 'ctf' || mode === 'snd' ? 0.5 * margin : 0);
   }
   return { score: modes.length ? sum / modes.length : 0, byMode };
 }

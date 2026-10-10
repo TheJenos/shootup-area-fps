@@ -105,6 +105,7 @@ function room(seed = 'GEARTEST') {
     creditKill: () => {},
     finishRound: () => {},
     sites: () => null,
+    roundSpawn: () => null,
     endSndRound: () => {},
     headcount: () => ({ red: { size: 0, alive: 0 }, blue: { size: 0, alive: 0 } }),
     maxDamage: () => 200,

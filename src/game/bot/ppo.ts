@@ -1,5 +1,5 @@
 import { Adam, Mlp, type MlpJson } from './nn';
-import { BUTTONS, POLICY_OUT, Policy, ppoGradient, type BotAction, type PolicyJson } from './policy';
+import { BUTTONS, POLICY_OUT, Policy, clampAimLogStd, ppoGradient, type BotAction, type PolicyJson } from './policy';
 import { OBS_SIZE } from './observe';
 
 /*
@@ -295,7 +295,7 @@ export class PpoTrainer {
         const g = await compute(order.subarray(start, start + mb), mb);
         this.adamPolicy.step(policy.net.params, g.policy, lr, cfg.maxGradNorm);
         this.adamStd.step(policy.logStd, g.logStd, lr);
-        for (let d = 0; d < policy.logStd.length; d++) policy.logStd[d] = Math.max(-3, Math.min(0.5, policy.logStd[d]!));
+        for (let d = 0; d < policy.logStd.length; d++) policy.logStd[d] = clampAimLogStd(policy.logStd[d]!);
         this.adamValue.step(this.value.params, g.value, lr, cfg.maxGradNorm);
         stats.policyLoss += g.policyLoss / g.rows;
         stats.valueLoss += g.valueLoss / g.rows;

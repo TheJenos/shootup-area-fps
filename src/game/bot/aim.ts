@@ -10,6 +10,10 @@ import type { GunKind, Stance } from '../../types';
  *
  * The policy still decides how to move and whether it wants to shoot; the trigger is only pulled when
  * the crosshair is actually on the target.
+ *
+ * It also aims down the sights the way a player does: at range (any range with the scoped sniper) the
+ * sights come up while it engages, tightening the gun's spread as the player's do (and slowing it down:
+ * callers set the mover's `aiming`). It holds fire until they're up. Better bots do this more reliably.
  */
 
 export interface AimSkill {
@@ -25,17 +29,26 @@ export interface AimSkill {
   maxTurn: number;
   /** Chance an engagement goes for the head */
   headChance: number;
+  /** Chance an engagement at range is fought down the sights (the sniper always is) */
+  ads: number;
 }
 
 export type BotSkill = 'easy' | 'normal' | 'hard' | 'expert';
 export const BOT_SKILLS: BotSkill[] = ['easy', 'normal', 'hard', 'expert'];
 
 export const AIM_SKILLS: Record<BotSkill, AimSkill> = {
-  easy: { reaction: 0.55, initialError: 0.25, settle: 0.6, trackError: 0.06, maxTurn: 4, headChance: 0 },
-  normal: { reaction: 0.35, initialError: 0.15, settle: 0.4, trackError: 0.035, maxTurn: 6, headChance: 0.05 },
-  hard: { reaction: 0.22, initialError: 0.09, settle: 0.25, trackError: 0.02, maxTurn: 9, headChance: 0.15 },
-  expert: { reaction: 0.14, initialError: 0.05, settle: 0.15, trackError: 0.01, maxTurn: 14, headChance: 0.3 },
+  easy: { reaction: 0.55, initialError: 0.25, settle: 0.6, trackError: 0.06, maxTurn: 4, headChance: 0, ads: 0.4 },
+  normal: { reaction: 0.35, initialError: 0.15, settle: 0.4, trackError: 0.035, maxTurn: 6, headChance: 0.05, ads: 0.75 },
+  hard: { reaction: 0.22, initialError: 0.09, settle: 0.25, trackError: 0.02, maxTurn: 9, headChance: 0.15, ads: 0.95 },
+  expert: { reaction: 0.14, initialError: 0.05, settle: 0.15, trackError: 0.01, maxTurn: 14, headChance: 0.3, ads: 1 },
 };
+
+/** Targets at least this far away (m) are fought down the sights: the scope always, the shotgun only far out */
+export const ADS_RANGE: Record<GunKind, number> = { rifle: 8, deagle: 8, sniper: 0, shotgun: 15 };
+/** How fast the sights come up and go down: the player's rate (weapon.ts ADS_SPEED) */
+const ADS_RATE = 14;
+/** The trigger waits until the sights are this far up */
+const ADS_READY = 0.8;
 
 /** Someone the bot could aim at (feet position) */
 export interface AimCandidate {
@@ -60,6 +73,8 @@ export interface AimSelf {
   gun: GunKind;
   /** 0..1: nerves make a hurt bot shakier */
   shaky: number;
+  /** Reloading: the sights stay down */
+  reloading?: boolean;
 }
 
 /** A lost target is still aimed at (where it was) this long, in case it pops back out */
@@ -91,6 +106,9 @@ export class AimController {
   onTarget = false;
   /** Engaged but still reacting: nothing happens yet */
   reacting = false;
+  /** How far the sights are up (0..1), and whether this engagement is fought down them */
+  ads = 0;
+  private adsChoice = false;
 
   constructor(public skill: AimSkill, private readonly rand: () => number = Math.random) {}
 
@@ -101,6 +119,7 @@ export class AimController {
 
   reset(): void {
     this.target = null;
+    this.ads = 0;
     this.lastPos = null;
     this.last = null;
     this.onTarget = false;
@@ -124,6 +143,11 @@ export class AimController {
     this.onTarget = false;
     this.reacting = false;
     const t = pick ?? this.lastPos;
+    // Sights up at range while engaged (down while reloading, or with nobody to aim at).
+    const adsWanted = !!this.target && !!t && this.adsChoice && !self.reloading
+      && Math.hypot(t.x - self.x, t.z - self.z) >= ADS_RANGE[self.gun];
+    this.ads += ((adsWanted ? 1 : 0) - this.ads) * (1 - Math.exp(-ADS_RATE * dt));
+    if (!adsWanted && this.ads < 0.01) this.ads = 0;
     if (!this.target || !t) return { yaw: self.yaw, pitch: self.pitch };
 
     // Reacting: the crosshair hasn't moved yet.
@@ -166,8 +190,11 @@ export class AimController {
     if (pick) {
       const dist = Math.hypot(t.x - self.x, aimY - self.y, t.z - self.z);
       const half = this.head ? HEAD_HALF : BODY_HALF;
-      const cone = Math.atan2(half, Math.max(dist, 0.5)) + GUNS[self.gun].spread * 0.5;
-      this.onTarget = Math.abs(wrapAngle(targetYaw - yaw)) < cone * 1.2 && Math.abs(targetPitch - pitch) < cone * 2;
+      const def = GUNS[self.gun];
+      const cone = Math.atan2(half, Math.max(dist, 0.5)) + def.spread * (1 + (def.adsSpread - 1) * this.ads) * 0.5;
+      // Going down the sights: wait for them to come up rather than firing from the hip.
+      const ready = !adsWanted || this.ads >= ADS_READY;
+      this.onTarget = ready && Math.abs(wrapAngle(targetYaw - yaw)) < cone * 1.2 && Math.abs(targetPitch - pitch) < cone * 2;
     }
     return { yaw, pitch };
   }
@@ -191,6 +218,8 @@ export class AimController {
     this.last = null;
     this.angSpeed = 0;
     this.head = this.rand() < this.skill.headChance;
+    // Nobody hits anything with an unscoped sniper: that one is always fought through the scope.
+    this.adsChoice = self.gun === 'sniper' || this.rand() < this.skill.ads;
     // The first aim is off by more at range and on the move.
     const dist = Math.hypot(c.x - self.x, c.z - self.z);
     const size = this.skill.initialError * (1 + dist / 40) * (1 + self.speed / 8) * (1 + self.shaky);

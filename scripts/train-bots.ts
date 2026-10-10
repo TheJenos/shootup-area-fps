@@ -208,10 +208,14 @@ interface Checkpoint {
   /** Best held-out evaluation score so far (its policy is in best.json), and the modes it was scored on */
   bestScore?: number;
   bestModes?: string;
+  /** The last few evaluation scores (one swings by ±0.4 from the next: the best is judged on their average) */
+  recentScores?: number[];
 }
 
 /** Evaluate every this many iterations, on held-out maps against the scripted bot */
 const EVAL_EVERY = 25;
+/** Evaluations averaged to judge the best policy */
+const SCORE_WINDOW = 3;
 /** Matches per mode in an evaluation (3 swung by ±0.3 K/D from one to the next) */
 const EVAL_MATCHES = 6;
 
@@ -415,21 +419,26 @@ async function main(): Promise<void> {
       const { score, byMode } = evalScore(results);
       // Scores over different modes don't compare: when a stage adds a mode, the old best is kept aside
       // and the new set starts its own.
-      const modeKey = modes.join('-');
+      // (The version: scores from before the bounded margins and averaging don't compare either.)
+      const modeKey = `${modes.join('-')}-v2`;
       if (ckpt.bestModes !== modeKey) {
         if (ckpt.bestModes && existsSync(bestFile)) writeFileSync(join(dir, `best-${ckpt.bestModes}.json`), readFileSync(bestFile));
         ckpt.bestModes = modeKey;
         ckpt.bestScore = undefined;
+        ckpt.recentScores = [];
       }
+      // Judged on the average of the last few evaluations, so a lucky one doesn't become the shipped policy.
+      ckpt.recentScores = [...(ckpt.recentScores ?? []), score].slice(-SCORE_WINDOW);
+      const smoothed = ckpt.recentScores.reduce((a, b) => a + b, 0) / ckpt.recentScores.length;
       const best = ckpt.bestScore ?? -Infinity;
-      const improved = score > best;
+      const improved = ckpt.recentScores.length >= SCORE_WINDOW && smoothed > best;
       if (improved) {
-        ckpt.bestScore = score;
-        writeFileSync(bestFile, JSON.stringify({ policy: policyJson, steps: ckpt.steps, stage: ckpt.stage, eval: { score, byMode } }));
+        ckpt.bestScore = smoothed;
+        writeFileSync(bestFile, JSON.stringify({ policy: policyJson, steps: ckpt.steps, stage: ckpt.stage, eval: { score, smoothed, byMode } }));
       }
       const summary = Object.entries(byMode).map(([m, r]) => `${m} K/D ${r.kd.toFixed(2)}${m === 'ctf' ? ` caps ${r.captures}-${r.against}` : m === 'snd' ? ` rounds ${r.captures}-${r.against}` : ''}`).join(' · ');
-      console.log(`  eval: ${summary} · score ${score.toFixed(2)}${improved ? ' (best so far: saved)' : ` (best ${best.toFixed(2)})`}`);
-      const evalRow = { t: Date.now(), type: 'eval', iteration: ckpt.iteration, steps: ckpt.steps, stage: ckpt.stage, score, best: Math.max(score, best), byMode };
+      console.log(`  eval: ${summary} · score ${score.toFixed(2)}, last ${ckpt.recentScores.length} ${smoothed.toFixed(2)}${improved ? ' (best so far: saved)' : Number.isFinite(best) ? ` (best ${best.toFixed(2)})` : ''}`);
+      const evalRow = { t: Date.now(), type: 'eval', iteration: ckpt.iteration, steps: ckpt.steps, stage: ckpt.stage, score, smoothed, best: improved ? smoothed : Number.isFinite(best) ? best : null, byMode };
       appendFileSync(logFile, `${JSON.stringify(evalRow)}\n`);
       view?.broadcast('eval', evalRow);
       if (improved) {

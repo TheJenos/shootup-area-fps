@@ -129,6 +129,16 @@ const sigmoid = (x: number) => 1 / (1 + Math.exp(-x));
 /** log σ(x), stable for large |x| */
 const logSigmoid = (x: number) => (x >= 0 ? -Math.log1p(Math.exp(-x)) : x - Math.log1p(Math.exp(x)));
 
+/**
+ * Bounds of the aim Gaussians' log std. The policy's aim only matters with an enemy known but out of
+ * sight (in view, the aim model aims), where nothing rewards a steady view; so the noise isn't pushed up by
+ * the entropy bonus, and is capped: left to it, it drifted to the old cap (std 1.65, every turn a random
+ * full-speed flick) between 50M and 110M steps, and lowering it again was worth more than those steps.
+ * The cap is where held-out play was best (40 matches each: -1 scored 0.49, -1.6 0.65, -2.2 0.56, -2.8 0.60).
+ */
+export const AIM_LOG_STD = { min: -3, max: -1.6 } as const;
+export const clampAimLogStd = (v: number) => Math.max(AIM_LOG_STD.min, Math.min(AIM_LOG_STD.max, v));
+
 export class Policy {
   readonly net: Mlp;
   /** State-independent log standard deviation of the aim Gaussians */
@@ -138,7 +148,7 @@ export class Policy {
 
   constructor(net?: Mlp, logStd?: Float32Array, norm?: ObsNorm) {
     this.net = net ?? new Mlp([OBS_SIZE, ...HIDDEN, POLICY_OUT]);
-    this.logStd = logStd ?? new Float32Array(AIM_DIMS).fill(-1.2);
+    this.logStd = logStd ?? new Float32Array(AIM_DIMS).fill(AIM_LOG_STD.max);
     this.norm = norm ?? new ObsNorm();
   }
 
@@ -217,7 +227,8 @@ export class Policy {
     if (j.version !== OBS_VERSION || j.obsSize !== OBS_SIZE) {
       throw new Error(`Policy was trained for observation v${j.version} (${j.obsSize}); this build uses v${OBS_VERSION} (${OBS_SIZE})`);
     }
-    return new Policy(Mlp.fromJSON(j.net), Float32Array.from(j.logStd), ObsNorm.fromJSON(j.norm));
+    // Policies saved before the cap get it on load (the game's bots and resumed training alike).
+    return new Policy(Mlp.fromJSON(j.net), Float32Array.from(j.logStd, clampAimLogStd), ObsNorm.fromJSON(j.norm));
   }
 }
 
@@ -225,7 +236,8 @@ export class Policy {
  * The PPO loss for one sample, and its gradient with respect to the policy outputs (written into
  * `gOut` at `o`) and the aim log-stds (added to `gLogStd`). Returns [loss, entropy, clipped?].
  *
- * loss = -min(r·A, clip(r, 1±ε)·A) - entCoef · entropy, with r = exp(logp - oldLogp)
+ * loss = -min(r·A, clip(r, 1±ε)·A) - entCoef · entropy, with r = exp(logp - oldLogp); the entropy is the
+ * move and button heads' (the aim noise gets no bonus, see AIM_LOG_STD)
  */
 export function ppoGradient(
   policy: Policy, out: Float32Array, o: number, a: BotAction, aimRaw: readonly number[],
@@ -279,10 +291,10 @@ export function ppoGradient(
     const ls = policy.logStd[d]!;
     const std = Math.exp(ls);
     const z = (aimRaw[d]! - out[o + AIM_OFFSET + d]!) / std;
-    entropy += ls + 0.5 * (1 + LOG_2PI);
+    // (Its entropy isn't counted: no bonus for it, see AIM_LOG_STD.)
     gOut[o + AIM_OFFSET + d]! += scale * dLogp * (z / std);
-    // d logp/d logStd = z² - 1 ; d H/d logStd = 1
-    gLogStd[d]! += scale * (dLogp * (z * z - 1) - entCoef);
+    // d logp/d logStd = z² - 1. No entropy bonus here (see AIM_LOG_STD).
+    gLogStd[d]! += scale * dLogp * (z * z - 1);
   }
   return [loss, entropy, clipped];
 }

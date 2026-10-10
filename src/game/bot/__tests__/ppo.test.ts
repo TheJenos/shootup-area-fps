@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PpoTrainer, Trajectory, emptyBatch, concatBatches, DEFAULT_PPO } from '../ppo';
-import { MAX_TURN } from '../policy';
+import { AIM_LOG_STD, MAX_TURN, Policy } from '../policy';
 import { OBS_LAYOUT, OBS_SIZE } from '../observe';
 
 function lcg(seed = 1): () => number {
@@ -85,4 +85,33 @@ describe('PPO', () => {
     expect(after).toBeGreaterThan(before + 5);
     // (Seeded, so it never flakes on the result, but it's CPU-heavy: slow when the whole suite runs at once.)
   }, 120_000);
+
+  it('leaves the aim noise alone when the aim earns nothing (no entropy bonus there)', async () => {
+    const rand = lcg(4);
+    const trainer = new PpoTrainer(undefined, undefined, { ...DEFAULT_PPO, minibatch: 256 });
+    const start = Float32Array.from(trainer.policy.logStd);
+    const raw = new Float32Array(OBS_SIZE);
+    for (let iter = 0; iter < 6; iter++) {
+      const traj = new Trajectory();
+      for (let i = 0; i < 1024; i++) {
+        raw.fill(0);
+        raw[0] = rand() - 0.5;
+        const obs = trainer.policy.normalize(raw);
+        const s = trainer.policy.sample(obs, {}, rand);
+        traj.push(obs, s.action, s.aimRaw, s.logp, trainer.valueOf(obs));
+        traj.reward(0);
+      }
+      const b = emptyBatch(traj.length);
+      traj.flush(b, 0, 0, trainer.cfg);
+      await trainer.update(b, undefined, rand);
+    }
+    // With the bonus, every update pushed it up (it drifted to the cap in training).
+    for (let d = 0; d < start.length; d++) expect(trainer.policy.logStd[d]).toBeLessThan(start[d]! + 0.05);
+  }, 60_000);
+
+  it('caps the aim noise of policies saved before the cap', () => {
+    const json = new Policy().toJSON();
+    json.logStd = [0.03, 0.5];
+    for (const v of Policy.fromJSON(json).logStd) expect(v).toBeCloseTo(AIM_LOG_STD.max, 5);
+  });
 });

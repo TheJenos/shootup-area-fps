@@ -85,6 +85,8 @@ export interface BotHostApi {
   groundBelow(x: number, y: number, z: number): number;
   terrainAt(x: number, z: number): number;
   spawns(): readonly { pos: THREE.Vector3; team: Team | null }[];
+  /** Where a bot starts a round: everyone's planned spot, so a round's players start spread out */
+  roundSpawn(id: string, team: Team | null): THREE.Vector3 | null;
   colorFor(id: string): string;
   /** A kill by `killerId` of someone on `victimTeam`: their kill count, the team score, the round */
   creditKill(killerId: string, victimTeam: Team | null): void;
@@ -378,7 +380,7 @@ export class BotHost {
       bot.seenKills = 0;
       bot.statsKey = '';
       bot.mover.speedMultiplier = 1;
-      this.respawn(bot, { kills: 0, deaths: 0, captures: 0, streak: 0, best: 0, damage: 0, shots: 0, hits: 0, headshots: 0, shield: false, cloak: false });
+      this.respawn(bot, { kills: 0, deaths: 0, captures: 0, streak: 0, best: 0, damage: 0, shots: 0, hits: 0, headshots: 0, shield: false, cloak: false }, this.api.roundSpawn(bot.id, bot.team));
     }
   }
 
@@ -387,12 +389,13 @@ export class BotHost {
     for (const bot of this.bots.values()) {
       bot.channel = 0;
       bot.patrol.target = null;
+      const at = this.api.roundSpawn(bot.id, bot.team);
       if (!bot.alive) {
         bot.brain.reset();
-        this.respawn(bot);
+        this.respawn(bot, {}, at);
         continue;
       }
-      this.placeAtSpawn(bot);
+      this.placeAtSpawn(bot, at);
       void this.api.net.sendStateAs(bot.id, { ...this.pose(bot), gun: bot.gun, hp: bot.hp, alive: true });
     }
   }
@@ -509,7 +512,7 @@ export class BotHost {
   private pose(bot: HostedBot) {
     const p = bot.mover.position;
     return {
-      x: r2(p.x), y: r2(p.y), z: r2(p.z), yaw: r3(bot.yaw), pitch: r3(bot.pitch), stance: bot.mover.stance, aim: false, rl: bot.reloadLeft > 0,
+      x: r2(p.x), y: r2(p.y), z: r2(p.z), yaw: r3(bot.yaw), pitch: r3(bot.pitch), stance: bot.mover.stance, aim: bot.alive && bot.brain.aim.ads > 0.5, rl: bot.reloadLeft > 0,
       th: bot.gear.throws,
     };
   }
@@ -542,7 +545,9 @@ export class BotHost {
         ? { x: mine.mover.position.x, y: mine.mover.position.y, z: mine.mover.position.z, stance: mine.mover.stance, alive: mine.alive }
         : api.bodyOf(id);
       if (!body) continue;
-      out.push({ id, ...body, hp: mine ? mine.hp : p.hp, maxHp, team: mine ? mine.team : p.team ?? null, carrying: carriers.has(id) });
+      out.push({
+        id, ...body, hp: mine ? mine.hp : p.hp, maxHp, team: mine ? mine.team : p.team ?? null, carrying: carriers.has(id), human: !mine && !p.bot,
+      });
     }
     return out;
   }
@@ -637,7 +642,7 @@ export class BotHost {
     else bot.ammo--;
     this.endCloak(bot);
     bot.cooldown = def.fireInterval;
-    const spread = spreadOf(bot.gun, bot.mover.horizontalSpeed > 1, bot.mover.onGround, bot.mover.stance, bot.burst);
+    const spread = spreadOf(bot.gun, bot.mover.horizontalSpeed > 1, bot.mover.onGround, bot.mover.stance, bot.burst, bot.brain.aim.ads);
     bot.burst++;
     const eye = this.eye(bot);
     const look = lookDir(bot.yaw, bot.pitch);
@@ -819,7 +824,8 @@ export class BotHost {
     if (killerId && killerId !== bot.id) api.creditKill(killerId, bot.team);
   }
 
-  private placeAtSpawn(bot: HostedBot): void {
+  /** @param at a round start's planned spot; otherwise the one farthest from enemies that nobody's standing on */
+  private placeAtSpawn(bot: HostedBot, at: THREE.Vector3 | null = null): void {
     const { api } = this;
     const others = this.others(bot).filter((b) => b.alive);
     const enemies = others.filter((b) => this.isEnemyOf(bot, b.id));
@@ -829,8 +835,8 @@ export class BotHost {
     const points = free.length ? free : all;
     const scored = points.map((p) => ({ p, d: enemies.length ? Math.min(...enemies.map((e) => Math.hypot(e.x - p.x, e.z - p.z))) : Math.random() * 100 }));
     scored.sort((a, b) => b.d - a.d);
-    const pick = scored[Math.floor(Math.random() * Math.min(3, scored.length))]?.p ?? new THREE.Vector3();
-    bot.mover.teleport(pick.clone().add(new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5)));
+    const pick = at ?? scored[Math.floor(Math.random() * Math.min(3, scored.length))]?.p ?? new THREE.Vector3();
+    bot.mover.teleport(at ? at.clone() : pick.clone().add(new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5)));
     bot.yaw = Math.atan2(pick.x, pick.z);
     bot.pitch = 0;
     bot.hp = api.rules().health;
@@ -842,10 +848,12 @@ export class BotHost {
     bot.ammo = GUNS[bot.gun].mag;
     bot.reloadLeft = bot.cooldown = bot.burst = 0;
     bot.brain.steering.reset();
+    bot.brain.aim.reset();
+    bot.mover.aiming = false;
   }
 
-  private respawn(bot: HostedBot, extra: Partial<PlayerState> = {}): void {
-    this.placeAtSpawn(bot);
+  private respawn(bot: HostedBot, extra: Partial<PlayerState> = {}, at: THREE.Vector3 | null = null): void {
+    this.placeAtSpawn(bot, at);
     void this.api.net.sendStateAs(bot.id, { ...this.pose(bot), gun: bot.gun, hp: bot.hp, alive: true, ...extra });
   }
 
@@ -863,8 +871,10 @@ export class BotHost {
     const hurt = 1 - bot.hp / this.api.rules().health;
     const aimed = bot.brain.aim.update(dt, this.clock, {
       x: eye.x, y: eye.y, z: eye.z, yaw: bot.yaw, pitch: bot.pitch, speed: bot.mover.horizontalSpeed, gun: bot.gun,
-      shaky: bot.brain.personality.nerves * hurt,
+      shaky: bot.brain.personality.nerves * hurt, reloading: bot.reloadLeft > 0,
     }, visible, this.clock - memory.hurtAt < 2 ? memory.hurtBy : null);
+    // Down the sights: slower on its feet and no sprinting, like a player.
+    bot.mover.aiming = bot.brain.aim.ads > 0.5;
     if (!bot.brain.aim.engaged) return false;
     bot.yaw = aimed.yaw;
     bot.pitch = aimed.pitch;

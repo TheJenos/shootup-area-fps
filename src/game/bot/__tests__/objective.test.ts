@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { loadPhysics } from '../../physics';
 import { Arena } from '../sim/arena';
 import { OBS_SIZE } from '../observe';
-import { goalFor, newPatrol } from '../objective';
+import { defendedSite, goalFor, newPatrol } from '../objective';
 import type { BodyView, CtfView } from '../observe';
 import type { BotAction } from '../policy';
 
@@ -155,35 +155,62 @@ describe('travelling', () => {
   });
 });
 
-describe('pushing (CTF)', () => {
-  it('keeps heading for the objective with enemies around, and only stands to fight one right on top of it', async () => {
+describe('pushing (CTF / S&D)', () => {
+  it('keeps heading for the objective past enemies further off, and stands to fight one close by', async () => {
     const { OBS_LAYOUT } = await import('../observe');
     const { shouldPush, pushAction } = await import('../objective');
     const obs = new Float32Array(OBS_SIZE);
     const E = OBS_LAYOUT.enemies;
     obs[OBS_LAYOUT.attack + 1] = 1; // the route goes straight ahead
-    obs[OBS_LAYOUT.attack + 2] = 20 / 60; // 20 m to go
+    obs[OBS_LAYOUT.attack + 2] = 40 / 60; // 40 m to go
     obs[OBS_LAYOUT.attack + 3] = 1;
     obs[E] = 1; // an enemy in view...
-    obs[E + 4] = 10 / 60; // ...10 m away
+    obs[E + 4] = 30 / 60; // ...30 m away
     expect(shouldPush(obs)).toBe(true);
     const fight = { move: 3, sprint: true, jump: false, crouch: false, fire: true, aimYaw: 0.2, aimPitch: 0 } as unknown as BotAction;
     const a = pushAction(fight, obs);
-    // Walks the route (forward), shooting, not sprinting while someone's in view.
+    // Walks the route (forward), shooting as it goes.
     expect(a.move).toBe(1);
     expect(a.fire).toBe(true);
-    expect(a.sprint).toBe(false);
-    // 4 m away: stand and fight.
-    obs[E + 4] = 4 / 60;
+    // 10 m away: stand and fight (running past people shooting at it got bots killed).
+    obs[E + 4] = 10 / 60;
     expect(shouldPush(obs)).toBe(false);
-    // In view but far, or only remembered: sprint.
-    obs[E + 4] = 30 / 60;
-    expect(pushAction(fight, obs).sprint).toBe(true);
+    // Only remembered, far off: sprint on.
     obs[E] = 0;
     obs[E + 4] = 30 / 60;
     expect(pushAction(fight, obs).sprint).toBe(true);
     // At the goal (a defender at its spot): the policy fights.
     obs[OBS_LAYOUT.attack + 2] = 2 / 60;
     expect(shouldPush(obs)).toBe(false);
+  });
+});
+
+describe('the objective layer (S&D defenders)', () => {
+  const sites = { a: { x: -30, y: 0, z: 30 }, b: { x: 30, y: 0, z: 30 } };
+  const self = (id: string, x = 0, z = 10) => ({ id, team: 'red' as const, x, y: 0, z, carrying: false });
+  const bot = (id: string, x = 0, z = 10, alive = true) => body(id, 'red', x, z, alive);
+  const person = (id: string, x: number, z: number) => ({ ...body(id, 'red', x, z), human: true });
+
+  it('splits two bots over both sites', () => {
+    expect(defendedSite(self('b1'), [bot('b2')], sites)).not.toBe(defendedSite(self('b2'), [bot('b1')], sites));
+  });
+
+  it('covers both sites with three, and spreads back when a guard dies', () => {
+    const team = ['b1', 'b2', 'b3'];
+    const picks = team.map((id) => defendedSite(self(id), team.filter((m) => m !== id).map((m) => bot(m)), sites));
+    expect(new Set(picks)).toEqual(new Set(['a', 'b']));
+    // b1 (on A) is down: the other two take one site each.
+    const left = ['b2', 'b3'].map((id) => defendedSite(self(id), [bot('b1', 0, 10, false), bot(id === 'b2' ? 'b3' : 'b2')], sites));
+    expect(new Set(left)).toEqual(new Set(['a', 'b']));
+  });
+
+  it('takes the site a person is not holding', () => {
+    expect(defendedSite(self('b1'), [person('p1', -28, 30)], sites)).toBe('b');
+    // A second bot helps the person on A.
+    expect(defendedSite(self('b2'), [person('p1', -28, 30), bot('b1')], sites)).toBe('a');
+  });
+
+  it('a lone bot holds the closer site', () => {
+    expect(defendedSite(self('b1', 25, 20), [], sites)).toBe('b');
   });
 });
