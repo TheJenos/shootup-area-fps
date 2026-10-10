@@ -3,8 +3,9 @@
  * preview, and every client builds exactly the same map from the room's map spec (seed, size and
  * generator version).
  *
- * A map is designed as a lane graph first (two bases, two or three lanes, connectors, chokes,
- * overlooks), its terrain shaped from that design, then dressed by its biome. See generate.ts for
+ * A map's shape is designed first (outline.ts), then a lane graph fitted in it (two bases, two or
+ * three lanes, connectors, chokes, overlooks), its terrain shaped from that design, then dressed by
+ * its biome and walled in by buildings or cliffs. See generate.ts for
  * the pipeline. The CLASSIC seed is the original hand-made arena.
  */
 
@@ -21,13 +22,14 @@ export { PAINT } from './types';
 export { groundHeight, groundGradient, groundRange, rapierHeights } from './heightField';
 export { MAP_SIZES, SIZE_LABEL, isMapSize, specKey, type MapSize, type MapSpec } from './spec';
 export { THEMES } from './themes';
+export { insideOutline, outsideRects, type Outline } from './outline';
 export { CLASSIC_SEED };
 
 /**
  * Bump whenever any seed's map changes: rooms remember the version they were made with, and
  * clients on another version can't join them (they'd be playing on different maps).
  */
-export const GENERATOR_VERSION = 2;
+export const GENERATOR_VERSION = 3;
 export const SEED_MAX_LENGTH = 16;
 
 /** Seeds are case-insensitive letters and digits, so they're easy to read out and type. */

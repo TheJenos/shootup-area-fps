@@ -4,7 +4,8 @@
  * - Every lane, connector, base plateau, the middle and each overlook pad is a "feature" with a floor
  *   height (graph.ts). Inside a feature the ground is its floor.
  * - Away from the features the ground rises into ridges (with a little noise), so the ridge between
- *   two lanes hides each from the other, and toward the outer walls it rises into a rim.
+ *   two lanes hides each from the other, and toward the edge of the map's shape (outline.ts) it
+ *   rises into a rim; outside the shape it stays at the rim, under the buildings or cliffs.
  * - Some heights are pinned: the plateaus, the middle of every lane, and later the flat pad under
  *   each structure. Pinned heights are kept exactly, and everything else is pulled within reach
  *   of them so no slope is steeper than MAX_SLOPE: the lower and upper envelopes of the pins
@@ -18,6 +19,7 @@
 
 import { len, q, smoothstep, type Rect } from './dmath';
 import type { Graph, LaneSample } from './graph';
+import { edgeDistance, insideOutline, type Outline } from './outline';
 import type { Rng } from './rng';
 import { tPoint, tVertex, type Symmetry } from './symmetry';
 import { PAINT, type Ground } from './types';
@@ -87,8 +89,10 @@ export class Terrain {
   readonly floor: Float64Array;
   /** The middle strip of every lane and connector, kept clear of cover so there's always a way through */
   readonly core: Uint8Array;
+  /** Distance to the edge of the shape (0 on it and outside), up to 12 m */
+  readonly toEdge: Float64Array;
 
-  constructor(readonly graph: Graph, rng: Rng, o: TerrainOptions) {
+  constructor(readonly graph: Graph, rng: Rng, o: TerrainOptions, readonly outline: Outline) {
     const half = graph.half;
     this.half = half;
     this.sym = graph.sym;
@@ -107,6 +111,7 @@ export class Terrain {
     this.excess = new Float64Array(count).fill(STAMP);
     this.floor = new Float64Array(count).fill(graph.datum);
     this.core = new Uint8Array(count);
+    this.toEdge = edgeDistance(outline, 12);
     const radius = new Float64Array(count);
     const kind = new Uint8Array(count).fill(ZONE.ridge);
 
@@ -170,7 +175,7 @@ export class Terrain {
           const ref = Math.max(f, f + (graph.base.h - f) * (1 - smoothstep(graph.base.r + 4, graph.base.r + 16, nearBase)));
           h = ref + ridgeH * (1 + o.noise * nz) * smoothstep(0, o.rise, e);
         }
-        const toEdge = half - Math.max(Math.abs(vx), Math.abs(vz));
+        const toEdge = this.toEdge[v]!;
         if (e > 0) h = Math.max(h, graph.datum + o.rim * (1 - smoothstep(0, 7, toEdge)));
         this.sculpt[v] = Math.max(0, h);
         // Zones
@@ -421,13 +426,15 @@ export class Terrain {
     return { n, cell: CELL, half, heights: Float32Array.from(heights), paint };
   }
 
-  /** Highest ground along the map's edge */
+  /** Highest ground along the edge of the shape and outside it */
   rimHeight(): number {
-    const { n, side, heights } = this;
     let top = 0;
-    for (let i = 0; i <= n; i++) {
-      top = Math.max(top, heights[i]!, heights[n * side + i]!, heights[i * side]!, heights[i * side + n]!);
-    }
+    for (let v = 0; v < this.heights.length; v++) if (this.toEdge[v]! <= 0) top = Math.max(top, this.heights[v]!);
     return top;
+  }
+
+  /** Whether (x, z) is inside the map's shape */
+  inside(x: number, z: number): boolean {
+    return insideOutline(this.outline, this.half, x, z);
   }
 }

@@ -67,6 +67,7 @@ export function classicMap(): MapData {
     spawns,
     pickupSpots: [],
     graph: null,
+    outline: null,
     edge: { height: 0 },
     path: 'concrete',
   };

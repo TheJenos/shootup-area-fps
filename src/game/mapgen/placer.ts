@@ -1,6 +1,6 @@
 /**
  * Places pieces in red's half and their copies in blue's, keeping the rules every map follows:
- * inside the walls, a walkable gap between pieces, clear of the flags and spawns, out of the middle
+ * inside the map's shape, a walkable gap between pieces, clear of the flags and spawns, out of the middle
  * strip of every lane (so there's always a way through), and only in the zones a piece belongs in.
  *
  * Two ways to stand on the terrain:
@@ -13,6 +13,7 @@
 import { groundRange } from './heightField';
 import { distanceToRect, gapBetween, grow, q, rectOf, type Rect } from './dmath';
 import type { Rng } from './rng';
+import { rectInside } from './outline';
 import { tPiece, type Symmetry } from './symmetry';
 import { ZONE, type Terrain, type ZoneId } from './terrain';
 import type { Ground, GroundPatch, MapBox, MapProp, MapTheme, Piece } from './types';
@@ -105,6 +106,7 @@ export class Placer {
       rect = rectOf(all);
       const r = rect;
       if (r.minX < -H + 1.2 || r.maxX > H - 1.2 || r.minZ < -H + 1.2 || r.maxZ > H - 1.2) return no('bounds');
+      if (!rectInside(this.terrain.outline, r, 1.2)) return no('outside');
       if (!o.self && r.minZ < 1) return no('middle');
       if (solid.length) {
         const gap = o.gap ?? GAP;

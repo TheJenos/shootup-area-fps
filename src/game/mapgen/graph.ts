@@ -3,14 +3,19 @@
  * base to the middle line, connectors between neighbouring lanes, a chokepoint on every lane, and
  * the floor height along each lane (base plateaus, lane floors, the middle).
  *
+ * The map's shape comes first (outline.ts): the base, the crossings and every lane are fitted inside
+ * it, with room for a slope up to the buildings or cliffs round it.
+ *
  * Only red's half (z > 0) is designed; blue's is its copy under the map's symmetry. Every lane
  * meets the middle line square on at a fixed crossing point, so red's route to the crossing at
  * x = c joins blue's copy of red's route to -c (rotate) or to c (mirror): every route has a twin of
  * exactly the same length on the other team's side.
  */
 
-import { clamp, dist, len, q, segDistance, segIntersect, smoothstep } from './dmath';
+import { dist, len, q, segDistance, segIntersect, smoothstep } from './dmath';
 import type { Rng } from './rng';
+import { gridHalf, type Outline } from './outline';
+import { MAX_ENTRANCES, MIN_LOOPS, routesOf } from './routes';
 import type { SizeParams } from './spec';
 import type { Symmetry } from './symmetry';
 
@@ -82,8 +87,17 @@ const reject = (why: string) => { graphStats[why] = (graphStats[why] ?? 0) + 1; 
 const LANE_SLOPE = 0.16;
 /** Minimum ridge between two lanes (m, edge to edge) */
 const RIDGE_MIN = 10;
-/** Keep lanes this far inside the outer walls */
-const EDGE_MARGIN = 7;
+/** Keep lanes this far from the map's edge (m) */
+const EDGE_GAP = 3;
+
+/** The map's shape, as the graph sees it */
+export interface Shape {
+  outline: Outline;
+  /** Red's flag */
+  base: { x: number; z: number };
+  /** Distance from (x, z) to the edge of the shape (0 outside), up to about 24 m */
+  room: (x: number, z: number) => number;
+}
 
 /** Catmull-Rom through `pts`, sampled roughly every `step` metres. Only + - * /. */
 function spline(pts: [number, number][], step: number): [number, number][] {
@@ -204,18 +218,42 @@ export interface GraphOptions {
 }
 
 /** Design red's half. Returns null when the roll can't make a fair layout (the caller retries). */
-export function buildGraph(rng: Rng, sym: Symmetry, P: SizeParams, o: GraphOptions): Graph | null {
+export function buildGraph(rng: Rng, sym: Symmetry, P: SizeParams, o: GraphOptions, shape: Shape): Graph | null {
   const H = P.half;
-  const zb = P.baseZ;
-  const three = rng.chance(P.threeLanes);
-  // Off-centre bases only under rotation (a mirror keeps them on the axis).
-  const bx = sym === 'rotate' ? q(rng.range(-0.1, 0.1) * H) : 0;
+  const { room } = shape;
+  const bx = shape.base.x;
+  const zb = shape.base.z;
   const datum = 1;
   const base = { x: bx, z: zb, r: P.baseR, h: q(datum + rng.range(o.plateau[0], o.plateau[1])) };
+  if (room(bx, zb) < base.r + 1) { reject('base'); return null; }
+  /** Nearest x on the line at z where a lane `width` wide fits, or null */
+  const fitX = (x: number, z: number, width: number): number | null => {
+    const need = width / 2 + EDGE_GAP + 1;
+    for (let d = 0; d <= H * 2; d += 1) {
+      if (room(x + d, z) >= need) return x + d;
+      if (d && room(x - d, z) >= need) return x - d;
+    }
+    return null;
+  };
+  // Where the lanes cross the middle line: as far apart as the shape lets them.
+  let three = rng.chance(P.threeLanes) && room(0, 0) >= P.laneWidth.main / 2 + EDGE_GAP + 1;
+  const crossAt = (want: number, least: number, width: number): number | null => {
+    for (let d = 0; d <= H; d += 1) {
+      for (const x of d ? [want - d, want + d] : [want]) {
+        if (x >= least && x <= H && room(x, 0) >= width / 2 + EDGE_GAP + 1) return q(x);
+      }
+    }
+    return null;
+  };
+  let c = three ? crossAt(H * rng.range(0.55, 0.62), (P.laneWidth.main + P.laneWidth.flank) / 2 + RIDGE_MIN + 2, P.laneWidth.flank) : null;
+  if (c === null) {
+    three = false;
+    c = crossAt(H * rng.range(0.4, 0.5), H * 0.28, P.laneWidth.main - 1);
+  }
+  if (c === null) { reject('crossing'); return null; }
   const midKind = rng.weighted(o.mids);
-  const midR = q(H * (three ? 0.15 : 0.13));
+  const midR = q(Math.min(H * (three ? 0.15 : 0.13), room(0, 0) - 2));
   const midH = midKind === 'hill' ? datum + 1.6 : midKind === 'sunken' ? datum - 0.8 : datum;
-  const c = q(H * (three ? rng.range(0.55, 0.62) : rng.range(0.4, 0.5)));
   const crossings = three ? [-c, 0, c] : [-c, c];
   const flankH = q(datum + rng.range(-0.3, 0.7));
 
@@ -232,7 +270,6 @@ export function buildGraph(rng: Rng, sym: Symmetry, P: SizeParams, o: GraphOptio
     const main = xc === 0;
     const role: Lane['role'] = main || !three ? 'main' : 'flank';
     const width = three ? (main ? P.laneWidth.main : P.laneWidth.flank) : P.laneWidth.main - 1;
-    const limit = H - EDGE_MARGIN - width / 2;
     let lane: Lane | null = null;
     for (let attempt = 0; attempt < 14 && !lane; attempt++) {
       const outward = Math.sign(xc) || (rng.chance(0.5) ? 1 : -1);
@@ -244,26 +281,33 @@ export function buildGraph(rng: Rng, sym: Symmetry, P: SizeParams, o: GraphOptio
       const bow = main ? rng.range(-2, 2) : outward * rng.range(0.12, 0.28) * H;
       // The middle lane of three swings less: it has neighbours on both sides.
       const amp = (main ? rng.range(0.5, 0.75) : rng.range(0.7, 1)) * width * (three ? 1 : 1.15);
-      const way: [number, number][] = steps.map((t, i) => {
+      // Each waypoint moved to the nearest spot the lane fits in the shape.
+      const fit = (x: number, z: number): [number, number] | null => {
+        const fx = fitX(x, z, width);
+        return fx === null ? null : [q(fx), q(z)];
+      };
+      const way: ([number, number] | null)[] = steps.map((t, i) => {
         const swing = i % 2 ? -first : first;
         // Swings grow as the lane leaves the base, where the lanes are still close together.
         const x = bx + (xc - bx) * t + bow * 4 * t * (1 - t) + swing * amp * rng.range(0.8, 1) * Math.min(1, 0.25 + t * 2);
-        return [q(clamp(x, -limit, limit)), q(zb + (approach[1] - zb) * t)];
+        return fit(x, zb + (approach[1] - zb) * t);
       });
       // Flank lanes leave the base sideways, so the lanes are apart as soon as they're off the plateau.
       if (!main) {
-        const sx = clamp(bx + outward * (base.r + rng.range(5, 9)), -limit, limit);
-        way.unshift([q(sx), q(zb - rng.range(1, 4))]);
-        if (Math.abs(way[1]![0] - bx) < Math.abs(sx - bx)) way[1] = [q(clamp(way[1]![0] + outward * amp, -limit, limit)), way[1]![1]];
+        const side = fit(bx + outward * (base.r + rng.range(5, 9)), zb - rng.range(1, 4));
+        way.unshift(side);
+        const next = way[1];
+        if (side && next && Math.abs(next[0] - bx) < Math.abs(side[0] - bx)) way[1] = fit(next[0] + outward * amp, next[1]);
       }
+      if (way.some((w) => !w)) { reject('fit'); continue; }
       // Leave the plateau toward the first waypoint.
       const w1 = way[0]!;
       const ex = w1[0] - bx;
       const ez = w1[1] - zb;
       const el = len(ex, ez) || 1;
-      const pts: [number, number][] = [[q(bx + (ex / el) * (base.r - 2)), q(zb + (ez / el) * (base.r - 2))], ...way, approach, [xc, 0]];
+      const pts: [number, number][] = [[q(bx + (ex / el) * (base.r - 2)), q(zb + (ez / el) * (base.r - 2))], ...(way as [number, number][]), approach, [xc, 0]];
       const samples = toSamples(spline(pts, 1), width);
-      if (samples.some((p) => Math.abs(p.x) > limit || p.z < -0.01 || p.z > H - EDGE_MARGIN)) { reject('bounds'); continue; }
+      if (samples.some((p) => p.z < -0.01 || room(p.x, p.z) < width / 2 + EDGE_GAP - 0.5)) { reject('bounds'); continue; }
       const sight = role === 'main' ? P.laneSight.main : P.laneSight.flank;
       if (longestStraight(samples) > sight * 0.75) { reject('straight'); continue; }
       const total = samples[samples.length - 1]!.s;
@@ -340,19 +384,23 @@ export function buildGraph(rng: Rng, sym: Symmetry, P: SizeParams, o: GraphOptio
       // Floor: from one lane's floor to the other's.
       const total = samples[samples.length - 1]!.s;
       for (const p of samples) p.h = q(pa.h + ((pb.h - pa.h) * p.s) / total);
-      const clash = lanes.some((l) => l !== a && l !== b && crosses(samples, l.samples, bx, zb, 0))
+      const clash = samples.some((p) => room(p.x, p.z) < 2.25 + EDGE_GAP - 0.5)
+        || lanes.some((l) => l !== a && l !== b && crosses(samples, l.samples, bx, zb, 0))
         || connectors.some((k) => polylineGap(samples, k.samples, bx, zb, 0) < 10);
       if (clash) continue;
       connectors.push({ width: 4.5, samples, lanes: [a.id, b.id] });
       break;
     }
   }
+  // Every map has small loops as well as the big ones: at least one connector.
+  if (!connectors.length) { reject('connector'); return null; }
   // Two lanes: a cross street along the middle line joins them through the middle.
   if (!three) {
     const [a, b] = order as [Lane, Lane];
     const pts: [number, number][] = [];
     for (let x = a.cross; x <= b.cross + 1e-6; x += 1) pts.push([q(x), 0]);
     const samples = toSamples(pts, 6);
+    if (samples.some((p) => room(p.x, p.z) < 3 + EDGE_GAP - 0.5)) { reject('street'); return null; }
     for (const p of samples) {
       const t = Math.abs(p.x) <= midR ? 1 : 1 - smoothstep(midR, midR + 8, Math.abs(p.x));
       p.h = q(flankH + (midH - flankH) * t);
@@ -362,7 +410,8 @@ export function buildGraph(rng: Rng, sym: Symmetry, P: SizeParams, o: GraphOptio
 
   // Overlooks: a raised spot beside some lanes, on the side away from the other lanes.
   const overlooks: Overlook[] = [];
-  const want = P.half >= 70 ? 2 : P.half >= 54 ? rng.int(1, 2) : rng.int(0, 1);
+  // At least one vantage point per team on every map.
+  const want = P.half >= 70 ? 2 : P.half >= 54 ? rng.int(1, 2) : 1;
   for (const lane of rng.shuffle([...lanes]).slice(0, want)) {
     const s = lane.length * rng.range(0.38, 0.62);
     const p = lane.samples.reduce((best, x) => (Math.abs(x.s - s) < Math.abs(best.s - s) ? x : best));
@@ -374,10 +423,15 @@ export function buildGraph(rng: Rng, sym: Symmetry, P: SizeParams, o: GraphOptio
     const off = p.w / 2 + 4.5;
     const ox = q(p.x + nx * off);
     const oz = q(p.z + nz * off);
-    if (Math.abs(ox) > H - EDGE_MARGIN - 3 || oz < 6 || oz > H - EDGE_MARGIN - 3) continue;
+    if (oz < 6 || room(ox, oz) < 3.4 + EDGE_GAP) continue;
     if (Math.abs(p.s - lane.chokeS) < 8) continue;
     overlooks.push({ lane: lane.id, x: ox, z: oz, nx: -nx, nz: -nz, h: p.h });
   }
 
-  return { sym, half: H, base, datum, lanes, connectors, mid: { kind: midKind, r: midR, h: q(midH) }, overlooks };
+  const graph: Graph = { sym, half: gridHalf(P), base, datum, lanes, connectors, mid: { kind: midKind, r: midR, h: q(midH) }, overlooks };
+  // Enough loops to move round each other, and no junction with so many ways in it's a guess.
+  const routes = routesOf(graph);
+  if (routes.loops < MIN_LOOPS) { reject('loops'); return null; }
+  if (routes.busiest > MAX_ENTRANCES) { reject('entrances'); return null; }
+  return graph;
 }

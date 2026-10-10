@@ -46,9 +46,11 @@ describe('round spawns', () => {
         const points = [...map.spawns, ...map.pickupSpots].map((s) => ({ x: s.x, z: s.z }));
         const players = ids(8);
         const spots = players.map((id) => spotOf(points, roundSpawn(points, players, id, spawnSalt(seed))));
-        // Nobody shares a spawn, and they're well apart (the map is ~2·half across).
+        // Nobody shares a spawn, and they're well apart (half the size of the map's shape, as if square).
+        const o = map.outline;
+        const across = o ? Math.sqrt(o.inside.reduce((n, v) => n + v, 0) * o.cell * o.cell) / 2 : map.half;
         expect(new Set(spots.map((s) => `${s.x},${s.z}`)).size).toBe(players.length);
-        expect(minGap(spots)).toBeGreaterThan(map.half * 0.25);
+        expect(minGap(spots)).toBeGreaterThan(across * 0.25);
       }
     }
   });

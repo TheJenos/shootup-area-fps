@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CLASSIC_SEED, generateMap, isPlayableSpec, mapName, toSpec, GENERATOR_VERSION } from '../index';
-import { generateWithReport, metaFor } from '../generate';
+import { generateWithReport, metaFor, shapeOf } from '../generate';
+import { designFootprint, gridHalf, type Outline } from '../outline';
 import { buildGraph } from '../graph';
 import { Rng } from '../rng';
 import { SIZE_PARAMS, type MapSize } from '../spec';
@@ -38,7 +39,7 @@ describe('generated maps', () => {
       expect(a.report.problems).toEqual([]);
       const b = generateWithReport(toSpec(seed, size));
       expect(b.map.hash).toBe(a.map.hash);
-      expect(a.map.half).toBe(SIZE_PARAMS[size].half);
+      expect(a.map.half).toBe(gridHalf(SIZE_PARAMS[size]));
     }
   });
 
@@ -78,9 +79,15 @@ describe('terrain', () => {
     for (const [seed, size] of [['TERR01', 's'], ['TERR02', 'm'], ['TERR03', 'l']] as const) {
       const meta = metaFor(seed);
       let graph = null;
-      for (let i = 0; i < 10 && !graph; i++) graph = buildGraph(new Rng(seed).fork(`g${i}`), i % 2 ? 'mirror' : 'rotate', SIZE_PARAMS[size], meta.biome.graph);
+      let outline: Outline | null = null;
+      for (let i = 0; i < 30 && !graph; i++) {
+        const sym = i % 2 ? 'mirror' : 'rotate';
+        const shape = shapeOf(designFootprint(new Rng(seed).fork(`s${i}`), sym, SIZE_PARAMS[size]));
+        outline = shape.outline;
+        graph = buildGraph(new Rng(seed).fork(`g${i}`), sym, SIZE_PARAMS[size], meta.biome.graph, shape);
+      }
       expect(graph).not.toBeNull();
-      const t = new Terrain(graph!, new Rng(seed), BIOMES[meta.biome.id].terrain);
+      const t = new Terrain(graph!, new Rng(seed), BIOMES[meta.biome.id].terrain, outline!);
       const { n, side, heights } = t;
       for (let iz = 0; iz <= n; iz++) {
         for (let ix = 0; ix <= n; ix++) {

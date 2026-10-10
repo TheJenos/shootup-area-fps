@@ -32,5 +32,6 @@ export function mapHash(m: Omit<MapData, 'hash'>): number {
     num(s.x); num(s.y); num(s.z);
   }
   for (const v of [...m.flags.red, ...m.flags.blue]) num(v);
+  if (m.outline) for (let i = 0; i < m.outline.inside.length; i++) num(m.outline.inside[i]!);
   return h >>> 0;
 }

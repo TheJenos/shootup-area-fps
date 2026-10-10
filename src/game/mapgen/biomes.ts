@@ -10,6 +10,7 @@ import {
   barrels, container, containerStack, crate, crateStack, lowWall, model, pallets, pillar, sandbags, wall, corner,
   type CoverClass, type CoverKit, type LandmarkId,
 } from './kits';
+import type { EdgeStyle } from './outline';
 import type { TerrainOptions } from './terrain';
 
 export type BiomeId = 'quarry' | 'oldtown' | 'highlands' | 'refinery';
@@ -46,18 +47,21 @@ export interface Biome {
   house: { wall: BoxSurface; roof: BoxSurface; floor: BoxSurface; wallH: number; colors: readonly number[] };
   /** Overlook platforms */
   overlook: { legs: boolean; body: BoxSurface; top: BoxSurface; bodyColor: number; topColor: number };
-  /** Footbridges over chokes */
-  bridge: { surface: BoxSurface; color: number; chance: number };
+  /** The footbridge over a choke */
+  bridge: { surface: BoxSurface; color: number };
   /** Ground paint for lanes */
   path: GroundKind;
   /** Decoration along lane edges (lamps), if any */
   lamps?: PropId;
+  /** What stands round the map's shape */
+  edge: EdgeStyle;
 }
 
 const c = (kit: CoverKit, cls: CoverClass, weight: number, along = false): Cover => ({ kit, cls, weight, along });
 
 export const BIOMES: Record<BiomeId, Biome> = {
   quarry: {
+    edge: { kind: 'cliffs', surfaces: ['rock'], colors: [0xb3aa9a, 0xa39a88, 0x9c8f7a], height: [5, 10] },
     id: 'quarry',
     label: 'Quarry',
     themes: ['Dust Bowl', 'Dust Bowl', 'Training Yard'],
@@ -78,10 +82,11 @@ export const BIOMES: Record<BiomeId, Biome> = {
     houses: [0, 1],
     house: { wall: 'concrete', roof: 'metal', floor: 'concrete', wallH: 3.2, colors: [0xa88a64, 0x998066, 0xb0703f] },
     overlook: { legs: false, body: 'rock', top: 'concrete', bodyColor: 0xb3aa9a, topColor: 0x9a9a92 },
-    bridge: { surface: 'metal', color: 0x7d8597, chance: 0.7 },
+    bridge: { surface: 'metal', color: 0x7d8597 },
     path: 'dirt',
   },
   oldtown: {
+    edge: { kind: 'buildings', surfaces: ['plaster', 'plaster', 'brick'], colors: [0xd8cdb8, 0xc9b79a, 0xb8c4c9, 0xd9b8a0, 0xa9b8a0], height: [7, 14] },
     id: 'oldtown',
     label: 'Old Town',
     themes: ['Training Yard', 'Dusk Yard', 'Frostbite', 'Dust Bowl'],
@@ -101,11 +106,12 @@ export const BIOMES: Record<BiomeId, Biome> = {
     houses: [1, 2],
     house: { wall: 'plaster', roof: 'concrete', floor: 'planks', wallH: 3.4, colors: [0xd8cdb8, 0xc9b79a, 0xb8c4c9, 0xd9b8a0, 0xa9b8a0] },
     overlook: { legs: false, body: 'brick', top: 'concrete', bodyColor: 0x9a6b4f, topColor: 0x8a8f99 },
-    bridge: { surface: 'concrete', color: 0x8a8f99, chance: 0.6 },
+    bridge: { surface: 'concrete', color: 0x8a8f99 },
     path: 'concrete',
     lamps: 'lamp',
   },
   highlands: {
+    edge: { kind: 'cliffs', surfaces: ['rock'], colors: [0x8d8a80, 0x7f7c72, 0x96907f], height: [5, 11] },
     id: 'highlands',
     label: 'Highlands',
     themes: ['Greenwood', 'Greenwood', 'Frostbite'],
@@ -129,10 +135,11 @@ export const BIOMES: Record<BiomeId, Biome> = {
     houses: [1, 1],
     house: { wall: 'planks', roof: 'planks', floor: 'planks', wallH: 3.2, colors: [0x8a6a45, 0x7d6a55, 0xa07a4f] },
     overlook: { legs: true, body: 'planks', top: 'planks', bodyColor: 0x5c4a3a, topColor: 0x8a6a45 },
-    bridge: { surface: 'planks', color: 0x8a6a45, chance: 0.5 },
+    bridge: { surface: 'planks', color: 0x8a6a45 },
     path: 'dirt',
   },
   refinery: {
+    edge: { kind: 'buildings', surfaces: ['metal', 'concrete'], colors: [0x6b7563, 0x7d8597, 0x8a8a86, 0x5c6b4a], height: [7, 15] },
     id: 'refinery',
     label: 'Refinery',
     themes: ['Toxic Works', 'Dusk Yard', 'Training Yard'],
@@ -152,7 +159,7 @@ export const BIOMES: Record<BiomeId, Biome> = {
     houses: [1, 1],
     house: { wall: 'metal', roof: 'metal', floor: 'metal', wallH: 3.6, colors: [0x6b7563, 0x7d8597, 0x5c6b4a] },
     overlook: { legs: true, body: 'metal', top: 'metal', bodyColor: 0x6b7563, topColor: 0x7d8597 },
-    bridge: { surface: 'metal', color: 0x7d8597, chance: 0.8 },
+    bridge: { surface: 'metal', color: 0x7d8597 },
     path: 'concrete',
   },
 };

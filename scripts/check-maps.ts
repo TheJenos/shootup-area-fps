@@ -9,8 +9,10 @@
 import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
-import { CLASSIC_SEED, GENERATOR_VERSION, generateMap, groundHeight, mapName, toSpec, type MapData, type MapSize } from '../src/game/mapgen/index';
-import { generateWithReport } from '../src/game/mapgen/generate';
+import { CLASSIC_SEED, GENERATOR_VERSION, generateMap, groundHeight, insideOutline, mapName, toSpec, type MapData, type MapSize } from '../src/game/mapgen/index';
+import { generateWithReport, rollStats } from '../src/game/mapgen/generate';
+import { graphStats } from '../src/game/mapgen/graph';
+import { overpassStats } from '../src/game/mapgen/dress';
 import { Rng } from '../src/game/mapgen/rng';
 
 const args = process.argv.slice(2);
@@ -71,7 +73,8 @@ function dump(map: MapData, file: string, lines: { ax: number; az: number; bx: n
   };
   for (const b of map.boxes) {
     const top = b.y + b.h - groundHeight(map.ground, b.x, b.z);
-    const c: [number, number, number] = b.blocks === 'shots' ? [40, 110, 40] : b.ramp ? [220, 200, 80] : top > 2.2 ? [150, 40, 40] : top > 1.4 ? [210, 100, 60] : [230, 170, 120];
+    const out = !insideOutline(map.outline, map.half, b.x, b.z);
+    const c: [number, number, number] = out ? [40 + top * 4, 40 + top * 4, 52 + top * 4] : b.blocks === 'shots' ? [40, 110, 40] : b.ramp ? [220, 200, 80] : top > 2.2 ? [150, 40, 40] : top > 1.4 ? [210, 100, 60] : [230, 170, 120];
     rect(b.x, b.z, b.w, b.d, c);
   }
   for (const l of map.graph?.lanes ?? []) for (const [x, z] of l.points) { const [px, py] = toPx(x, z); put(px, py, [255, 255, 255]); }
@@ -113,6 +116,7 @@ const biomes = new Map<string, number>();
 for (const size of SIZES) {
   const ms: number[] = []; const rolls: number[] = []; const laneOver: number[] = []; const flagSeen: number[] = []; const spawnSeen: number[] = [];
   const f2f: number[] = []; const clutter: number[] = []; const boxes: number[] = []; const breakers: number[] = [];
+  const loops: number[] = []; const entrances: number[] = []; let overpassed = 0;
   let failed = 0;
   for (const seed of seeds) {
     const t0 = performance.now();
@@ -121,6 +125,7 @@ for (const size of SIZES) {
     rolls.push(g.roll);
     laneOver.push(g.sight.laneOver); flagSeen.push(g.sight.flagSeen); spawnSeen.push(g.sight.spawnSeen); breakers.push(g.sight.breakers);
     f2f.push(g.report.metrics.flagToFlag); clutter.push(g.report.metrics.clutter * 100); boxes.push(g.map.boxes.length);
+    loops.push(g.map.graph!.loops); entrances.push(g.map.graph!.entrances); if (g.map.graph!.overpasses) overpassed++;
     biomes.set(g.map.biome, (biomes.get(g.map.biome) ?? 0) + 1);
     if (g.map.name !== mapName(seed)) fail(`${seed} ${size}: mapName ${mapName(seed)} vs ${g.map.name}`);
     if (!g.report.ok) { failed++; fail(`${seed} ${size} (${g.map.name}): ${g.report.problems.slice(0, 4).join('; ')}`); }
@@ -128,9 +133,13 @@ for (const size of SIZES) {
   console.log(`\n[${size}] ${seeds.length} seeds, ${failed} failed`);
   console.log(`  ${stat('ms', ms, 0)}; ${stat('roll', rolls, 0)}; ${stat('boxes', boxes, 0)}`);
   console.log(`  ${stat('flag-to-flag m', f2f, 0)}; ${stat('clutter %', clutter)}`);
+  console.log(`  routes: ${stat('loops', loops, 0)}; ${stat('busiest junction', entrances, 0)}; overpass on ${Math.round((overpassed / seeds.length) * 100)}% of maps`);
   console.log(`  sight: ${stat('lane over m', laneOver)}; ${stat('flag seen', flagSeen, 0)}; ${stat('spawn seen', spawnSeen, 0)}; ${stat('breakers', breakers, 0)}`);
 }
 console.log('\nBiomes:', [...biomes].map(([k, v]) => `${k} ${v}`).join(', '));
+console.log('Rolls rejected:', JSON.stringify(rollStats));
+console.log('Lane graphs rejected:', JSON.stringify(graphStats));
+console.log('Overpasses refused:', JSON.stringify(overpassStats));
 
 // ---------------------------------------------------------------- determinism and golden hashes
 for (const seed of seeds.slice(0, 4)) {

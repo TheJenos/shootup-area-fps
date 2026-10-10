@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { buildWorld } from '../game/world';
-import { PAINT, type MapData } from '../game/mapgen';
+import { PAINT, insideOutline, type MapData } from '../game/mapgen';
 import { TEAM_INFO } from '../game/modes';
 import { bombSites, SITE_IDS } from '../game/snd';
 import type { GameMode } from '../types';
@@ -52,9 +52,20 @@ function draw2D(canvas: HTMLCanvasElement, map: MapData, mode: GameMode): void {
       }
     }
   }
-  g.strokeStyle = hex(map.theme.wall);
-  g.lineWidth = scale * 1.5;
-  g.strokeRect(g.lineWidth / 2, g.lineWidth / 2, SIZE - g.lineWidth, SIZE - g.lineWidth);
+  // A shaped map: outside its shape dark (the buildings or cliffs there aren't drawn), else a wall.
+  const o = map.outline;
+  if (o) {
+    g.fillStyle = hex(map.theme.wall);
+    for (let k = 0; k < o.n; k++) {
+      for (let i = 0; i < o.n; i++) {
+        if (!o.inside[k * o.n + i]) g.fillRect(px(-o.half + i * o.cell), px(-o.half + k * o.cell), o.cell * scale + 0.5, o.cell * scale + 0.5);
+      }
+    }
+  } else {
+    g.strokeStyle = hex(map.theme.wall);
+    g.lineWidth = scale * 1.5;
+    g.strokeRect(g.lineWidth / 2, g.lineWidth / 2, SIZE - g.lineWidth, SIZE - g.lineWidth);
+  }
 
   // Yards and plazas under everything; roads get a dashed centre line.
   for (const p of map.patches) {
@@ -73,7 +84,7 @@ function draw2D(canvas: HTMLCanvasElement, map: MapData, mode: GameMode): void {
   }
 
   // Low boxes first so taller ones on top of them stay visible. Tree canopies (shots only) are skipped.
-  for (const b of [...map.boxes].filter((b) => b.blocks !== 'shots').sort((a, c) => a.y + a.h - (c.y + c.h))) {
+  for (const b of [...map.boxes].filter((b) => b.blocks !== 'shots' && insideOutline(map.outline, map.half, b.x, b.z)).sort((a, c) => a.y + a.h - (c.y + c.h))) {
     const x0 = px(b.x - b.w / 2);
     const z0 = px(b.z - b.d / 2);
     if (b.ramp) {

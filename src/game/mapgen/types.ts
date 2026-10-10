@@ -5,6 +5,7 @@
 
 import type { BoxSurface, FloorTexture, GroundKind } from '../textures';
 import type { RampDir } from '../rampMath';
+import type { Outline } from './outline';
 import type { MapSpec } from './spec';
 
 export type { GroundKind };
@@ -142,6 +143,11 @@ export interface LaneGraph {
   chokes: [number, number][];
   overlooks: [number, number][];
   mid: { kind: 'plaza' | 'hill' | 'sunken'; radius: number };
+  /** Independent loops through the routes, and the most routes meeting at one junction (routes.ts) */
+  loops: number;
+  entrances: number;
+  /** Footbridges where one route crosses over another */
+  overpasses: number;
 }
 
 export interface MapData {
@@ -164,6 +170,11 @@ export interface MapData {
   spawns: Spawn[];
   pickupSpots: PickupSpot[];
   graph: LaneGraph | null;
+  /**
+   * The map's shape (outline.ts); the buildings or cliffs round it are in `boxes`. null = the whole
+   * square, walled by the game (the classic map).
+   */
+  outline: Outline | null;
   /** Highest ground along the map's edge: the perimeter walls stand this much taller */
   edge: { height: number };
   /** How the lanes are painted */

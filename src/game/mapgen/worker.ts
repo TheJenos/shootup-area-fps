@@ -12,8 +12,8 @@ ctx.onmessage = (e) => {
   const { id, spec } = e.data;
   try {
     const map = generate(spec);
-    // The ground's arrays move to the page instead of being copied.
-    const transfer = map.ground ? [map.ground.heights.buffer, map.ground.paint.buffer] : [];
+    // The ground's and shape's arrays move to the page instead of being copied.
+    const transfer = [...(map.ground ? [map.ground.heights.buffer, map.ground.paint.buffer] : []), ...(map.outline ? [map.outline.inside.buffer] : [])];
     ctx.postMessage({ id, map }, transfer as Transferable[]);
   } catch (err) {
     ctx.postMessage({ id, error: err instanceof Error ? err.message : String(err) });

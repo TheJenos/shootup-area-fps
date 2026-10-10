@@ -37,20 +37,22 @@ export interface SizeParams {
   laneSight: { main: number; flank: number };
   /** Longest gap between pieces of cover along a lane (m) */
   coverGap: number;
+  /** Longest walk from flag to flag (s, at walking pace): a map you can't cross quickly is redrawn */
+  crossTime: number;
 }
 
 export const SIZE_PARAMS: Record<MapSize, SizeParams> = {
   s: {
     half: 40, baseZ: 29, baseR: 9, threeLanes: 0.35, laneWidth: { main: 8, flank: 6 }, chokeWidth: 4.5,
-    connectors: [1, 1], spawnsPerTeam: 6, laneSight: { main: 42, flank: 32 }, coverGap: 8,
+    connectors: [1, 1], spawnsPerTeam: 6, laneSight: { main: 42, flank: 32 }, coverGap: 8, crossTime: 15,
   },
   m: {
     half: 54, baseZ: 40, baseR: 10, threeLanes: 0.7, laneWidth: { main: 10, flank: 7 }, chokeWidth: 5,
-    connectors: [1, 2], spawnsPerTeam: 8, laneSight: { main: 54, flank: 40 }, coverGap: 9,
+    connectors: [1, 2], spawnsPerTeam: 8, laneSight: { main: 54, flank: 40 }, coverGap: 9, crossTime: 19,
   },
   l: {
     half: 70, baseZ: 53, baseR: 11, threeLanes: 1, laneWidth: { main: 11, flank: 8 }, chokeWidth: 5.5,
-    connectors: [2, 2], spawnsPerTeam: 10, laneSight: { main: 64, flank: 46 }, coverGap: 10,
+    connectors: [2, 2], spawnsPerTeam: 10, laneSight: { main: 64, flank: 46 }, coverGap: 10, crossTime: 24,
   },
 };
 

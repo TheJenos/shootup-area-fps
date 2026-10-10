@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { PAINT, groundHeight, groundRange, type Ground, type MapBox, type MapData, type StepSurface } from './mapgen';
+import { PAINT, groundHeight, groundRange, outsideRects, type Ground, type MapBox, type MapData, type StepSurface } from './mapgen';
 import type { Quality } from './settings';
 import { overRamp, rampHeightAt, wedgeGeometry, type Ramp } from './ramps';
 import { SpatialGrid } from './spatialGrid';
@@ -277,11 +277,12 @@ export function buildWorld(scene: THREE.Scene, map: MapData, lists: WorldLists, 
     solids.push(mesh);
   };
 
-  // Perimeter walls, standing clear of the highest ground along the edge.
+  // Perimeter walls, standing clear of the highest ground along the edge. A shaped map has none:
+  // buildings or cliffs (in map.boxes) stand all round it.
   const W = half;
   const wallH = PERIMETER_HEIGHT + map.edge.height;
   const wall = (x: number, z: number, w: number, d: number): MapBox => ({ x, z, w, h: wallH, d, y: 0, color: theme.wall, surface: 'perimeter' });
-  for (const b of [wall(0, -W, W * 2 + 1, 1), wall(0, W, W * 2 + 1, 1), wall(-W, 0, 1, W * 2 + 1), wall(W, 0, 1, W * 2 + 1)]) addBox(b);
+  if (!map.outline) for (const b of [wall(0, -W, W * 2 + 1, 1), wall(0, W, W * 2 + 1, 1), wall(-W, 0, 1, W * 2 + 1), wall(W, 0, 1, W * 2 + 1)]) addBox(b);
 
   // Invisible boundary: tall walls over the perimeter so nobody gets out of the map, however high
   // they get (a jump off a roof edge, a dash, a ragdoll, a grenade). Movement only: bullets still fly
@@ -292,6 +293,13 @@ export function buildWorld(scene: THREE.Scene, map: MapData, lists: WorldLists, 
     [-W - T, -W - T, -W + 0.5, W + T], [W - 0.5, -W - T, W + T, W + T],
   ] as const) {
     addCollider(new THREE.Box3(new THREE.Vector3(x0, -10, z0), new THREE.Vector3(x1, BOUNDARY_HEIGHT, z1)), null, false);
+  }
+  // A shaped map: the same over everything outside its shape, so nobody gets onto the roofs or
+  // cliff tops. Floor space, so pickups never land out there.
+  if (map.outline) {
+    for (const r of outsideRects(map.outline)) {
+      addCollider(new THREE.Box3(new THREE.Vector3(r.minX, -10, r.minZ), new THREE.Vector3(r.maxX, BOUNDARY_HEIGHT, r.maxZ)), null);
+    }
   }
 
   for (const b of map.boxes) {

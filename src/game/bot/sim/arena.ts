@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { Mover } from '../../movement';
 import { PhysicsWorld, groups } from '../../physics';
-import { generateMap, groundHeight, toSpec, type MapData, type MapSize } from '../../mapgen';
+import { generateMap, groundHeight, outsideRects, toSpec, type MapData, type MapSize } from '../../mapgen';
 import { GUNS, shotDamage } from '../../gunStats';
 import { FLAG_RADIUS, FLAG_RETURN_TIME, MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_RANGE, otherTeam } from '../../modes';
 import type { Ramp } from '../../ramps';
@@ -147,7 +147,7 @@ export function buildPhysics(map: MapData): PhysicsWorld {
   const shotBoxes: THREE.Box3[] = [];
   const W = map.half;
   const wallH = PERIMETER_HEIGHT + map.edge.height;
-  for (const [x, z, w, d] of [[0, -W, W * 2 + 1, 1], [0, W, W * 2 + 1, 1], [-W, 0, 1, W * 2 + 1], [W, 0, 1, W * 2 + 1]] as const) {
+  for (const [x, z, w, d] of map.outline ? [] : [[0, -W, W * 2 + 1, 1], [0, W, W * 2 + 1, 1], [-W, 0, 1, W * 2 + 1], [W, 0, 1, W * 2 + 1]] as const) {
     colliders.push(new THREE.Box3(new THREE.Vector3(x - w / 2, 0, z - d / 2), new THREE.Vector3(x + w / 2, wallH, z + d / 2)));
   }
   const T = BOUNDARY_THICKNESS;
@@ -156,6 +156,9 @@ export function buildPhysics(map: MapData): PhysicsWorld {
     [-W - T, -W - T, -W + 0.5, W + T], [W - 0.5, -W - T, W + T, W + T],
   ] as const) {
     colliders.push(new THREE.Box3(new THREE.Vector3(x0, -10, z0), new THREE.Vector3(x1, BOUNDARY_HEIGHT, z1)));
+  }
+  if (map.outline) {
+    for (const r of outsideRects(map.outline)) colliders.push(new THREE.Box3(new THREE.Vector3(r.minX, -10, r.minZ), new THREE.Vector3(r.maxX, BOUNDARY_HEIGHT, r.maxZ)));
   }
   for (const b of map.boxes) {
     if (b.ramp) {

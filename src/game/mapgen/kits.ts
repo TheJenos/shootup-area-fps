@@ -194,6 +194,8 @@ export interface PlatformSpec {
   topColor: number;
   /** Stand on legs (walk underneath) instead of a solid block */
   legs?: boolean;
+  /** A side left open (no railing), where a bridge joins */
+  open?: 'x+' | 'x-' | 'z+' | 'z-';
 }
 
 /** Ramp footprint for a platform side */
@@ -234,6 +236,7 @@ export function platform(s: PlatformSpec, x: number, z: number): Piece {
     const ex = xs ? x + sign * (s.w / 2 - 0.15) : x;
     const ez = xs ? z : z + sign * (s.d / 2 - 0.15);
     const long = xs ? s.d : s.w;
+    if (side === s.open) continue;
     if (side === s.parapet) {
       boxes.push(xs ? box(ex, ez, 0.3, 1.05, long, s.h, s.bodyColor, s.body) : box(ex, ez, long, 1.05, 0.3, s.h, s.bodyColor, s.body));
     } else if (side === s.ramp) {

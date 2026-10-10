@@ -9,8 +9,9 @@
  * on the ridges. Last, sightlines that are still too long get a tall piece of cover across them.
  */
 
+import { HEADROOM } from '../playerDims';
 import { groundHeight } from './heightField';
-import { dist, len, q } from './dmath';
+import { dist, len, q, type Rect } from './dmath';
 import type { Biome, Cover } from './biomes';
 import type { Graph, Lane, LaneSample } from './graph';
 import {
@@ -35,6 +36,8 @@ export interface Dressed {
   /** Spots that must be reachable on foot: [x, y, z] (doors, platform tops, bridge decks) */
   targets: [number, number, number][];
   sight: SightReport;
+  /** Footbridges over a lane, in red's half */
+  overpasses: number;
 }
 
 export interface SightReport {
@@ -48,6 +51,10 @@ export interface SightReport {
   /** The worst remaining sightlines (for scripts/check-maps.ts pictures) */
   lines: Sight[];
 }
+
+/** Why overpasses were refused (for tuning; scripts/check-maps.ts prints it) */
+export const overpassStats: Record<string, number> = {};
+const refuse = (why: string) => { overpassStats[why] = (overpassStats[why] ?? 0) + 1; };
 
 /** 16 directions with rational-ish components (no trig), for rings of candidate spots */
 const DIRS: [number, number][] = (() => {
@@ -86,10 +93,8 @@ export function dress(rng: Rng, g: Graph, t: Terrain, biome: Biome, theme: MapTh
   const k: KitContext = { rng: rng.fork('kits'), theme, color: () => p.color() };
   const targets: [number, number, number][] = [];
   const rampFeet: [number, number][] = [];
-  const view: Ground = { n: t.n, cell: 1, half: t.half, heights: t.heights, paint: new Uint8Array(0) };
-  const hNow = (x: number, z: number) => groundHeight(view, x, z);
   const H = g.half;
-  const scale = H / 54;
+  const scale = P.half / 54;
 
   // ---------------------------------------------------------------- spawns, on the base plateau
   {
@@ -123,7 +128,13 @@ export function dress(rng: Rng, g: Graph, t: Terrain, biome: Biome, theme: MapTh
     const at = p.check(piece, { mode: 'pad', self: true, padH: g.mid.h, maxCut: 3, core: true, gap: 0 });
     if (at) {
       p.commit(piece, at.dy, at.rect, { mode: 'pad', self: true });
-      for (const b of piece.boxes) if (b.ramp) targets.push([b.x, at.dy + b.y + b.h, b.z]);
+      // The top of each ramp: just inside its high end.
+      for (const b of piece.boxes) {
+        if (!b.ramp) continue;
+        const sign = b.ramp[1] === '+' ? 1 : -1;
+        const [x, z] = b.ramp[0] === 'x' ? [b.x + sign * (b.w / 2 - 0.4), b.z] : [b.x, b.z + sign * (b.d / 2 - 0.4)];
+        targets.push([q(x), at.dy + b.y + b.h, q(z)]);
+      }
     }
   }
 
@@ -150,46 +161,68 @@ export function dress(rng: Rng, g: Graph, t: Terrain, biome: Biome, theme: MapTh
     }
   }
 
-  // ---------------------------------------------------------------- footbridges over chokes
+  // ---------------------------------------------------------------- an overpass at a choke
+  // One route crossing over another, once per half where there's room: a footbridge over a lane
+  // near its choke, between two platforms with ramps up from either side, so there's a way over the
+  // fight as well as through it. Lanes zigzag, so beside most stretches of a lane is more of the same
+  // lane; only a straight stretch with open ground either side takes one.
+  let overpasses = 0;
+  // Where to try: the straightest stretches (a platform on the inside of a bend would stand in the
+  // lane), nearest the choke first.
+  const tries: { lane: Lane; c: LaneSample; score: number }[] = [];
   for (const lane of g.lanes) {
-    if (!rng.chance(biome.bridge.chance)) continue;
-    const c = sampleAt(lane, lane.chokeS);
-    const alongZ = Math.abs(c.dz) >= 0.92;
-    const alongX = Math.abs(c.dx) >= 0.92;
-    if (!alongX && !alongZ) continue;
-    const deck = q(c.h + 3.3);
-    // March out either side until the ground reaches the deck.
-    const end = (sign: number): number | null => {
-      for (let d = c.w / 2 + 1.5; d <= 15; d += 0.5) {
-        const x = alongZ ? c.x + sign * d : c.x;
-        const z = alongZ ? c.z : c.z + sign * d;
-        if (hNow(x, z) >= deck - 0.4) return d;
+    for (let s = lane.length * 0.25; s <= lane.length * 0.8; s += 2) {
+      const c = sampleAt(lane, s);
+      const a = sampleAt(lane, s - 7);
+      const b = sampleAt(lane, s + 7);
+      const bend = 1 - (a.dx * b.dx + a.dz * b.dz);
+      tries.push({ lane, c, score: bend * 40 + Math.abs(s - lane.chokeS) / 10 + rng.next() * 0.1 });
+    }
+  }
+  tries.sort((x, y) => x.score - y.score);
+  const SIZE = 4.6;
+  for (const { lane, c } of tries.slice(0, 40)) {
+    if (overpasses) break;
+    // The bridge runs along x or z, across the lane: up to 45° off square.
+    const alongZ = Math.abs(c.dz) >= Math.abs(c.dx);
+    const square = Math.max(Math.abs(c.dx), Math.abs(c.dz));
+    if (square < 0.72) { refuse('slant'); continue; }
+    const axis = alongZ ? 'x' : 'z';
+    // Clear of the lane where it widens again past the choke, not just of the choke.
+    const reach = lane.width / 2 / square + 1.2 + SIZE / 2;
+    const centre = (sign: number): [number, number] => (alongZ ? [q(c.x + sign * reach), c.z] : [c.x, q(c.z + sign * reach)]);
+    const side = (sign: number) => `${axis}${sign > 0 ? '+' : '-'}` as PlatformSpec['ramp'];
+    const along: PlatformSpec['ramp'][] = alongZ ? ['z+', 'z-'] : ['x+', 'x-'];
+    const spec = (sign: number, h: number, ramp: PlatformSpec['ramp']): PlatformSpec => ({
+      h, w: SIZE, d: SIZE, ramp, open: side(-sign), parapet: ramp === side(sign) ? along[ramp === along[0] ? 1 : 0]! : side(sign),
+      body: biome.overlook.body, bodyColor: biome.overlook.bodyColor, top: biome.overlook.top, topColor: biome.overlook.topColor,
+    });
+    // Each side: a ramp coming up from behind (away from the lane), or else along it, and the pad it stands on.
+    const fit = (sign: number, h: number): { piece: Piece; dy: number; rect: Rect } | null => {
+      for (const ramp of [side(sign), ...rng.shuffle([...along])]) {
+        const piece = platform(spec(sign, h, ramp), ...centre(sign));
+        const at = p.check(piece, { mode: 'pad', padH: c.h, maxCut: 2.6 });
+        if (at?.rect) return { piece, dy: at.dy, rect: at.rect };
       }
       return null;
     };
-    const a = end(-1);
-    const b = end(1);
-    if (a === null || b === null) continue;
-    // A landing slab at each end: the ground is pinned at deck height there, the slab's top 2 cm above.
-    const padAt = (sign: number, d: number): Piece => {
-      const x = alongZ ? c.x + sign * (d + 1.2) : c.x;
-      const z = alongZ ? c.z : c.z + sign * (d + 1.2);
-      return { boxes: [{ x: q(x), z: q(z), w: 2.4, h: 0.32, d: 2.4, y: -0.3, color: biome.bridge.color, surface: biome.bridge.surface }] };
-    };
-    const padA = padAt(-1, a);
-    const padB = padAt(1, b);
-    const atA = p.check(padA, { mode: 'pad', padH: deck, maxCut: 1, zones: ZONES_RIDGE, gap: 1 });
-    const atB = atA && p.check(padB, { mode: 'pad', padH: deck, maxCut: 1, zones: ZONES_RIDGE, gap: 1 });
-    if (!atA || !atB || Math.abs(atA.dy - deck) > 0.01 || Math.abs(atB.dy - deck) > 0.01) continue;
-    p.commit(padA, deck, atA.rect, { mode: 'pad' });
-    p.commit(padB, deck, atB.rect, { mode: 'pad' });
-    const ax = alongZ ? c.x - a - 1.2 : c.x;
-    const az = alongZ ? c.z : c.z - a - 1.2;
-    const bx = alongZ ? c.x + b + 1.2 : c.x;
-    const bz = alongZ ? c.z : c.z + b + 1.2;
-    const span = bridge(ax, az, bx, bz, deck, 2.4, biome.bridge.color, biome.bridge.surface);
-    p.commit(span, 0, null);
-    targets.push([q((ax + bx) / 2), deck, q((az + bz) / 2)]);
+    const guessA = fit(-1, 2.8);
+    const guessB = guessA && fit(1, 2.8);
+    if (!guessA || !guessB) { refuse('platform'); continue; }
+    // One deck height, high enough to walk under; each platform as tall as it takes to reach it.
+    const deck = q(Math.max(guessA.dy, guessB.dy, c.h) + HEADROOM + 0.85);
+    const a = fit(-1, q(deck - guessA.dy));
+    const b = a && fit(1, q(deck - guessB.dy));
+    if (!a || !b || Math.abs(a.dy + (deck - guessA.dy) - deck) > 0.01 || Math.abs(b.dy + (deck - guessB.dy) - deck) > 0.01) { refuse('height'); continue; }
+    p.commit(a.piece, a.dy, a.rect, { mode: 'pad' });
+    p.commit(b.piece, b.dy, b.rect, { mode: 'pad' });
+    const [ax, az] = centre(-1);
+    const [bx, bz] = centre(1);
+    const inA: [number, number] = alongZ ? [q(ax + SIZE / 2), az] : [ax, q(az + SIZE / 2)];
+    const inB: [number, number] = alongZ ? [q(bx - SIZE / 2), bz] : [bx, q(bz - SIZE / 2)];
+    p.commit(bridge(inA[0], inA[1], inB[0], inB[1], deck, 2.4, biome.bridge.color, biome.bridge.surface), 0, null);
+    targets.push([ax, deck, az], [bx, deck, bz], [q((ax + bx) / 2), deck, q((az + bz) / 2)]);
+    overpasses++;
   }
 
   // ---------------------------------------------------------------- big models on the ridges
@@ -197,7 +230,7 @@ export function dress(rng: Rng, g: Graph, t: Terrain, biome: Biome, theme: MapTh
   for (let iz = Math.ceil(t.n / 2) + 2; iz <= t.n; iz++) {
     for (let ix = 0; ix <= t.n; ix++) {
       const z = t.zone[iz * t.side + ix]!;
-      if (z === ZONE.ridge || z === ZONE.edge) ridgeVerts.push([-t.half + ix, -t.half + iz]);
+      if ((z === ZONE.ridge || z === ZONE.edge) && t.toEdge[iz * t.side + ix]! > 2) ridgeVerts.push([-t.half + ix, -t.half + iz]);
     }
   }
   if (biome.ridgeModels.length && ridgeVerts.length) {
@@ -215,7 +248,7 @@ export function dress(rng: Rng, g: Graph, t: Terrain, biome: Biome, theme: MapTh
 
   // ---------------------------------------------------------------- houses with walkable roofs
   {
-    const want = rng.int(biome.houses[0], biome.houses[1]) + (H >= 70 ? 1 : 0);
+    const want = rng.int(biome.houses[0], biome.houses[1]) + (P.half >= 70 ? 1 : 0);
     let placed = 0;
     for (let attempt = 0; attempt < 60 && placed < want; attempt++) {
       const lane = rng.pick(g.lanes);
@@ -433,6 +466,7 @@ export function dress(rng: Rng, g: Graph, t: Terrain, biome: Biome, theme: MapTh
       return x === tx && z === tz ? [[x, y, z]] : [[x, y, z], [tx, y, tz]];
     }) as [number, number, number][],
     sight,
+    overpasses,
   };
 }
 
@@ -454,7 +488,7 @@ function breakSightlines(rng: Rng, g: Graph, p: Placer, ground: Ground, biome: B
   // Where the enemy might stand: anywhere in their half but the rim along the walls.
   const enemy: [number, number][] = [];
   for (let z = -H + 3; z <= -4; z += 2.5) {
-    for (let x = -H + 3; x <= H - 3; x += 2.5) if (p.terrain.zoneAt(x, z) !== ZONE.edge) enemy.push([x, z]);
+    for (let x = -H + 3; x <= H - 3; x += 2.5) if (p.terrain.zoneAt(x, z) !== ZONE.edge && p.terrain.inside(x, z)) enemy.push([x, z]);
   }
   const flagRange = Math.max(26, P.baseZ * 0.75);
 
