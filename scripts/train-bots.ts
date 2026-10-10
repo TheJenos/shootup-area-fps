@@ -4,7 +4,7 @@
  * applies them, keeps checkpoints and moves through the curriculum (aim → duel → tdm → ctf → snd → mix).
  *
  *   npm run train:bots -- [--workers 9] [--steps 50M] [--batch 32768] [--stage auto|aim|duel|tdm|ctf|snd|mix]
- *                         [--fresh] [--dir bots] [--arenas 2] [--lr 3e-4] [--view-port 7777 | 0]
+ *                         [--fresh] [--dir bots] [--arenas 2] [--lr 3e-4] [--view-port 7777 | 0] [--allow-sleep]
  *
  * While it runs, http://localhost:7777 shows it live: one of the matches being played, seen from above,
  * and the learning curves (--view-port 0 turns that off).
@@ -13,6 +13,7 @@
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync } from 'node:fs';
 import { createServer, type ServerResponse } from 'node:http';
+import { spawn } from 'node:child_process';
 import { cpus } from 'node:os';
 import { join } from 'node:path';
 import { loadPhysics } from '../src/game/physics';
@@ -236,6 +237,23 @@ interface Rolling {
   rewardPerEpisode: number;
 }
 
+/**
+ * On a Mac, hold off idle sleep for as long as training runs (caffeinate, tied to this process, so it lets
+ * go when training stops, however it stops). Asleep, a run just stalls: one iteration once took 15 minutes
+ * instead of 10 seconds. The display may still sleep. --allow-sleep turns this off.
+ */
+function keepAwake(): void {
+  if (process.platform !== 'darwin' || flag('allow-sleep')) return;
+  try {
+    // -i: no idle sleep; -s: no system sleep at all while on mains power (-i alone let the Mac drop back to
+    // sleep after its brief maintenance wakes).
+    const child = spawn('caffeinate', ['-s', '-i', '-w', String(process.pid)], { stdio: 'ignore' });
+    child.on('error', () => console.warn('Could not keep the computer awake (caffeinate): it may sleep and pause training'));
+    child.unref();
+    console.log('Keeping the computer awake while training runs (--allow-sleep to let it sleep)');
+  } catch { /* not available: carry on */ }
+}
+
 async function main(): Promise<void> {
   const workers = Number(opt('workers', String(Math.max(1, cpus().length - 1))));
   const totalSteps = count(opt('steps', '50M'));
@@ -244,6 +262,7 @@ async function main(): Promise<void> {
   const dir = opt('dir', 'bots');
   const stageArg = opt('stage', 'auto');
   const viewPort = Number(opt('view-port', '7777'));
+  keepAwake();
   const baseLr = Number(opt('lr', String(DEFAULT_PPO.lr)));
   mkdirSync(dir, { recursive: true });
   const latest = join(dir, 'latest.json');
