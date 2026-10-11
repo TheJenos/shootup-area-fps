@@ -13,12 +13,28 @@ test.describe('spectating', () => {
     await expect(bob.page.locator('#spectate')).toContainText('Spectating');
     await expect(bob.page.locator('#spectate strong')).toHaveText(alice.name);
     // Through Alice's eyes: her health, gun and items in place of Bob's own (no keys to press on them), and the radar.
+    await alice.give('medkit');
     await expect(bob.page.locator('#watched-tag strong')).toHaveText(alice.name);
     await expect(bob.page.locator('#health')).toContainText('100');
     await expect(bob.page.locator('#ammo.watched')).toContainText('Rifle');
+    await expect(bob.page.locator('#ammo.watched #ammo-value')).toHaveText('30');
+    // She fires once: her rounds, as Bob sees them, follow.
+    await alice.page.evaluate(() => (window as any).game.test.fire());
+    await expect(bob.page.locator('#ammo.watched #ammo-value')).toHaveText('29');
+    await expect(bob.page.locator('#ammo.watched')).toContainText('/ 90');
+    // She reloads: Bob's panel says so, and the gun in his view plays the reload too.
+    await alice.page.keyboard.press('KeyR');
+    await expect(bob.page.locator('#ammo.watched')).toHaveClass(/reloading/);
+    await expect.poll(() => bob.page.evaluate(() => (window as any).game.povWeapon.reloading)).toBe(true);
     await expect(bob.page.locator('#abilities .slot')).toHaveCount(3);
     await expect(bob.page.locator('#abilities .slot kbd')).toHaveCount(0);
+    await expect(bob.page.locator('#abilities .slot').first()).toContainText('Medkit');
     await expect(bob.page.locator('#minimap canvas')).toBeVisible();
+    // The radar is centred on Alice (at DUEL.a), not on Bob's own body.
+    await expect.poll(() => bob.page.evaluate(() => {
+      const v = (window as any).game.minimap.lastView;
+      return v ? [Math.round(v.x), Math.round(v.z)] : null;
+    })).toEqual([8, 0]);
     // Spectators can't be shot
     await expect.poll(() => alice.page.evaluate((id) => (window as any).game.remotes.get(id)?.hitboxes.length, bobId)).toBe(0);
 

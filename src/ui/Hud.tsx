@@ -140,7 +140,8 @@ export function Hud({ game, roomCode, onLeave }: Props) {
 
   const classes = [
     hud.matchEnd?.phase === 'mvp' && 'cinematic', // the MVP replay hides the crosshair, panels and abilities
-    hud.killcam && 'killcam', // the kill cam hides our own panels (it's the killer's view)
+    hud.killcam && 'killcam', // the kill cam: the killer's view
+    hud.watched && 'watching', // someone else's panels are up: the spectate banner moves out of their way
     game.touch && 'touch',
     hud.paused && 'paused',
     hud.cloaked && 'cloaked',
@@ -792,8 +793,11 @@ const WatchedPanels = memo(function WatchedPanels({ watched }: { watched: Watche
         <span className="label">Watching</span> <strong>{watched.name}</strong>
       </div>
       <HealthPanel hp={watched.hp} max={watched.maxHp} heal={null} />
-      <div id="ammo" className="panel watched">
+      <div id="ammo" className={`panel watched${watched.reloading ? ' reloading' : ''}`}>
         <div className="gun-slots"><span className="gun-slot on">{gun.icon} {gun.name}</span></div>
+        <span id="ammo-value">{watched.ammo ?? '—'}</span>
+        <span className="label"> / {watched.reserve === null ? '∞' : watched.reserve}</span>
+        <div id="reload-hint" className={watched.reloading ? 'show' : undefined}>RELOADING</div>
       </div>
       <AbilityBar slots={slots} buffs={NO_BUFFS} denied={null} showKeys={false} />
     </>

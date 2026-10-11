@@ -92,7 +92,11 @@ export class Minimap {
     this.base = base;
   }
 
+  /** What was last drawn (the e2e tests read where the radar is centred) */
+  lastView: MinimapView | null = null;
+
   draw(view: MinimapView): void {
+    this.lastView = view;
     const { g, dpr } = this;
     const size = MINIMAP_SIZE * dpr;
     const c = size / 2;

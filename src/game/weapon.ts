@@ -181,6 +181,15 @@ export class Weapon {
     return this.reloadTimer > 0;
   }
 
+  /**
+   * Play the reload (the dip, the hand to the magazine) without doing one: for the viewmodel seen
+   * through someone else's eyes, whose rounds aren't this weapon's. Their client plays the sound.
+   */
+  showReload(): void {
+    if (this.melee || this.knifing || this.reloading) return;
+    this.reloadTimer = GUNS[this.held.kind].reloadTime;
+  }
+
   get switching(): boolean {
     return this.switchTimer > 0;
   }

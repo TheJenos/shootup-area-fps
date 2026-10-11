@@ -1079,6 +1079,18 @@ kbd {
 #spectate .label { font-size: 14px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); }
 #spectate strong { font-size: 20px; }
 #spectate .muted { font-size: 14px; }
+/* With someone's panels up (their items sit bottom-centre), the banner goes under the score bar instead,
+   as one line, so the two never stack on each other. The free camera keeps it at the bottom. */
+#hud.watching #spectate {
+  top: 110px;
+  bottom: auto;
+  flex-direction: row;
+  gap: 10px;
+  padding: 6px 14px;
+}
+#hud.watching #spectate strong { font-size: 16px; }
+#hud.watching #spectate .muted { font-size: 12px; }
+@media (max-height: 520px) { #hud.watching #spectate { top: 88px; } }
 #match-summary tr.spectating td { color: var(--muted); font-style: italic; }
 
 /* Kill cam: letterbox bars and a card at the bottom (who, how, skip); our own panels make way */

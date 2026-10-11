@@ -142,6 +142,14 @@ const KILL_HEAL = 0.5;
 const SPAWN_PROTECT_MS = 1_500;
 /** Scratch for an objective's position */
 const _objective = new THREE.Vector3();
+
+/** "magazine/reserve" from a player record (see `am` on PlayerState); unknown when it was never sent */
+function parseAmmo(am: string | undefined): { ammo: number | null; reserve: number | null } {
+  if (typeof am !== 'string') return { ammo: null, reserve: null };
+  const [mag, reserve] = am.split('/');
+  const n = (s: string | undefined) => (s && /^\d+$/.test(s) ? Number(s) : null);
+  return { ammo: n(mag), reserve: n(reserve) };
+}
 /** How hard a killing hit shoves the body, per weapon (m/s at the chest) */
 const KNOCKBACK: Partial<Record<WeaponKind, number>> = { rifle: 3, deagle: 4, shotgun: 6, sniper: 6, grenade: 7, mine: 8, flag: 4.5, bomb: 12 };
 
@@ -1296,6 +1304,7 @@ export class Game {
     return {
       x: r2(p.x), y: r2(p.y), z: r2(p.z), yaw: r3(this.player.yaw), pitch: r3(this.player.pitch), stance: this.player.stance,
       aim: this.player.aiming, rl: this.weapon.reloading, th: this.throws,
+      am: `${this.weapon.ammo}/${this.weapon.reserve ?? ''}`,
     };
   }
 
@@ -4350,6 +4359,8 @@ export class Game {
     pv.showGun(gun);
     if (target.consumeShotFlash()) pv.flashShot();
     if (target.consumeKnife()) pv.startKnife(0);
+    // Their reload, in the viewmodel too (the sound comes with it elsewhere, like any remote reload).
+    if (target.isReloading && !pv.reloading) pv.showReload();
     const aim = target.aimAmount;
     pv.update(dt, target.moveSpeed, target.sprinting && aim < 0.5, aim > 0.5);
     const fov = THREE.MathUtils.lerp(settings.get().fov, GUNS[gun].adsFov, aim);
@@ -4612,6 +4623,8 @@ export class Game {
       hp: Math.max(0, p.hp ?? 0),
       maxHp: this.rules.health,
       gun: p.gun ?? 'rifle',
+      ...parseAmmo(p.am),
+      reloading: !!p.rl,
       slots: (p.ab ?? '').split(',').map((s) => {
         const [type, uses] = s.split(':');
         return type && type in ABILITIES ? { type: type as AbilityType, usesLeft: Number(uses) || 0 } : null;
@@ -4631,10 +4644,13 @@ export class Game {
   private updateRadar(): void {
     if (!this.joined || !this.map) return;
     const now = performance.now();
-    // Through someone else's eyes, the radar follows them: centred on the camera, their team's colours.
+    // Through someone else's eyes, the radar follows them: centred on their avatar (the spectated player,
+    // or the replay's stand-in), their team's colours. Not the camera: our own player re-syncs it to our
+    // body every frame, and applyPov only moves it to them after this.
     const watchedId = this.watchedId();
     const watched = this.updateWatched(watchedId);
-    const me = watched ? this.camera.position : this.player.position;
+    const pov = this.playback ? this.playback.pov : watchedId ? this.remotes.get(watchedId) ?? null : null;
+    const me = pov ? pov.position : this.player.position;
     const team = watched ? watched.team : this.team;
     const ally = (id: string) => (watched ? !!team && id !== watchedId && this.players[id]?.team === team : this.isAlly(id));
     const markers: MinimapMarker[] = [];
@@ -4694,15 +4710,7 @@ export class Game {
       }
     }
 
-    if (settings.get().minimap) {
-      // Which way is up: where the camera looks (forward is -z at yaw 0, so yaw = atan2(-dx, -dz)).
-      let yaw = this.player.yaw;
-      if (watched) {
-        this.camera.getWorldDirection(_objective);
-        yaw = Math.atan2(-_objective.x, -_objective.z);
-      }
-      this.minimap.draw({ x: me.x, z: me.z, yaw, team, markers });
-    }
+    if (settings.get().minimap) this.minimap.draw({ x: me.x, z: me.z, yaw: pov ? pov.yaw : this.player.yaw, team, markers });
     const host = this.renderer.domElement;
     this.markers.update(this.alive && !this.playback && !watched ? objectives : [], this.camera, this.camera.position, host.clientWidth, host.clientHeight);
   }

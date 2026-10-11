@@ -49,7 +49,7 @@ const SEND_RATE = 10;
 /** Seconds between sending a bot's whole pose rather than just what changed */
 const HEARTBEAT = 5;
 
-type BotPose = Pick<PlayerState, 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'stance' | 'aim' | 'rl' | 'th'>;
+type BotPose = Pick<PlayerState, 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'stance' | 'aim' | 'rl' | 'th' | 'ab' | 'am'>;
 
 /** The fields of `next` that differ from `prev`, or null if none do. */
 function poseChanges<T extends object>(prev: T, next: T): Partial<T> | null {
@@ -550,6 +550,10 @@ export class BotHost {
     return {
       x: r2(p.x), y: r2(p.y), z: r2(p.z), yaw: r3(bot.yaw), pitch: r3(bot.pitch), stance: bot.mover.stance, aim: bot.alive && bot.brain.aim.ads > 0.5, rl: bot.reloadLeft > 0,
       th: bot.gear.throws,
+      // Its items and rounds, for whoever watches through its eyes (type and uses left per slot, like a
+      // player's; its rifle never runs dry, so that reserve is left out: endless)
+      ab: bot.gear.inventory.view(0).map((s) => (s ? `${s.type}:${s.usesLeft}` : '')).join(',').replace(/,+$/, ''),
+      am: `${bot.ammo}/${bot.gear.special && bot.gun === bot.gear.special.kind ? bot.gear.special.reserve : ''}`,
     };
   }
 

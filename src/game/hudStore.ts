@@ -62,6 +62,10 @@ export interface WatchedView {
   hp: number;
   maxHp: number;
   gun: GunKind;
+  /** Rounds in the held gun and in reserve; null when unknown (reserve null also means endless) */
+  ammo: number | null;
+  reserve: number | null;
+  reloading: boolean;
   /** Their ability slots: type and uses left (cooldowns aren't shared) */
   slots: ({ type: AbilityType; usesLeft: number } | null)[];
 }

@@ -40,6 +40,8 @@ export interface PlayerState {
    * empty slot, joined with commas (e.g. "medkit:2,,shield:1"). Sent when they change.
    */
   ab?: string;
+  /** The held gun's rounds, "magazine/reserve" ("23/90"; "23/" when the reserve is endless), for whoever watches */
+  am?: string;
   /** Watching rather than playing: no body, no hitboxes, not in the standings */
   spec?: boolean;
   /** A bot, played by the room owner's client */
@@ -102,7 +104,7 @@ export type PlayerStats = Required<Pick<PlayerState, 'damage' | 'shots' | 'hits'
 
 export type Stance = 'stand' | 'crouch' | 'slide';
 
-export type Pose = Pick<PlayerState, 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'stance' | 'aim' | 'rl' | 'th'>;
+export type Pose = Pick<PlayerState, 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'stance' | 'aim' | 'rl' | 'th' | 'am'>;
 
 export type Vec3Tuple = [number, number, number];
 

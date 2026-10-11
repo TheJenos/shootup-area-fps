@@ -690,6 +690,11 @@ export class RemotePlayer {
   }
 
   /** True once per reload they start (for the sound). */
+  /** Reloading right now, as their record says (see consumeReloadStart for the moment it began) */
+  get isReloading(): boolean {
+    return this.reloading;
+  }
+
   consumeReloadStart(): boolean {
     const started = this.reloadStarted;
     this.reloadStarted = false;
