@@ -150,7 +150,18 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
   transform: scale(var(--hud-scale));
 }
 #minimap canvas { display: block; }
-#hud.cinematic #minimap, #hud.killcam #minimap { display: none; }
+/* Whose eyes the panels belong to while spectating, in the kill cam or the MVP replay */
+#watched-tag {
+  position: absolute;
+  left: 24px;
+  bottom: 96px;
+  font-size: 13px;
+  color: var(--muted);
+  transform-origin: bottom left;
+  transform: scale(var(--hud-scale));
+}
+#watched-tag strong { color: var(--who, var(--text)); letter-spacing: 0.5px; }
+#ammo.watched { font-size: 22px; }
 
 /* Objective markers (game/objectiveMarkers.ts): over the thing on screen, pinned to the edge otherwise */
 #objective-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
@@ -1071,8 +1082,7 @@ kbd {
 #match-summary tr.spectating td { color: var(--muted); font-style: italic; }
 
 /* Kill cam: letterbox bars and a card at the bottom (who, how, skip); our own panels make way */
-#hud.killcam .panel,
-#hud.killcam #abilities { display: none; }
+/* (The kill cam shows the killer's panels in place of ours: see WatchedPanels in Hud.tsx.) */
 #killcam-frame {
   position: absolute;
   inset: 0;
@@ -1328,8 +1338,6 @@ kbd {
 #round-over .podium li:first-child { border: 1px solid var(--accent); }
 
 #hud.cinematic #crosshair,
-#hud.cinematic .panel,
-#hud.cinematic #abilities,
 #hud.cinematic #scorebar-wrap,
 #hud.cinematic #scorebar,
 #hud.cinematic #room-tag,

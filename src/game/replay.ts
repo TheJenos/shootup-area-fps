@@ -159,6 +159,11 @@ export class ReplayDirector {
   /** Where each flag is at the replay's current time, so carriers' stand-ins stow their guns */
   private flags: Partial<Record<Team, FlagPlacement>> = {};
 
+  /** Whose eyes the replay is seen through */
+  get viewerId(): string {
+    return this.opts.mvp.id;
+  }
+
   constructor(opts: ReplayOptions) {
     this.opts = opts;
     const { mvp, recorder } = opts;

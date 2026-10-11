@@ -35,6 +35,11 @@ export interface PlayerState {
   t?: number;
   /** Just respawned and not yet shooting: can't be hurt (others see a shimmer) */
   inv?: boolean;
+  /**
+   * The ability slots, for whoever is watching through our eyes: "type:usesLeft" per slot, empty for an
+   * empty slot, joined with commas (e.g. "medkit:2,,shield:1"). Sent when they change.
+   */
+  ab?: string;
   /** Watching rather than playing: no body, no hitboxes, not in the standings */
   spec?: boolean;
   /** A bot, played by the room owner's client */

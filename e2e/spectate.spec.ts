@@ -12,8 +12,14 @@ test.describe('spectating', () => {
     await bob.play();
     await expect(bob.page.locator('#spectate')).toContainText('Spectating');
     await expect(bob.page.locator('#spectate strong')).toHaveText(alice.name);
-    // Spectators have no health panel and can't be shot
-    await expect(bob.page.locator('#health')).toHaveCount(0);
+    // Through Alice's eyes: her health, gun and items in place of Bob's own (no keys to press on them), and the radar.
+    await expect(bob.page.locator('#watched-tag strong')).toHaveText(alice.name);
+    await expect(bob.page.locator('#health')).toContainText('100');
+    await expect(bob.page.locator('#ammo.watched')).toContainText('Rifle');
+    await expect(bob.page.locator('#abilities .slot')).toHaveCount(3);
+    await expect(bob.page.locator('#abilities .slot kbd')).toHaveCount(0);
+    await expect(bob.page.locator('#minimap canvas')).toBeVisible();
+    // Spectators can't be shot
     await expect.poll(() => alice.page.evaluate((id) => (window as any).game.remotes.get(id)?.hitboxes.length, bobId)).toBe(0);
 
     await bob.openPauseMenu();
@@ -22,6 +28,7 @@ test.describe('spectating', () => {
     await waitForValue(`rooms/${code}/players/${bobId}`, (p) => !p?.spec && p?.alive === true);
     await bob.play();
     await expect(bob.page.locator('#spectate')).toHaveCount(0);
+    await expect(bob.page.locator('#watched-tag')).toHaveCount(0);
     await expect(bob.page.locator('#health')).toContainText('100');
   });
 

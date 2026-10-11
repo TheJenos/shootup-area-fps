@@ -575,6 +575,11 @@ when they aim, flashing when they fire), and their body hidden. Left click goes 
 to the previous. With nobody to follow you get a free camera (move keys to fly, E or jump up, crouch down,
 sprint for speed), which hands back to first person as soon as someone is alive. **Back to the fight** respawns you.
 
+Through someone else's eyes — spectating, the kill cam, the MVP replay — the panels are theirs, not yours:
+"Watching *name*", their health, the gun they hold and their ability items (type and uses left; ammo and
+cooldowns aren't shared), with the radar centred on them and coloured for their team. Items travel as `ab` on
+the player record ("medkit:2,,shield:1"), sent only when they change.
+
 These are the defaults. **Settings** (in the lobby, or the pause menu) lets you change mouse sensitivity
 (0.1×–4×), invert vertical look and rebind every key except shooting (left click) and Esc. Binding a key
 that's already in use swaps the two. Settings are saved in your browser (`src/game/settings.ts`).
@@ -854,7 +859,7 @@ Checkpoints and the training log (`bots/train-log.jsonl`) stay in `bots/`, which
 
 ```
 lobby/{code}               room name, mode, map seed, host, members (presence)
-rooms/{code}/players/{id}  position, yaw/pitch, hp, alive, kills, deaths, team
+rooms/{code}/players/{id}  position (+ t, when it was taken), yaw/pitch, hp, alive, kills, deaths, team, inv, ab (items)
 rooms/{code}/events/{id}   'shot', 'kill', 'grenade', 'blast' events, auto-deleted after 3 s
 rooms/{code}/pickups/{id}  abilities lying on the map
 rooms/{code}/game          round number, map seed, start time, winner + MVP + next seed, scores, flags

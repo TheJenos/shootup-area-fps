@@ -27,6 +27,12 @@ test.describe('kill cam', () => {
     await expect(banner).toContainText('Kill cam');
     await expect(banner.locator('strong')).toHaveText(alice.name);
     await expect(bob.page.locator('#death-overlay')).toHaveCount(0);
+    // Her panels, not Bob's: health, gun, items, and the radar from her side.
+    await expect(bob.page.locator('#watched-tag strong')).toHaveText(alice.name);
+    await expect(bob.page.locator('#health')).toBeVisible();
+    await expect(bob.page.locator('#ammo.watched')).toContainText('Rifle');
+    await expect(bob.page.locator('#abilities .slot')).toHaveCount(3);
+    await expect(bob.page.locator('#minimap canvas')).toBeVisible();
     // Seen through Alice's eyes: the camera follows her recorded moves (the test teleported her into
     // place just before, so it ends up where she is now).
     const at = await alice.page.evaluate(() => (window as any).game.player.position.toArray());

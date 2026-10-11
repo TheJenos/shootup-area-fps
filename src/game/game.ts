@@ -11,7 +11,7 @@ import { RemotePlayer, type HitboxData } from './remotePlayer';
 import { loadCharacter, type CharacterAsset } from './character';
 import { Weapon, Effects } from './weapon';
 import {
-  HudStore, type DamageIndicator, type HudState, type MatchEnd, type MyMatch, type ScoreRow,
+  HudStore, type DamageIndicator, type HudState, type MatchEnd, type MyMatch, type ScoreRow, type WatchedView,
 } from './hudStore';
 import {
   ABILITIES, ABILITY_TYPES, Inventory, CLOAK_DURATION, DASH_SPEED, FIRE_DAMAGE, FIRE_DURATION, FIRE_TICK, FLASH_MAX,
@@ -268,6 +268,9 @@ export class Game {
   private protectedUntil = 0;
   /** S&D: when the planted bomb next beeps (performance.now ms) */
   private nextBeepAt = 0;
+  /** Our ability slots as last sent (see `ab` on PlayerState) */
+  private lastAb = '';
+  private lastWatchedKey = '';
   /** The radar and the objective markers: DOM of their own, mounted by the HUD */
   readonly minimap = new Minimap();
   readonly markers = new ObjectiveMarkers();
@@ -3949,6 +3952,12 @@ export class Game {
     if (key !== this.lastSlotsKey) {
       this.lastSlotsKey = key;
       this.hud.update({ slots, buffs });
+      // Whoever watches through our eyes sees our items: type and uses left per slot, when they change.
+      const ab = slots.map((s) => (s ? `${s.type}:${s.usesLeft}` : '')).join(',');
+      if (ab !== this.lastAb && this.joined) {
+        this.lastAb = ab;
+        this.net.sendState({ ab: ab.replace(/,+$/, '') || null }).catch((err: unknown) => console.warn('Could not send our items', err));
+      }
     }
   }
 
@@ -4581,19 +4590,61 @@ export class Game {
     this.updateRadar();
   }
 
+  /**
+   * Whose eyes we're looking through, other than our own: the player we're spectating, the killer in
+   * the kill cam, the MVP in their replay. Null when it's us.
+   */
+  private watchedId(): string | null {
+    if (this.killcam) return this.killcam.viewerId;
+    if (this.replay) return this.replay.viewerId;
+    if (this.spectating && !this.specFree && this.specTarget) return this.specTarget;
+    return null;
+  }
+
+  /** The watched player's panels (health, gun, items), from their record; null when we're on our own eyes. */
+  private updateWatched(id: string | null): WatchedView | null {
+    const p = id ? this.players[id] : undefined;
+    const view: WatchedView | null = id && p ? {
+      id,
+      name: p.name,
+      color: p.color,
+      team: p.team ?? null,
+      hp: Math.max(0, p.hp ?? 0),
+      maxHp: this.rules.health,
+      gun: p.gun ?? 'rifle',
+      slots: (p.ab ?? '').split(',').map((s) => {
+        const [type, uses] = s.split(':');
+        return type && type in ABILITIES ? { type: type as AbilityType, usesLeft: Number(uses) || 0 } : null;
+      }),
+    } : null;
+    // Three slots, always (an empty record means none are known).
+    if (view) while (view.slots.length < 3) view.slots.push(null);
+    const key = JSON.stringify(view);
+    if (key !== this.lastWatchedKey) {
+      this.lastWatchedKey = key;
+      this.hud.update({ watched: view });
+    }
+    return view;
+  }
+
   /** The radar and the objective markers, from what this client knows this frame. */
   private updateRadar(): void {
     if (!this.joined || !this.map) return;
     const now = performance.now();
-    const me = this.player.position;
+    // Through someone else's eyes, the radar follows them: centred on the camera, their team's colours.
+    const watchedId = this.watchedId();
+    const watched = this.updateWatched(watchedId);
+    const me = watched ? this.camera.position : this.player.position;
+    const team = watched ? watched.team : this.team;
+    const ally = (id: string) => (watched ? !!team && id !== watchedId && this.players[id]?.team === team : this.isAlly(id));
     const markers: MinimapMarker[] = [];
     const objectives: Objective[] = [];
     const scanning = this.scanUntil > now;
     for (const [id, r] of this.remotes) {
-      if (!r.alive || this.players[id]?.spec) continue;
+      if (!r.alive || this.players[id]?.spec || id === watchedId) continue;
       const p = r.position;
-      if (this.isAlly(id)) {
-        markers.push({ x: p.x, z: p.z, kind: 'ally', color: this.team ? TEAM_INFO[this.team].color : '#fff' });
+      if (ally(id)) {
+        markers.push({ x: p.x, z: p.z, kind: 'ally', color: team ? TEAM_INFO[team].color : '#fff' });
         continue;
       }
       // Enemies only where a player could know: our scan pulse, or gunfire a moment ago.
@@ -4643,9 +4694,17 @@ export class Game {
       }
     }
 
-    if (settings.get().minimap) this.minimap.draw({ x: me.x, z: me.z, yaw: this.player.yaw, team: this.team, markers });
+    if (settings.get().minimap) {
+      // Which way is up: where the camera looks (forward is -z at yaw 0, so yaw = atan2(-dx, -dz)).
+      let yaw = this.player.yaw;
+      if (watched) {
+        this.camera.getWorldDirection(_objective);
+        yaw = Math.atan2(-_objective.x, -_objective.z);
+      }
+      this.minimap.draw({ x: me.x, z: me.z, yaw, team, markers });
+    }
     const host = this.renderer.domElement;
-    this.markers.update(this.alive && !this.playback ? objectives : [], this.camera, this.camera.position, host.clientWidth, host.clientHeight);
+    this.markers.update(this.alive && !this.playback && !watched ? objectives : [], this.camera, this.camera.position, host.clientWidth, host.clientHeight);
   }
 
   /** Keep the Discord profile line current (mode, map, score, player count); at most every few seconds. */

@@ -1,7 +1,7 @@
 import type { SlotView } from './abilities';
 import { baseRules, type ModeRules } from './rules';
 import type { SndPhase } from './snd';
-import type { GameMode, GunKind, PlayerState, SndRecord, Team, WeaponKind } from '../types';
+import type { AbilityType, GameMode, GunKind, PlayerState, SndRecord, Team, WeaponKind } from '../types';
 import type { MapSize, MapSpec } from './mapgen';
 
 const FEED_LIFETIME = 5_000;
@@ -51,6 +51,19 @@ export interface ScoreView {
   /** FFA: our kills, and the best of everyone else */
   mine: number;
   leader: { name: string; kills: number } | null;
+}
+
+/** A watched player, as their panels show them (what their record tells everyone) */
+export interface WatchedView {
+  id: string;
+  name: string;
+  color: string;
+  team: Team | null;
+  hp: number;
+  maxHp: number;
+  gun: GunKind;
+  /** Their ability slots: type and uses left (cooldowns aren't shared) */
+  slots: ({ type: AbilityType; usesLeft: number } | null)[];
 }
 
 export type FlagStatus =
@@ -164,6 +177,8 @@ export interface HudState {
   killConfirm: { n: number; name: string } | null;
   /** The key list shown for a few seconds the first time a mouse-and-keyboard player clicks in (`n` shows it again) */
   controlsCard: number;
+  /** Whose eyes we're looking through (spectating, the kill cam, the MVP replay): their panels replace ours */
+  watched: WatchedView | null;
   /** Increments every time we take damage. */
   damageFlash: number;
   /** Aiming down sights: the crosshair shrinks to a dot */
@@ -256,6 +271,7 @@ const initialState: HudState = {
   hitmarker: { n: 0, head: false, kill: false },
   killConfirm: null,
   controlsCard: 0,
+  watched: null,
   damageFlash: 0,
   aiming: false,
   damageIndicators: [],

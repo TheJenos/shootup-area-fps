@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useCountdown } from './useCountdown';
 import { LOW_HEALTH, type Game } from '../game/game';
-import type { FeedEntry, FlagStatus, HudState, MatchEnd, SndView } from '../game/hudStore';
+import type { FeedEntry, FlagStatus, HudState, MatchEnd, SndView, WatchedView } from '../game/hudStore';
 import { ABILITIES, type SlotView } from '../game/abilities';
 import { MVP_TIME, TEAM_INFO, otherTeam } from '../game/modes';
 import type { Team, WeaponKind } from '../types';
@@ -204,7 +204,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
 
       <div id="room-tag">Room <strong>{roomCode}</strong></div>
       {/* The radar and the objective markers draw themselves (game/minimap.ts, game/objectiveMarkers.ts); these are their places. */}
-      {showMinimap && !hud.death && !hud.spectate && !hud.killcam && !hud.matchEnd && <div id="minimap" ref={mountMinimap} />}
+      {showMinimap && (hud.watched || (!hud.death && !hud.spectate && !hud.matchEnd)) && <div id="minimap" ref={mountMinimap} />}
       {!hud.death && !hud.spectate && !hud.killcam && !hud.matchEnd && !hud.paused && <div id="objective-layer" ref={mountMarkers} />}
       <ScoreBar hud={hud} />
       {(showFps || PERF_DEBUG) && <FpsCounter />}
@@ -221,7 +221,9 @@ export function Hud({ game, roomCode, onLeave }: Props) {
           <button type="button" onClick={copy}>{copied ? 'Copied!' : game.touch ? 'Share' : 'Copy invite'}</button>
         </div>
       )}
-      {!hud.spectate && (
+      {hud.watched ? (
+        <WatchedPanels watched={hud.watched} />
+      ) : !hud.spectate && (
         <>
           <HealthPanel hp={hud.hp} max={hud.maxHp} heal={hud.heal} />
           <AmmoPanel hud={hud} touch={game.touch} />
@@ -777,6 +779,29 @@ const KillFeed = memo(function KillFeed({ entries }: { entries: FeedEntry[] }) {
   );
 });
 
+/**
+ * Through someone else's eyes (spectating, the kill cam, the MVP replay): their health, gun and items
+ * in place of ours, from what their record tells everyone (no ammo or cooldowns: those aren't shared).
+ */
+const WatchedPanels = memo(function WatchedPanels({ watched }: { watched: WatchedView }) {
+  const gun = GUNS[watched.gun];
+  const slots: (SlotView | null)[] = watched.slots.map((s) => (s ? { type: s.type, usesLeft: s.usesLeft, readyAt: 0 } : null));
+  return (
+    <>
+      <div id="watched-tag" style={{ '--who': safeColor(watched.color) } as React.CSSProperties}>
+        <span className="label">Watching</span> <strong>{watched.name}</strong>
+      </div>
+      <HealthPanel hp={watched.hp} max={watched.maxHp} heal={null} />
+      <div id="ammo" className="panel watched">
+        <div className="gun-slots"><span className="gun-slot on">{gun.icon} {gun.name}</span></div>
+      </div>
+      <AbilityBar slots={slots} buffs={NO_BUFFS} denied={null} showKeys={false} />
+    </>
+  );
+});
+
+const NO_BUFFS: HudState['buffs'] = { speed: null, shield: null, cloak: null, lifesteal: null, scan: null };
+
 /** A running buff's chip, counting down on its own (see useCountdown) */
 function Buff({ kind, icon, until }: { kind: string; icon: string; until: number }) {
   const left = useCountdown(until);
@@ -784,7 +809,7 @@ function Buff({ kind, icon, until }: { kind: string; icon: string; until: number
 }
 
 const AbilityBar = memo(function AbilityBar(
-  { slots, buffs, denied, onUse }: Pick<HudState, 'slots' | 'buffs'> & { denied: HudState['slotDenied']; onUse?: (slot: number) => void },
+  { slots, buffs, denied, onUse, showKeys = true }: Pick<HudState, 'slots' | 'buffs'> & { denied: HudState['slotDenied']; onUse?: (slot: number) => void; showKeys?: boolean },
 ) {
   return (
     <div id="abilities">
@@ -798,7 +823,7 @@ const AbilityBar = memo(function AbilityBar(
       <div className="slots">
         {slots.map((slot, i) => (
           // A denial remounts the slot so the shake restarts.
-          <AbilitySlot key={denied?.slot === i ? `${i}-${denied.n}` : i} index={i} slot={slot} shake={denied?.slot === i} onUse={onUse} />
+          <AbilitySlot key={denied?.slot === i ? `${i}-${denied.n}` : i} index={i} slot={slot} shake={denied?.slot === i} onUse={onUse} showKeys={showKeys} />
         ))}
       </div>
     </div>
@@ -806,16 +831,18 @@ const AbilityBar = memo(function AbilityBar(
 });
 
 function AbilitySlot(
-  { index, slot, shake, onUse }: { index: number; slot: SlotView | null; shake: boolean; onUse?: (slot: number) => void },
+  { index, slot, shake, onUse, showKeys }: { index: number; slot: SlotView | null; shake: boolean; onUse?: (slot: number) => void; showKeys: boolean },
 ) {
   const { bindings } = useSettings();
   const key = keyLabel([bindings.ability1, bindings.ability2, bindings.ability3][index] ?? '');
+  // Someone else's slots carry no key of ours to press.
+  const kbd = showKeys && !onUse ? <kbd>{key}</kbd> : null;
   // Counts down here, in this slot alone, rather than the engine re-sending the slots ten times a second.
   const cooldown = useCountdown(slot?.readyAt ?? 0);
   if (!slot) {
     return (
       <div className="slot empty">
-        <kbd>{key}</kbd>
+        {kbd}
       </div>
     );
   }
@@ -827,7 +854,7 @@ function AbilitySlot(
       title={`${def.name}: ${def.description}`}
       onPointerDown={onUse ? (e) => { e.stopPropagation(); onUse(index); } : undefined}
     >
-      {!onUse && <kbd>{key}</kbd>}
+      {kbd}
       <span className="icon">{def.icon}</span>
       <span className="name">{def.name}</span>
       <span className="uses">
