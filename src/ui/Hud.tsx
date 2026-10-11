@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCountdown } from './useCountdown';
 import { LOW_HEALTH, type Game } from '../game/game';
 import type { FeedEntry, FlagStatus, HudState, MatchEnd, SndView } from '../game/hudStore';
 import { ABILITIES, type SlotView } from '../game/abilities';
@@ -11,7 +12,7 @@ import { PERF_DEBUG, perfStats } from '../game/perfStats';
 import { InventoryPanel } from './InventoryPanel';
 import { TouchControls } from './TouchControls';
 import { TouchIntro } from './TouchIntro';
-import { PauseMenu } from './PauseMenu';
+import { PauseMenu, controls } from './PauseMenu';
 import { MatchSetup } from './MatchSetup';
 import { BotsPanel } from './BotsPanel';
 import { GUNS } from '../game/guns';
@@ -27,6 +28,31 @@ const TOUCH_INTRO_KEY = 'fps-touch-intro';
 
 function useHud(game: Game): HudState {
   return useSyncExternalStore(game.hud.subscribe, game.hud.get);
+}
+
+/** How long the first-match key list stays up (ms) */
+const CONTROLS_CARD_MS = 8_000;
+
+/** The key list, with the player's own bindings, for a few seconds on the first match (Esc shows it again) */
+function ControlsCard() {
+  const { bindings } = useSettings();
+  const [shown, setShown] = useState(true);
+  useEffect(() => {
+    const timer = setTimeout(() => setShown(false), CONTROLS_CARD_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  if (!shown) return null;
+  return (
+    <aside id="controls-card" role="note" aria-label="Controls">
+      <h3>Controls</h3>
+      <ul className="keys">
+        {controls(bindings).map(([key, action]) => (
+          <li key={action}><kbd>{key}</kbd><span>{action}</span></li>
+        ))}
+      </ul>
+      <p className="muted">Esc shows these again</p>
+    </aside>
+  );
 }
 
 /** The icon the kill feed and death screen use for a weapon. */
@@ -79,7 +105,12 @@ interface Props {
 
 export function Hud({ game, roomCode, onLeave }: Props) {
   const hud = useHud(game);
-  const { hudScale, showFps } = useSettings();
+  const { hudScale, showFps, minimap: showMinimap } = useSettings();
+  // Stable, or React would take the radar and the markers out and put them back on every render.
+  const mountMinimap = useCallback((el: HTMLElement | null) => game.minimap.mount(el), [game]);
+  const mountMarkers = useCallback((el: HTMLElement | null) => game.markers.mount(el), [game]);
+  const touchAbility = useCallback((i: number) => game.touchAbility(i), [game]);
+  const useTouchAbility = game.touch ? touchAbility : undefined;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
   const [botsOpen, setBotsOpen] = useState(false);
@@ -132,8 +163,12 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       {!hud.death && !hud.spectate && <Crosshair ads={hud.aiming} />}
       {hud.hitmarker.n > 0 && (
         // A new key remounts the element, which restarts the CSS animation.
-        <div key={`hit-${hud.hitmarker.n}`} id="hitmarker" className={hud.hitmarker.head ? 'show head' : 'show'} aria-hidden="true" />
+        <div key={`hit-${hud.hitmarker.n}`} id="hitmarker" className={`show${hud.hitmarker.head ? ' head' : ''}${hud.hitmarker.kill ? ' kill' : ''}`} aria-hidden="true" />
       )}
+      {hud.killConfirm && !hud.death && (
+        <div key={`kc-${hud.killConfirm.n}`} id="kill-confirm" aria-hidden="true">ELIMINATED <strong>{hud.killConfirm.name}</strong></div>
+      )}
+      {hud.controlsCard > 0 && !hud.paused && <ControlsCard key={`cc-${hud.controlsCard}`} />}
       {hud.damageFlash > 0 && <div key={`dmg-${hud.damageFlash}`} id="damage-overlay" aria-hidden="true" />}
       {hud.respawnFlash > 0 && <div key={`rs-${hud.respawnFlash}`} id="respawn-flash" aria-hidden="true" />}
       {hud.cloaked && !hud.death && <div id="cloak-tint" aria-hidden="true" />}
@@ -168,6 +203,9 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       {hud.damageIndicators.length > 0 && !hud.death && <DamageDirections indicators={hud.damageIndicators} />}
 
       <div id="room-tag">Room <strong>{roomCode}</strong></div>
+      {/* The radar and the objective markers draw themselves (game/minimap.ts, game/objectiveMarkers.ts); these are their places. */}
+      {showMinimap && !hud.death && !hud.spectate && !hud.killcam && !hud.matchEnd && <div id="minimap" ref={mountMinimap} />}
+      {!hud.death && !hud.spectate && !hud.killcam && !hud.matchEnd && !hud.paused && <div id="objective-layer" ref={mountMarkers} />}
       <ScoreBar hud={hud} />
       {(showFps || PERF_DEBUG) && <FpsCounter />}
       <KillFeed entries={hud.feed} />
@@ -191,7 +229,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
             slots={hud.slots}
             buffs={hud.buffs}
             denied={hud.slotDenied}
-            onUse={game.touch ? (i) => game.touchAbility(i) : undefined}
+            onUse={useTouchAbility}
           />
         </>
       )}
@@ -582,7 +620,7 @@ function DamageDirections({ indicators }: { indicators: HudState['damageIndicato
   );
 }
 
-function HealthPanel({ hp, max, heal }: { hp: number; max: number; heal: HudState['heal'] }) {
+const HealthPanel = memo(function HealthPanel({ hp, max, heal }: { hp: number; max: number; heal: HudState['heal'] }) {
   const pct = Math.max(0, Math.min(100, (hp / max) * 100));
   const color = pct > 60 ? 'var(--good)' : pct > 30 ? 'var(--accent)' : 'var(--danger)';
   return (
@@ -597,7 +635,7 @@ function HealthPanel({ hp, max, heal }: { hp: number; max: number; heal: HudStat
       </div>
     </div>
   );
-}
+});
 
 function AmmoPanel({ hud, touch }: { hud: HudState; touch: boolean }) {
   const { ammo, magSize: max, reloading, gun, reserve, special } = hud;
@@ -711,7 +749,7 @@ function GunPrompt({ text, touch, onTap }: { text: string; touch: boolean; onTap
   return <div id="gun-prompt" role="status"><kbd>{keyLabel(bindings.interact)}</kbd> {text}</div>;
 }
 
-function KillFeed({ entries }: { entries: FeedEntry[] }) {
+const KillFeed = memo(function KillFeed({ entries }: { entries: FeedEntry[] }) {
   const tag = (team: Team | null) => team && (
     <span className={`tag ${team}`} title={`${TEAM_INFO[team].name} team`}>{TEAM_INFO[team].name[0]}</span>
   );
@@ -737,19 +775,25 @@ function KillFeed({ entries }: { entries: FeedEntry[] }) {
       )}
     </ul>
   );
+});
+
+/** A running buff's chip, counting down on its own (see useCountdown) */
+function Buff({ kind, icon, until }: { kind: string; icon: string; until: number }) {
+  const left = useCountdown(until);
+  return <span className={`buff ${kind}`}>{icon} {left.toFixed(1)}s</span>;
 }
 
-function AbilityBar(
+const AbilityBar = memo(function AbilityBar(
   { slots, buffs, denied, onUse }: Pick<HudState, 'slots' | 'buffs'> & { denied: HudState['slotDenied']; onUse?: (slot: number) => void },
 ) {
   return (
     <div id="abilities">
       <div className="buffs">
-        {buffs.speed !== null && <span className="buff speed">⚡ {buffs.speed.toFixed(1)}s</span>}
+        {buffs.speed !== null && <Buff kind="speed" icon="⚡" until={buffs.speed} />}
         {buffs.shield !== null && <span className="buff shield">🛡️ {buffs.shield}</span>}
-        {buffs.cloak !== null && <span className="buff cloak">👻 {buffs.cloak.toFixed(1)}s</span>}
-        {buffs.lifesteal !== null && <span className="buff lifesteal">🩸 {buffs.lifesteal.toFixed(1)}s</span>}
-        {buffs.scan !== null && <span className="buff scan">📡 {buffs.scan.toFixed(1)}s</span>}
+        {buffs.cloak !== null && <Buff kind="cloak" icon="👻" until={buffs.cloak} />}
+        {buffs.lifesteal !== null && <Buff kind="lifesteal" icon="🩸" until={buffs.lifesteal} />}
+        {buffs.scan !== null && <Buff kind="scan" icon="📡" until={buffs.scan} />}
       </div>
       <div className="slots">
         {slots.map((slot, i) => (
@@ -759,13 +803,15 @@ function AbilityBar(
       </div>
     </div>
   );
-}
+});
 
 function AbilitySlot(
   { index, slot, shake, onUse }: { index: number; slot: SlotView | null; shake: boolean; onUse?: (slot: number) => void },
 ) {
   const { bindings } = useSettings();
   const key = keyLabel([bindings.ability1, bindings.ability2, bindings.ability3][index] ?? '');
+  // Counts down here, in this slot alone, rather than the engine re-sending the slots ten times a second.
+  const cooldown = useCountdown(slot?.readyAt ?? 0);
   if (!slot) {
     return (
       <div className="slot empty">
@@ -774,7 +820,7 @@ function AbilitySlot(
     );
   }
   const def = ABILITIES[slot.type];
-  const coolingDown = slot.cooldown > 0;
+  const coolingDown = cooldown > 0;
   return (
     <div
       className={`slot ${coolingDown ? 'cooling' : 'ready'}${shake ? ' shake' : ''}`}
@@ -790,8 +836,8 @@ function AbilitySlot(
         ))}
       </span>
       {coolingDown && (
-        <div className="cooldown" style={{ height: `${(slot.cooldown / def.cooldown) * 100}%` }}>
-          <span>{Math.ceil(slot.cooldown)}</span>
+        <div className="cooldown" style={{ height: `${(cooldown / def.cooldown) * 100}%` }}>
+          <span>{Math.ceil(cooldown)}</span>
         </div>
       )}
     </div>

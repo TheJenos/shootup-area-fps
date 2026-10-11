@@ -4,6 +4,7 @@ import { GUNS } from '../game/guns';
 import type { GunKind } from '../types';
 import { keyLabel } from '../game/settings';
 import { useSettings } from './SettingsPanel';
+import { useCountdown } from './useCountdown';
 
 interface Props {
   game: Game;
@@ -11,6 +12,11 @@ interface Props {
   /** The picked-up gun and its rounds left, if any */
   gun: GunKind | null;
   gunRounds: number | null;
+}
+
+function CooldownLabel({ readyAt }: { readyAt: number }) {
+  const left = useCountdown(readyAt);
+  return <span className={left > 0 ? 'cooling' : 'ready'}>{left > 0 ? `Cooldown ${left.toFixed(1)}s` : 'Ready'}</span>;
 }
 
 /** Opened with I: shows the picked-up gun and each ability slot, and lets the player drop them. */
@@ -77,9 +83,7 @@ function ItemDetails({ slot }: { slot: SlotView }) {
           </span>
           {slot.usesLeft} / {def.uses} uses
         </span>
-        <span className={slot.cooldown > 0 ? 'cooling' : 'ready'}>
-          {slot.cooldown > 0 ? `Cooldown ${slot.cooldown.toFixed(1)}s` : 'Ready'}
-        </span>
+        <CooldownLabel readyAt={slot.readyAt} />
         <span className="muted">{def.cooldown}s cooldown</span>
       </div>
     </>

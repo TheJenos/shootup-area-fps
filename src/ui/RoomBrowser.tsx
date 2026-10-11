@@ -59,6 +59,8 @@ interface Props {
   error: string;
   onJoin(code: string): void;
   onCreate(): void;
+  /** Straight into a match against bots (not offered where it doesn't fit, e.g. inside Discord) */
+  onQuickPlay?(): void;
   /** Rooms not to list (e.g. the Discord channel's own room, shown on its own tab) */
   hide?: string;
 }
@@ -67,7 +69,7 @@ interface Props {
  * The open rooms: search them (name, code, mode, map, host, players), join one, type a code,
  * or go create a room. Shared by the lobby and the Discord lobby.
  */
-export function RoomBrowser({ rooms, failed, retry, initialCode = '', busy, joiningCode, disabled, error, onJoin, onCreate, hide }: Props) {
+export function RoomBrowser({ rooms, failed, retry, initialCode = '', busy, joiningCode, disabled, error, onJoin, onCreate, onQuickPlay, hide }: Props) {
   const [search, setSearch] = useState('');
   const [code, setCode] = useState(initialCode);
   const listed = useMemo(() => rooms && (hide ? rooms.filter((r) => r.code !== hide) : rooms), [rooms, hide]);
@@ -108,6 +110,11 @@ export function RoomBrowser({ rooms, failed, retry, initialCode = '', busy, join
             {busy && joiningCode === code.trim().toUpperCase() ? <><span className="spinner" aria-hidden="true" />Joining…</> : 'Join'}
           </button>
         </form>
+        {onQuickPlay && (
+          <button type="button" className="quick-play" disabled={disabled} onClick={onQuickPlay} title="A free-for-all against bots, right now">
+            ▶ Quick play
+          </button>
+        )}
         <button type="button" className="primary" onClick={onCreate}>＋ Create room</button>
       </div>
       <p className="error">{error}</p>
@@ -121,7 +128,8 @@ export function RoomBrowser({ rooms, failed, retry, initialCode = '', busy, join
         ) : listed && listed.length === 0 ? (
           <li className="empty">
             No open rooms yet.
-            <button type="button" className="primary" onClick={onCreate}>Create the first one</button>
+            {onQuickPlay && <button type="button" className="primary" disabled={disabled} onClick={onQuickPlay}>▶ Play against bots</button>}
+            <button type="button" className={onQuickPlay ? '' : 'primary'} onClick={onCreate}>Create the first one</button>
           </li>
         ) : shown.length === 0 ? (
           <li className="empty">No rooms match “{search.trim()}”. <button type="button" onClick={() => setSearch('')}>Clear search</button></li>

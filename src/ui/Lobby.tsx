@@ -1,7 +1,8 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { isConfigured } from '../net/firebase';
 import { createRoom, getRoomSetup, randomId } from '../net/network';
 import { sessionPlayerId } from '../game/session';
+import { NAME_PATTERN, loadName, saveName } from './playerName';
 import { isPlayableSpec } from '../game/mapgen';
 import { MapPicker, useMapChoice } from './MapPicker';
 import { initAudio } from '../game/audio';
@@ -22,22 +23,6 @@ import { browserProfileId } from '../net/leaderboard';
 import { SettingsPanel } from './SettingsPanel';
 import { afterLeave } from './GameView';
 
-const NAME_KEY = 'fps-name';
-
-function loadName(): string {
-  try {
-    return localStorage.getItem(NAME_KEY) || '';
-  } catch {
-    return '';
-  }
-}
-
-function saveName(name: string): void {
-  try {
-    localStorage.setItem(NAME_KEY, name);
-  } catch { /* storage unavailable */ }
-}
-
 type Invite = 'auto' | 'manual' | 'closed' | null;
 
 interface Props {
@@ -48,8 +33,9 @@ interface Props {
 
 type Tab = 'rooms' | 'create' | 'leaderboard';
 
-/** Names are 2–16 letters, digits, spaces, - or _ (no leading / trailing spaces). */
-const NAME_PATTERN = /^[\p{L}\p{N} _-]{2,16}$/u;
+/** Bots in a Quick play room, and in a room created while no other room is open */
+const QUICK_PLAY_BOTS = 5;
+const LONELY_ROOM_BOTS = 3;
 
 export function Lobby({ initialCode, initialError, onEnter }: Props) {
   /** The player's name: chosen once, then kept in this browser and not changed again */
@@ -148,6 +134,23 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
     const roomCode = await createRoom(title, rules, map, playerName, playerId);
     onEnter({ roomCode, playerId, name: playerName, map, profileId });
   });
+
+  /** Straight into a free-for-all against bots: a match with nobody else online, or a warm-up. */
+  const quickPlay = () => run('create', async (playerName) => {
+    const playerId = randomId();
+    const practice: ModeRules = { ...PRESETS[0]!.rules, bots: QUICK_PLAY_BOTS, botSkill: 'normal' };
+    const map = mapChoice.spec();
+    const roomCode = await createRoom(`${playerName}'s practice`, practice, map, playerName, playerId);
+    onEnter({ roomCode, playerId, name: playerName, map, profileId });
+  });
+
+  // Nobody else around: a room made now would be empty, so start it with a few bots unless told otherwise.
+  const botsDefaulted = useRef(false);
+  useEffect(() => {
+    if (botsDefaulted.current || rooms === null) return;
+    botsDefaulted.current = true;
+    if (rooms.length === 0) setRules((r) => (r.bots === 0 ? { ...r, bots: LONELY_ROOM_BOTS } : r));
+  }, [rooms]);
 
   const submit = (action: () => Promise<void>) => (e: FormEvent) => {
     e.preventDefault();
@@ -254,6 +257,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
                   error={error}
                   onJoin={(c) => void join(c)}
                   onCreate={() => setTab('create')}
+                  onQuickPlay={() => void quickPlay()}
                 />
               </section>
             )}
@@ -301,7 +305,12 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
 
         <p className="legal muted"><a href="/terms.html" target="_blank" rel="noreferrer">Terms</a> · <a href="/privacy.html" target="_blank" rel="noreferrer">Privacy</a> · <a href="/credits.html" target="_blank" rel="noreferrer">Credits</a></p>
       </div>
-      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsPanel
+          onClose={() => setSettingsOpen(false)}
+          profile={hasName ? { name, onRename: (n) => { saveName(n); setName(n); } } : undefined}
+        />
+      )}
     </section>
   );
 }

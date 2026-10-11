@@ -125,4 +125,36 @@ test.describe('lobby', () => {
     await expect.poll(() => db.get(`lobby/${code}`)).toBeNull();
     await deleteRoom(code);
   });
+
+  test('Quick play starts a free-for-all against bots straight away', async ({ players, rooms }) => {
+    const p = await players.open(uniqueName('Quick'));
+    await p.gotoLobby();
+    await p.page.getByRole('button', { name: 'Quick play' }).click();
+    await p.waitJoined();
+    const code = rooms.track(await p.roomCode());
+    const { db } = await import('./support/db');
+    const room = await db.get<{ rules: { base: string; bots: number }; bots?: Record<string, unknown> }>(`lobby/${code}`);
+    expect(room?.rules.base).toBe('ffa');
+    expect(room?.rules.bots).toBe(5);
+    expect(Object.keys(room?.bots ?? {})).toHaveLength(5);
+    // The owner's client plays them: they turn up as players.
+    await expect.poll(async () => (await p.page.evaluate(() => (window as any).game.test.remoteIds() as string[])).filter((id) => id.startsWith('b_')).length, { timeout: 45_000 }).toBe(5);
+  });
+
+  test('the name can be changed from Settings', async ({ players }) => {
+    const p = await players.open(uniqueName('Before'));
+    await p.gotoLobby();
+    await p.page.getByRole('button', { name: 'Mouse and key settings' }).click();
+    const form = p.page.getByRole('form', { name: 'Profile' });
+    const input = form.getByLabel('Your name');
+    await expect(input).toHaveValue(p.name);
+    await input.fill('A');
+    await expect(form.getByRole('button', { name: 'Rename' })).toBeDisabled();
+    await input.fill('After Dark');
+    await form.getByRole('button', { name: 'Rename' }).click();
+    await expect(form.getByRole('button', { name: 'Saved' })).toBeVisible();
+    await p.page.getByRole('button', { name: 'Done' }).click();
+    await expect(p.page.locator('.lobby-profile strong')).toHaveText('After Dark');
+    expect(await p.page.evaluate(() => localStorage.getItem('fps-name'))).toBe('After Dark');
+  });
 });

@@ -14,6 +14,7 @@ export function TouchIntro({ hasSpecial, onDone }: { hasSpecial: boolean; onDone
         <span className="callout jump">Jump</span>
         <span className="callout crouch">Crouch<small>tap while sprinting to slide</small></span>
         <span className="callout reload">Reload</span>
+        <span className="callout knife">Knife</span>
         {hasSpecial && <span className="callout swap">Switch gun</span>}
         <span className="callout slots">Tap an ability to use it</span>
         <span className="callout top">Scoreboard · bag · menu</span>
@@ -21,8 +22,8 @@ export function TouchIntro({ hasSpecial, onDone }: { hasSpecial: boolean; onDone
       <p className="sr-only">
         Left half of the screen: a thumb stick to move; push it all the way forward to sprint. Right half: drag to
         look around. Buttons on the right: fire, aim down sights, jump, crouch (tap while sprinting to slide),
-        reload and switch gun. Ability slots are at the bottom centre; tap one to use it. The top-left buttons
-        open the scoreboard, your bag and the menu.
+        reload, knife and switch gun. Ability slots are at the bottom centre; tap one to use it. The top-right
+        buttons open the scoreboard, your bag and the menu.
       </p>
       <button type="button" className="primary" onClick={onDone} autoFocus>Got it</button>
     </div>

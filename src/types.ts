@@ -33,6 +33,8 @@ export interface PlayerState {
    * little behind this clock, between the poses either side of that moment (see game/poseBuffer.ts).
    */
   t?: number;
+  /** Just respawned and not yet shooting: can't be hurt (others see a shimmer) */
+  inv?: boolean;
   /** Watching rather than playing: no body, no hitboxes, not in the standings */
   spec?: boolean;
   /** A bot, played by the room owner's client */

@@ -135,6 +135,74 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 #killfeed { transform-origin: top right; transform: scale(var(--hud-scale)); }
 #room-tag { transform-origin: top left; transform: scale(var(--hud-scale)); }
 
+/* The radar: under the room tag, top-left (game/minimap.ts draws into it) */
+#minimap {
+  position: absolute;
+  top: 52px;
+  left: 12px;
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  opacity: 0.92;
+  pointer-events: none;
+  transform-origin: top left;
+  transform: scale(var(--hud-scale));
+}
+#minimap canvas { display: block; }
+#hud.cinematic #minimap, #hud.killcam #minimap { display: none; }
+
+/* Objective markers (game/objectiveMarkers.ts): over the thing on screen, pinned to the edge otherwise */
+#objective-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+#objective-markers { position: absolute; inset: 0; }
+#objective-markers .objective {
+  --objective: #fff;
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-shadow: 0 1px 2px #000, 0 0 4px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+  will-change: transform;
+}
+#objective-markers .objective .icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--objective);
+  color: #000;
+  font-size: 13px;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.5), 0 0 8px var(--objective);
+}
+#objective-markers .objective.live .icon { animation: objective-pulse 0.9s ease-in-out infinite alternate; }
+#objective-markers .objective .label { color: var(--objective); }
+#objective-markers .objective .dist { font-weight: 500; opacity: 0.85; font-variant-numeric: tabular-nums; }
+#objective-markers .objective .arrow {
+  display: none;
+  width: 0;
+  height: 0;
+  border: 6px solid transparent;
+  border-left: 10px solid var(--objective);
+  transform-origin: 30% 50%;
+  margin-top: 2px;
+}
+#objective-markers .objective.edge .label { display: none; }
+#objective-markers .objective.edge .arrow { display: block; }
+@keyframes objective-pulse {
+  from { box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.5), 0 0 4px var(--objective); }
+  to { box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.5), 0 0 14px var(--objective); }
+}
+html.reduce-motion #objective-markers .objective.live .icon { animation: none; }
+
 /* Colour and size come from the settings (see Crosshair.tsx); everything scales with --ch-size. */
 #crosshair {
   --ch: #fff;
@@ -201,6 +269,38 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
   from { opacity: 0.9; transform: scale(0.4); }
   to { opacity: 0; transform: scale(1.9); }
 }
+/* The hit that took them out: red, bigger still, with the ring, held longest; the name under the crosshair */
+#hitmarker.kill { --hm: #ff3b3b; --arm: 15px; --w: 3px; width: 46px; height: 46px; filter: drop-shadow(0 0 4px rgba(255, 40, 40, 0.9)); }
+#hitmarker.kill.show { animation: hitmarker-head 0.7s ease-out; }
+#hitmarker.kill::after {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  border: 2px solid #ff3b3b;
+  border-radius: 50%;
+  animation: hit-ring 0.5s ease-out forwards;
+}
+#kill-confirm {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 36px);
+  transform: translateX(-50%);
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  color: #ffd9d9;
+  text-shadow: 0 0 6px rgba(255, 40, 40, 0.8), 0 1px 2px #000;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: kill-confirm 1.4s ease-out forwards;
+}
+#kill-confirm strong { color: #fff; }
+@keyframes kill-confirm {
+  0% { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  12% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  75% { opacity: 1; }
+  100% { opacity: 0; }
+}
+html.reduce-motion #kill-confirm { animation: toast-fade 1.4s forwards; }
 
 /* Low health: a red vignette that pulses with the heartbeat, deeper the closer to death */
 /* Flashbang: a white-out that holds for a moment, then fades */
@@ -678,9 +778,32 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 .pause-card .actions button { margin: 0; padding: 10px 14px; white-space: nowrap; }
 .pause-card .actions .primary { min-width: 120px; }
 .pause-card .actions .spacer { flex: 1; }
-.pause-card .keys { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; font-size: 12px; color: var(--muted); }
-.pause-card .keys li { display: flex; gap: 8px; align-items: baseline; }
-.pause-card .keys kbd { min-width: 54px; text-align: center; white-space: nowrap; }
+.pause-card .keys, #controls-card .keys { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; font-size: 12px; color: var(--muted); }
+.pause-card .keys li, #controls-card .keys li { display: flex; gap: 8px; align-items: baseline; }
+.pause-card .keys kbd, #controls-card .keys kbd { min-width: 54px; text-align: center; white-space: nowrap; }
+
+/* The first match's key list: bottom-left, out of the way of the crosshair, gone after a few seconds */
+#controls-card {
+  position: absolute;
+  left: 16px;
+  bottom: 120px;
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  pointer-events: none;
+  animation: controls-card 8s ease-in-out forwards;
+}
+#controls-card h3 { margin: 0 0 6px; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; color: var(--accent); }
+#controls-card p { margin: 8px 0 0; font-size: 11px; }
+@keyframes controls-card {
+  0% { opacity: 0; transform: translateX(-8px); }
+  6% { opacity: 1; transform: none; }
+  88% { opacity: 1; }
+  100% { opacity: 0; }
+}
+html.reduce-motion #controls-card { animation: toast-fade 8s forwards; }
+@media (max-height: 520px) { #controls-card { display: none; } }
 .pause-card .touch-help { margin: 8px 0 0; font-size: 13px; line-height: 1.5; }
 #hud.paused #round-over, #hud.paused #mvp .card, #hud.paused #mvp .next-map { opacity: 0.4; }
 @media (max-width: 640px) { .pause-card { grid-template-columns: 1fr; } }
@@ -1399,6 +1522,12 @@ kbd {
 #touch-intro .jump { right: calc(env(safe-area-inset-right) + 164px); bottom: 66px; }
 #touch-intro .crouch { right: calc(env(safe-area-inset-right) + 79px); bottom: 53px; }
 #touch-intro .reload { right: calc(env(safe-area-inset-right) + 80px); bottom: 230px; }
+#touch-intro .knife { right: calc(env(safe-area-inset-right) + 72px); bottom: 290px; }
+
+/* Settings → your name (lobby only) */
+.profile-row { display: grid; grid-template-columns: 1fr auto; gap: 8px 10px; align-items: end; padding: 0 0 12px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+.profile-row .setting { margin: 0; }
+.profile-row small { grid-column: 1 / -1; }
 #touch-intro .swap { right: calc(env(safe-area-inset-right) + 174px); bottom: 246px; }
 #touch-intro .stick { left: calc(env(safe-area-inset-left) + 110px); bottom: 106px; transform: translate(-50%, 50%); }
 #touch-intro .look { left: 62%; top: 40%; transform: translate(-50%, -50%); background: rgba(255, 255, 255, 0.15); color: #fff; border: 1px dashed rgba(255, 255, 255, 0.5); }

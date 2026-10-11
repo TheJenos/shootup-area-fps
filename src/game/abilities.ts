@@ -79,8 +79,8 @@ interface Slot {
 export interface SlotView {
   type: AbilityType;
   usesLeft: number;
-  /** Seconds until ready, rounded to 0.1 (0 when ready) */
-  cooldown: number;
+  /** When it's ready again (performance.now() ms); 0 when it is. A time, not a count, so the HUD isn't told every tick. */
+  readyAt: number;
 }
 
 export type UseResult = { ok: true; type: AbilityType } | { ok: false; reason: 'empty' | 'cooldown' };
@@ -144,7 +144,7 @@ export class Inventory {
       s && {
         type: s.type,
         usesLeft: s.usesLeft,
-        cooldown: Math.max(0, Math.ceil((s.readyAt - now) / 100) / 10),
+        readyAt: s.readyAt > now ? s.readyAt : 0,
       },
     );
   }

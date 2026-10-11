@@ -2,6 +2,59 @@ import { db, waitForValue } from './support/db';
 import { expect, rules, test } from './support/fixtures';
 
 test.describe('combat', () => {
+  test('a kill is confirmed on the crosshair with the name', async ({ duel }) => {
+    const { alice, bob } = await duel(rules('ffa', { respawn: 2 }));
+    // The marker and the name only stay up for a moment: keep every one as it comes.
+    await alice.page.evaluate(() => {
+      const w = window as any;
+      w.__kills = [];
+      let last: unknown = null;
+      w.game.hud.subscribe(() => {
+        const s = w.game.hud.get();
+        if (s.killConfirm && s.killConfirm !== last) w.__kills.push({ name: s.killConfirm.name, kill: s.hitmarker.kill });
+        last = s.killConfirm;
+      });
+    });
+    await alice.kill(bob);
+    await expect.poll(() => alice.page.evaluate(() => (window as any).__kills)).toContainEqual({ name: bob.name, kill: true });
+  });
+
+  test('just respawned, you cannot be hurt for a moment, until you shoot', async ({ duel }) => {
+    const { code, alice, bob, aliceId, bobId } = await duel(rules('ffa', { respawn: 1 }));
+    await alice.kill(bob);
+    // Back, and protected: everyone can see it on the record (the shimmer).
+    await waitForValue(`rooms/${code}/players/${bobId}/inv`, (v) => v === true, 15_000);
+    await expect.poll(async () => (await bob.state()).alive, { timeout: 30_000 }).toBe(true);
+    // A shot inside the window does nothing. (The window is short; on a slow run it may already have
+    // closed by the time the shot lands, so only hold it to that when it provably hadn't.)
+    await bob.teleport(16, 0, 0, Math.PI / 2);
+    await alice.teleport(8, 0, 0, -Math.PI / 2);
+    await alice.waitForRemote(bob, [16, 0, 0]);
+    const stillProtected = (await db.get(`rooms/${code}/players/${bobId}/inv`)) === true;
+    await alice.shoot(bob, { part: 'body', shots: 1, timeout: 500 });
+    if (stillProtected) expect((await bob.state()).hp).toBe(100);
+    // It wears off by itself, and then shots land again.
+    await waitForValue(`rooms/${code}/players/${bobId}/inv`, (v) => v === null, 5_000);
+    await alice.shoot(bob, { part: 'body', shots: 1 });
+    await expect.poll(async () => (await bob.state()).hp).toBeLessThan(100);
+    // ...and firing ends it at once.
+    await bob.kill(alice);
+    await expect.poll(async () => (await alice.state()).alive, { timeout: 30_000 }).toBe(true);
+    await bob.waitForRemote(alice);
+    await alice.shoot(bob, { part: 'body', shots: 1, timeout: 1_000 });
+    await expect.poll(() => db.get(`rooms/${code}/players/${aliceId}/inv`)).toBeNull();
+  });
+
+  test('the radar is drawn in the corner, unless switched off', async ({ duel }) => {
+    const { alice } = await duel();
+    await expect(alice.page.locator('#minimap canvas')).toBeVisible();
+    await alice.openPauseMenu();
+    await alice.page.getByRole('button', { name: 'Settings' }).click();
+    await alice.page.getByRole('tab', { name: 'Video' }).click();
+    await alice.page.getByLabel(/Radar/).uncheck();
+    await expect(alice.page.locator('#minimap')).toHaveCount(0);
+  });
+
   test('a body shot takes rifle damage off the victim, everywhere', async ({ duel }) => {
     const { code, alice, bob, bobId } = await duel();
     await expect(bob.page.locator('#health')).toContainText('100');

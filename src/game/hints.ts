@@ -5,7 +5,7 @@ import type { AbilityType } from '../types';
  * players aren't nagged and new ones learn the mechanics as they meet them.
  */
 
-export type HintId = 'slide' | 'gun-swap' | 'ads' | 'full-slots' | `ability:${AbilityType}`;
+export type HintId = 'slide' | 'gun-swap' | 'ads' | 'full-slots' | 'spawn-protect' | 'controls' | `ability:${AbilityType}`;
 
 const STORAGE_KEY = 'fps-hints';
 

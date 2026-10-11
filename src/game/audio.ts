@@ -127,6 +127,41 @@ function play(name: string, opts: PlayOptions = {}): { src: AudioBufferSourceNod
 /** A little random pitch so repeated sounds (steps, shots) don't sound like a machine. */
 const vary = (amount = 0.06) => 1 + (Math.random() * 2 - 1) * amount;
 
+/**
+ * A synthesised tone, no clip needed: the bomb's beeps and the plant / defuse ticks are electronic
+ * anyway. `ms` long, starting `delay` s from now, on the effects bus.
+ */
+export function playTone(freq: number, ms: number, volume = 0.4, type: OscillatorType = 'square', delay = 0): void {
+  if (!ctx || !out || volume < 0.01) return;
+  const osc = ctx.createOscillator();
+  osc.type = type;
+  osc.frequency.value = freq;
+  const gain = ctx.createGain();
+  const t0 = ctx.currentTime + delay;
+  const t1 = t0 + ms / 1000;
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(volume, t0 + 0.005);
+  gain.gain.exponentialRampToValueAtTime(0.001, t1);
+  osc.connect(gain).connect(out);
+  osc.start(t0);
+  osc.stop(t1 + 0.02);
+}
+
+// ---------------------------------------------------------------- search & destroy
+
+/** The planted bomb's beep; `volume` already falls with distance */
+export const playBombBeep = (volume = 1) => { playTone(1680, 70, 0.35 * volume, 'square'); };
+/** Planting or defusing: a tick every half second of holding the key */
+export const playChannelTick = () => { playTone(900, 35, 0.22, 'sine'); };
+/** Three rising notes: the bomb is down */
+export function playBombPlanted(): void {
+  [660, 880, 1320].forEach((f, i) => playTone(f, 170, 0.3, 'triangle', i * 0.12));
+}
+/** Falling notes: the bomb is safe */
+export function playBombDefused(): void {
+  [1320, 880, 660].forEach((f, i) => playTone(f, 190, 0.3, 'triangle', i * 0.14));
+}
+
 // ---------------------------------------------------------------- weapons
 
 export type GunSound = 'rifle' | 'shotgun' | 'sniper' | 'deagle';

@@ -120,6 +120,10 @@ const shieldGeo = new THREE.SphereGeometry(1, 24, 16);
 const shieldMat = new THREE.MeshBasicMaterial({
   color: 0x4aa8ff, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false,
 });
+/** Spawn protection: the same bubble, a faint white shimmer (the shield's blue means a shield) */
+const protectMat = new THREE.MeshBasicMaterial({
+  color: 0xffffff, transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false,
+});
 
 // World forward / up expressed in the right-hand bone's local space, measured in the Idle pose.
 // Aligning the rifle with them makes it point ahead instead of along the fingers.
@@ -408,7 +412,9 @@ export class RemotePlayer {
     // A colour comes with the whole record, so a missing team then means none (the owner switched to free-for-all).
     if (data.color || data.team) this.setColor(data.color ?? this.colorNow, data.color ? data.team : this.teamNow);
     if (data.name) this.tag.setName(data.name);
-    this.shield.visible = !!data.shield && this.alive;
+    // One bubble: blue for a shield, a faint white shimmer for spawn protection (a shield wins).
+    this.shield.material = data.shield ? shieldMat : protectMat;
+    this.shield.visible = (!!data.shield || !!data.inv) && this.alive;
     if (data.cloak !== undefined) this.cloak = data.cloak;
     if (data.gun && data.gun !== this.gunNow) {
       this.setGun(data.gun);

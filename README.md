@@ -7,12 +7,13 @@ Pick a name, create or join a room, and shoot each other in Free-for-all, Team D
 
 ## Lobby
 
-- **Your name** is chosen once, on your first visit, and kept in the browser (`fps-name`); it can't be changed
-  afterwards. It shows as "Playing as …" at the top, next to the ⚙ settings button. Names are 2–16 letters,
+- **Your name** is chosen on your first visit and kept in the browser (`fps-name`); change it any time from the
+  ⚙ settings button in the lobby ("Your name"). It shows as "Playing as …" at the top. Names are 2–16 letters,
   numbers, spaces, `-` or `_`.
 - **Open rooms** (the first tab) lists every room with its mode badge, mode, map, code and players. The search
   box filters by room name, code, mode, map, host or any player; type a code next to it to join directly, or
-  press **＋ Create room**.
+  press **＋ Create room**. **▶ Quick play** drops you straight into a free-for-all against five bots (nobody
+  online? that's the button); a room created while no other room is open starts with three bots.
 - **Create room**: pick a mode (see [Game modes](#game-modes)), a map seed, and a room name, then create it.
 - **Leaderboard**: the global top 20.
 - **Inside Discord** the lobby looks the same, with your Discord name as "Playing as …". Its tabs are **This
@@ -350,6 +351,13 @@ Hits also shake the camera for about half a second, harder for bigger hits (off 
 At 30 health or less the edges of the screen darken red and pulse, and a heartbeat plays, both faster and
 heavier the closer to death you are.
 
+A kill is confirmed on the spot: a bigger red X with a burst ring on the crosshair and **ELIMINATED name**
+under it (hits only get the plain marker).
+
+**Spawn protection:** for 1.5 s after you respawn nothing can hurt you, and others see a faint white shimmer
+round you (a shield's bubble is blue). Shooting, knifing, swinging the flag, or throwing or placing anything
+ends it at once; a medkit, shield, speed, dash, cloak or scan doesn't. It's `inv` on your player record.
+
 ## Announcer and music
 
 Multi-kills (two kills within 4 s of each other) put a **DOUBLE / TRIPLE / QUAD KILL / RAMPAGE** banner on
@@ -364,6 +372,9 @@ All sound is recorded audio: 54 short clips in `public/sounds/` (about 1.1 MB, m
 loaded once when you first join and played through Web Audio by `src/game/audio.ts`. A sound asked for before
 its clip has loaded is skipped, and every sound runs through a limiter so stacked sounds don't distort.
 
+- **Search & Destroy** is the one exception to "all recorded": the planted bomb's beep (faster as the fuse runs
+  down, quieter the further away), the tick every half second of planting or defusing, and the rising /
+  falling stings for a plant and a defuse are synthesised tones (`playTone` in `audio.ts`).
 - **Guns:** a real recording per gun (rifle, shotgun, sniper, pistol), cut to its first shot. Distant shots and
   explosions are quieter and muffled (low-passed), the way far-off gunfire loses its crack.
 - **Footsteps:** five takes per surface, picked at random with a little pitch variation so they don't repeat.
@@ -454,7 +465,8 @@ The ⚙ panel (lobby or pause menu) is split into tabs: **Controls** (mouse / lo
 (display and crosshair), **Audio** and **Accessibility**; it reopens on the last tab you used. Altogether it has mouse sensitivity, aim sensitivity and aim toggle, invert Y, fullscreen,
 **field of view** (60–110°), **graphics quality** (Low: no shadows and a 1× resolution cap; Medium: soft
 shadows at native resolution; High: sharp shadows, up to 2×; phones default to Low), an **FPS counter** in the
-top-right corner (on by default; green at 50+, yellow at 30+, red below), **V-Sync** and **Max FPS** (30 / 60 /
+top-right corner (off by default; green at 50+, yellow at 30+, red below), the **radar** (on by default; see
+below), **V-Sync** and **Max FPS** (30 / 60 /
 120 / 144 / 165 / 240 / Unlimited; see below), **crosshair colour and
 size** (with a live preview), sound effects and music volume, screen shake, **reduce motion** (System / On /
 Off: no pulsing, zooming or camera shake; "System" follows the OS setting), **HUD size** (80–140 %; panels grow
@@ -511,10 +523,18 @@ doesn't. The match keeps running while the menu is open. Round results and the M
 
 ### Feedback and tips
 
-- The first click to play shows the mode's name and goal. One-time tips appear as you meet mechanics: the first
-  sprint (slide), each ability you pick up (what it does and its key), the first gun pickup (how to switch),
-  the first aim down sights, and the first time your slots are full. They're remembered in the browser
-  (`fps-hints`); Settings can reset them.
+- The first click to play shows the mode's name and goal, and, the very first time on a keyboard, the key list
+  for a few seconds in the bottom-left corner (Esc shows it again any time). One-time tips appear as you meet
+  mechanics: the first sprint (slide), each ability you pick up (what it does and its key), the first gun pickup
+  (how to switch), the first aim down sights, the first respawn (spawn protection) and the first time your slots
+  are full. They're remembered in the browser (`fps-hints`); Settings can reset them.
+- **Radar** (top-left, `src/game/minimap.ts`): the map from above, turned so up is where you face, 42 m to its
+  edge. You're the arrow in the middle; teammates are dots in your colour; enemies show only as a player could
+  know them — caught by your scan pulse, or having fired in the last two seconds (pulsing); flags, bomb sites,
+  the bomb and pickups are marked. Things beyond the edge are pinned to it. Settings → Video turns it off.
+- **Objective markers** (`src/game/objectiveMarkers.ts`): a marker with the distance floats over the enemy flag
+  (and over yours when it's away), over the bomb sites while you carry the bomb, and over a planted or dropped
+  bomb; off screen it sits at the screen's edge with an arrow pointing the way.
 - Toasts queue up (three deep, no repeats) instead of overwriting each other, and show while spectating and
   during the MVP replay.
 - The death screen says who got you, with what and whether it was a headshot ("You took yourself out" for your
@@ -850,7 +870,8 @@ rooms/{code}/game          round number, map seed, start time, winner + MVP + ne
   sees a hit marker on the crosshair right away: a quick white X for a body hit, a bigger red X with a burst ring
   (and a higher-pitched tick) for a headshot.
 - The victim applies the damage to itself, and on death publishes a `kill` event and credits the killer
-  (via a transaction). Respawn after 3 s at the spawn point furthest from enemies.
+  (via a transaction). Respawn after 3 s at the spawn point furthest from enemies, with 1.5 s of spawn
+  protection (`inv` on the record; the victim ignores hits while it lasts, and clears it when it attacks).
 - The `game` node is only ever changed with transactions (scoring, ending a round, taking / dropping /
   capturing flags), so two players can't both grab the same flag or both start the next round.
   The TDM victim scores the point for the killer's team; the FFA victim ends the round when crediting

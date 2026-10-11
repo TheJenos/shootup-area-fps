@@ -58,6 +58,8 @@ export interface Settings {
   showFps: boolean;
   /** After being killed, replay the last moments through the killer's eyes (skippable) */
   killcam: boolean;
+  /** The radar in the top-left corner */
+  minimap: boolean;
   /** 0..1 */
   sfxVolume: number;
   musicVolume: number;
@@ -115,7 +117,7 @@ const DEFAULTS: Settings = {
   fov: FOV_DEFAULT, crosshairColor: '#ffffff', crosshairSize: 1,
   // Phones start low; they can turn it up.
   quality: COARSE ? 'low' : 'high', screenShake: !MOTION_QUERY?.matches, sfxVolume: 1, musicVolume: 0.7,
-  reduceMotion: 'system', hudScale: 1, showFps: true, killcam: true,
+  reduceMotion: 'system', hudScale: 1, showFps: false, killcam: true, minimap: true,
   bindings: DEFAULT_BINDINGS,
 };
 
@@ -160,6 +162,7 @@ function load(): Settings {
       hudScale: num(saved.hudScale, HUD_SCALE_MIN, HUD_SCALE_MAX, DEFAULTS.hudScale),
       showFps: typeof saved.showFps === 'boolean' ? saved.showFps : DEFAULTS.showFps,
       killcam: typeof saved.killcam === 'boolean' ? saved.killcam : DEFAULTS.killcam,
+      minimap: typeof saved.minimap === 'boolean' ? saved.minimap : DEFAULTS.minimap,
       sfxVolume: num(saved.sfxVolume, 0, 1, DEFAULTS.sfxVolume),
       musicVolume: num(saved.musicVolume, 0, 1, DEFAULTS.musicVolume),
       // Start from the defaults so actions added later still get a key.

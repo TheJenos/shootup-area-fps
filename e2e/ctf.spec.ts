@@ -70,6 +70,19 @@ test.describe('capture the flag', () => {
     await waitForValue(flagPath, (f) => f === null, 40_000);
   });
 
+  test('objective markers point at the enemy flag, and at ours once it is taken', async ({ duel }) => {
+    const { alice, bob, aTeam } = await ctf(duel);
+    const markers = (p: Player) => p.page.locator('#objective-markers .objective');
+    // Everyone is pointed at the enemy flag; nobody at their own while it's home.
+    await expect(markers(alice)).toHaveCount(1);
+    await expect(markers(alice)).toContainText('Enemy flag');
+    await grab(alice, aTeam);
+    // Alice holds it: nothing to point at for her. Bob is sent after his flag (and still shown Alice's).
+    await expect(markers(alice)).toHaveCount(0);
+    await expect(markers(bob).filter({ hasText: 'Our flag — stop them' })).toHaveCount(1);
+    await expect(markers(bob)).toHaveCount(2);
+  });
+
   test('a dropped flag is timed from the drop, even by a referee who arrived after it', async ({ duel }) => {
     const { alice, aTeam, flagPath } = await ctf(duel);
     await grab(alice, aTeam);

@@ -27,12 +27,14 @@ import { loadFpArms } from './fpArms';
 import { loadPropModels } from './props';
 import { GrenadeFx, setThrowGravity, simulateGrenade, THROW_LIFT, THROW_SPEED } from './grenades';
 import { clearSession, rememberSession, resumeSession, type SessionRecord } from './session';
+import { Minimap, type MinimapMarker } from './minimap';
+import { ObjectiveMarkers, type Objective } from './objectiveMarkers';
 import { FlagField, placementOf, type FlagPlacement } from './flags';
 import { BombField } from './bombsites';
 import {
   BOMB_BLAST_RADIUS, BOMB_PICKUP_RADIUS, CHANNEL_SLIP, DEFUSE_RADIUS, DEFUSE_TIME, PLANT_TIME, ROUND_END_TIME, SITE_NAME,
   attackersFor, bombHome, canJoin, bombPlacement, bombSites, decide, newRound as newSndRound, phaseOf, pickCarrier, secondsLeft, sidesSwapped, siteAt,
-  type Headcount, type Point,
+  SITE_IDS, BOMB_TIME, type Headcount, type Point,
 } from './snd';
 import {
   CLOCK_WARNING, FLAG_BASES, setFlagBases, FLAG_RADIUS, FLAG_RETURN_TIME, GUN_GAME_LADDER, KNIFE_COOLDOWN, KNIFE_DAMAGE, KNIFE_RANGE,
@@ -136,6 +138,10 @@ const INDICATOR_FADE = 1;
 const RECORD_INTERVAL = 0.1;
 /** Fraction of full health a kill gives back */
 const KILL_HEAL = 0.5;
+/** How long after spawning we can't be hurt, unless we attack first (ms) */
+const SPAWN_PROTECT_MS = 1_500;
+/** Scratch for an objective's position */
+const _objective = new THREE.Vector3();
 /** How hard a killing hit shoves the body, per weapon (m/s at the chest) */
 const KNOCKBACK: Partial<Record<WeaponKind, number>> = { rifle: 3, deagle: 4, shotgun: 6, sniper: 6, grenade: 7, mine: 8, flag: 4.5, bomb: 12 };
 
@@ -258,6 +264,15 @@ export class Game {
   private resume: SessionRecord | null = null;
   /** Who owns the room (runs the shared chores and the bots); null until the lobby record says */
   private ownerId: string | null = null;
+  /** Spawn protection lasts until this time (performance.now ms; 0 when off) */
+  private protectedUntil = 0;
+  /** S&D: when the planted bomb next beeps (performance.now ms) */
+  private nextBeepAt = 0;
+  /** The radar and the objective markers: DOM of their own, mounted by the HUD */
+  readonly minimap = new Minimap();
+  readonly markers = new ObjectiveMarkers();
+  /** When each other player last fired (performance.now ms): gunfire gives them away on the radar */
+  private readonly lastShotAt = new Map<string, number>();
   private character: CharacterAsset | null = null;
 
   // Abilities
@@ -509,6 +524,7 @@ export class Game {
     this.flagField?.moveBases();
     this.mapSpec = map.spec;
     this.map = map;
+    this.minimap.setMap(map);
     this.floorSurface = map.theme.surface;
     this.hud.update({ map: { name: map.name, seed: map.spec.seed, size: map.spec.size, spec: map.spec }, mapError: null });
     this.checkMapHash();
@@ -1373,6 +1389,7 @@ export class Game {
         const shooter = this.remotes.get(evt.from);
         shooter?.showGun(evt.w && evt.w in GUNS ? evt.w : 'rifle');
         shooter?.noteShot();
+        this.lastShotAt.set(evt.from, performance.now());
       }
       const origin = fromArr(evt.o);
       const gun = evt.w && evt.w in GUNS ? evt.w : 'rifle';
@@ -1472,6 +1489,7 @@ export class Game {
       });
       if (evt.killer === this.playerId && evt.victim !== this.playerId) {
         sfx.playKill();
+        this.hud.killConfirm(victim.name, !!evt.head);
         this.healForKill();
         this.onOwnKill(evt.victim, evt.head, t);
       }
@@ -2583,8 +2601,8 @@ export class Game {
     } else if (b.at === 'planted') {
       this.hud.pushInfo(`${who(b.planter)} planted the bomb at ${SITE_NAME[b.site]}`);
       this.hud.announce('BOMB PLANTED', attacking ? `Site ${SITE_NAME[b.site]} — hold it until it blows` : `Site ${SITE_NAME[b.site]} — defuse it!`);
-      if (attacking) sfx.playAbility();
-      else sfx.playDenied();
+      sfx.playBombPlanted();
+      this.nextBeepAt = 0;
     }
   }
 
@@ -2594,6 +2612,7 @@ export class Game {
     if (!over) return;
     this.channel = null;
     if (over.why === 'bomb') this.explodeBomb(s);
+    else if (over.why === 'defuse') sfx.playBombDefused();
     // The last round: the match result says it all.
     if (this.game.ended) return;
     const won = this.team === over.winner;
@@ -2766,6 +2785,16 @@ export class Game {
     const round = this.game.round;
     const n = s.n;
     const same = (next: GameState) => next.round === round && !next.ended && next.snd?.n === n && !next.snd.over;
+    // The planted bomb beeps, faster as its time runs down, quieter the further away it is.
+    if (phase === 'planted' && b?.at === 'planted') {
+      const now = performance.now();
+      if (now >= this.nextBeepAt) {
+        const left = Math.max(0, secondsLeft(s, this.net.serverNow()));
+        const d = Math.hypot(b.x - me.x, b.y - me.y, b.z - me.z);
+        sfx.playBombBeep(1 / (1 + d / 18));
+        this.nextBeepAt = now + (120 + 880 * (left / BOMB_TIME));
+      }
+    }
     if (team === s.atk && b?.at === 'ground' && phase !== 'over' && !this.bombBusy
       && Math.hypot(b.x - me.x, b.z - me.z) < BOMB_PICKUP_RADIUS && Math.abs(b.y - me.y) < 1.8) {
       this.bombTransaction((next) => {
@@ -2784,7 +2813,10 @@ export class Game {
       this.channel = null;
       return;
     }
+    const before = ch.t;
     ch.t = (performance.now() - ch.since) / 1000;
+    // A tick every half second of holding the key, so the progress can be heard
+    if (Math.floor(ch.t * 2) !== Math.floor(before * 2)) sfx.playChannelTick();
     if (ch.t < (ch.kind === 'plant' ? PLANT_TIME : DEFUSE_TIME) || this.bombBusy) return;
     this.channel = null;
     if (ch.kind === 'plant') this.plantBomb(ch.site, same);
@@ -2878,6 +2910,8 @@ export class Game {
     dmg: number | undefined, fromId: string, head: boolean, weapon: WeaponKind, source: THREE.Vector3,
   ): void {
     if (!this.alive || this.roundOver || this.isAlly(fromId)) return;
+    // Just respawned: nothing gets through until we've had a moment (or shot first).
+    if (performance.now() < this.protectedUntil) return;
     // Headshots-only modes: body hits and blasts don't count (the flag club and the knife still do).
     if (this.rules.headshotsOnly && !head && weapon !== 'flag' && weapon !== 'knife') return;
     // Never trust the number another client sent beyond what the game allows.
@@ -2985,7 +3019,17 @@ export class Game {
     const wasDead = !!this.hud.get().death;
     this.hud.update({ hp: this.hp, death: null });
     if (wasDead) this.hud.update({ respawnFlash: this.hud.get().respawnFlash + 1 });
-    void this.net.sendState({ ...this.poseState(), hp: this.hp, alive: true });
+    // A moment's grace against being shot the instant we're back; the first shot we fire ends it.
+    this.protectedUntil = performance.now() + SPAWN_PROTECT_MS;
+    this.hint('spawn-protect', () => 'Protected for a moment after spawning — firing ends it');
+    void this.net.sendState({ ...this.poseState(), hp: this.hp, alive: true, inv: true });
+  }
+
+  /** Spawn protection is over: time's up, or we attacked. */
+  private endProtection(): void {
+    if (!this.protectedUntil) return;
+    this.protectedUntil = 0;
+    if (this.joined) void this.net.sendState({ inv: null });
   }
 
   /** Where everyone else's body is (the bots we play have real ones already: their movement's). */
@@ -3042,6 +3086,7 @@ export class Game {
 
   private shoot(): void {
     this.endCloak();
+    this.endProtection();
     const gun = this.weapon.gun;
     const def = GUNS[gun];
     const origin = this.camera.getWorldPosition(new THREE.Vector3());
@@ -3138,6 +3183,7 @@ export class Game {
    */
   private swingFlag(): void {
     this.endCloak();
+    this.endProtection();
     this.throws++;
     const origin = this.camera.getWorldPosition(new THREE.Vector3());
     const best = this.meleeTarget(origin, MELEE_RANGE);
@@ -3188,6 +3234,7 @@ export class Game {
    */
   knife(): void {
     if (!this.alive || !this.joined || this.roundOver || this.inventoryOpen) return;
+    this.endProtection();
     if (this.carryingFlag()) {
       if (this.weapon.trySwing(MELEE_COOLDOWN)) this.swingFlag();
       return;
@@ -3237,7 +3284,7 @@ export class Game {
       if (check.reason === 'empty' || !view) {
         this.hud.toast('Empty slot — pick up an ability');
       } else {
-        this.hud.toast(`${ABILITIES[view.type].name} ready in ${view.cooldown.toFixed(1)} s`);
+        this.hud.toast(`${ABILITIES[view.type].name} ready in ${(Math.max(0, view.readyAt - now) / 1000).toFixed(1)} s`);
         this.hud.update({ slotDenied: { n: (this.hud.get().slotDenied?.n ?? 0) + 1, slot } });
       }
       sfx.playDenied();
@@ -3250,6 +3297,8 @@ export class Game {
       sfx.playDenied();
       return;
     }
+    // Attacking ends spawn protection; patching yourself up or hiding doesn't.
+    if (type === 'grenade' || type === 'molotov' || type === 'flash' || type === 'turret' || type === 'mine') this.endProtection();
 
     switch (type) {
       case 'medkit':
@@ -3888,12 +3937,13 @@ export class Game {
     if (this.joined) this.runSpawner(dt);
 
     const slots = this.inventory.view(now);
+    // Times, not counts: the HUD counts down on its own, so this only changes when something starts or ends.
     const buffs = {
-      speed: this.speedUntil ? Math.ceil((this.speedUntil - now) / 100) / 10 : null,
+      speed: this.speedUntil > now ? this.speedUntil : null,
       shield: this.shieldHp > 0 ? Math.ceil(this.shieldHp) : null,
-      cloak: this.cloakUntil ? Math.ceil((this.cloakUntil - now) / 100) / 10 : null,
-      lifesteal: this.lifestealUntil > now ? Math.ceil((this.lifestealUntil - now) / 100) / 10 : null,
-      scan: this.scanUntil > now ? Math.ceil((this.scanUntil - now) / 100) / 10 : null,
+      cloak: this.cloakUntil > now ? this.cloakUntil : null,
+      lifesteal: this.lifestealUntil > now ? this.lifestealUntil : null,
+      scan: this.scanUntil > now ? this.scanUntil : null,
     };
     const key = JSON.stringify([slots, buffs]);
     if (key !== this.lastSlotsKey) {
@@ -4111,11 +4161,14 @@ export class Game {
       // (The kill cam plays to the end, or until it's skipped, before we're back.)
       if (this.respawnTimer <= 0 && !this.killcam) this.respawn();
     }
+    if (this.protectedUntil && performance.now() >= this.protectedUntil) this.endProtection();
 
     if (this.joined && this.locked && !this.introDone) {
-      // First click to play: say what this mode is about (the pause card repeats it).
+      // First click to play: say what this mode is about (the pause card repeats it), and, the very
+      // first time on a keyboard, what the keys do (touch screens get their own guide).
       this.introDone = true;
       this.hud.announce(this.rules.name, goalOf(this.rules), 3800);
+      if (!this.touch && hints.once('controls')) this.hud.update({ controlsCard: this.hud.get().controlsCard + 1 });
     }
     // Carrying the enemy flag: guns stowed, the flag is the only weapon.
     const melee = this.alive && this.carryingFlag();
@@ -4349,8 +4402,8 @@ export class Game {
       const opacity = age < INDICATOR_HOLD ? 1 : 1 - (age - INDICATOR_HOLD) / INDICATOR_FADE;
       indicators.push({
         id,
-        // Rounded so the HUD only re-renders when the arc visibly moves.
-        angle: Math.round(THREE.MathUtils.radToDeg(Math.atan2(right, ahead))),
+        // In 4° steps, so the HUD only re-renders when the arc visibly moves (not every frame we turn).
+        angle: Math.round(THREE.MathUtils.radToDeg(Math.atan2(right, ahead)) / 4) * 4,
         opacity: Math.round(opacity * 20) / 20,
         strength: Math.round(Math.min(1, 0.4 + hit.damage / 60) * 10) / 10,
       });
@@ -4525,6 +4578,74 @@ export class Game {
     this.refreshScore();
     this.updateRoundBed();
     this.updatePresence();
+    this.updateRadar();
+  }
+
+  /** The radar and the objective markers, from what this client knows this frame. */
+  private updateRadar(): void {
+    if (!this.joined || !this.map) return;
+    const now = performance.now();
+    const me = this.player.position;
+    const markers: MinimapMarker[] = [];
+    const objectives: Objective[] = [];
+    const scanning = this.scanUntil > now;
+    for (const [id, r] of this.remotes) {
+      if (!r.alive || this.players[id]?.spec) continue;
+      const p = r.position;
+      if (this.isAlly(id)) {
+        markers.push({ x: p.x, z: p.z, kind: 'ally', color: this.team ? TEAM_INFO[this.team].color : '#fff' });
+        continue;
+      }
+      // Enemies only where a player could know: our scan pulse, or gunfire a moment ago.
+      const fired = (this.lastShotAt.get(id) ?? -Infinity) > now - 2000;
+      const scanned = scanning && p.distanceTo(this.scanOrigin) < SCAN_RADIUS;
+      if (fired || scanned) markers.push({ x: p.x, z: p.z, kind: 'enemy', live: fired });
+    }
+    for (const p of this.pickups.list()) markers.push({ x: p.x, z: p.z, kind: 'pickup' });
+
+    if (this.mode === 'ctf' && this.team) {
+      for (const team of TEAMS) {
+        const at = placementOf(this.game.flags[team]);
+        const ours = team === this.team;
+        const color = TEAM_INFO[team].color;
+        const carrier = at.at === 'carried' ? at.carrier : null;
+        if (carrier === this.playerId) continue; // it's in our hand: nothing to point at
+        const pos = at.at === 'base' ? FLAG_BASES[team]
+          : at.at === 'ground' ? _objective.set(at.x, at.y, at.z)
+          : this.remotes.get(carrier!)?.position ?? null;
+        if (!pos) continue;
+        markers.push({ x: pos.x, z: pos.z, kind: 'flag', color, label: ours ? '' : '', live: at.at !== 'base' });
+        // Theirs is always the goal; ours only when it's away (bring it back) — never at home.
+        if (!ours) objectives.push({ id: `flag-${team}`, icon: '⚑', label: at.at === 'base' ? 'Enemy flag' : at.at === 'ground' ? 'Enemy flag (dropped)' : 'Our carrier', color, pos: pos.clone(), live: at.at !== 'base' });
+        else if (at.at !== 'base') objectives.push({ id: `flag-${team}`, icon: '⚑', label: at.at === 'ground' ? 'Our flag — return it' : 'Our flag — stop them', color, pos: pos.clone(), live: true });
+      }
+    }
+    if (this.mode === 'snd' && this.snd && this.team) {
+      const s = this.snd;
+      const bomb = bombPlacement(s.bomb);
+      const sites = this.siteSpots();
+      const attacking = this.team === s.atk;
+      if (bomb?.at === 'planted') {
+        markers.push({ x: bomb.x, z: bomb.z, kind: 'bomb', color: '#ffb020', label: bomb.site.toUpperCase(), live: true });
+        objectives.push({ id: 'bomb', icon: '✸', label: attacking ? 'Bomb — defend it' : 'Bomb — defuse it', color: '#ffb020', pos: _objective.set(bomb.x, bomb.y, bomb.z).clone(), live: true });
+      } else {
+        if (sites) {
+          for (const id of SITE_IDS) {
+            const site = sites[id];
+            markers.push({ x: site.x, z: site.z, kind: 'site', color: '#ffb020', label: id.toUpperCase() });
+            if (attacking && this.carryingBomb()) objectives.push({ id: `site-${id}`, icon: id.toUpperCase(), label: 'Plant here', color: '#ffb020', pos: _objective.set(site.x, site.y, site.z).clone() });
+          }
+        }
+        if (bomb?.at === 'ground') {
+          markers.push({ x: bomb.x, z: bomb.z, kind: 'bomb', color: '#ffb020', live: true });
+          if (attacking) objectives.push({ id: 'bomb', icon: '✸', label: 'The bomb — pick it up', color: '#ffb020', pos: _objective.set(bomb.x, bomb.y, bomb.z).clone(), live: true });
+        }
+      }
+    }
+
+    if (settings.get().minimap) this.minimap.draw({ x: me.x, z: me.z, yaw: this.player.yaw, team: this.team, markers });
+    const host = this.renderer.domElement;
+    this.markers.update(this.alive && !this.playback ? objectives : [], this.camera, this.camera.position, host.clientWidth, host.clientHeight);
   }
 
   /** Keep the Discord profile line current (mode, map, score, player count); at most every few seconds. */
@@ -4611,6 +4732,9 @@ export class Game {
     this.world.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
+    this.minimap.mount(null);
+    this.markers.clear();
+    this.markers.mount(null);
     this.hud.dispose();
     await Promise.all([this.dropFlag(), this.dropBomb()]);
     // leave() stops a join still under way, but only once that join has reached its next check.

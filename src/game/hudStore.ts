@@ -158,8 +158,12 @@ export interface HudState {
   /** Carrying the enemy flag: guns stowed, the flag is a melee weapon */
   melee: boolean;
   reloading: boolean;
-  /** `n` increments on every hit so the UI can restart the animation. */
-  hitmarker: { n: number; head: boolean };
+  /** `n` increments on every hit so the UI can restart the animation; `kill`: the hit that took them out. */
+  hitmarker: { n: number; head: boolean; kill: boolean };
+  /** "ELIMINATED name" under the crosshair after our kill (`n` restarts the animation) */
+  killConfirm: { n: number; name: string } | null;
+  /** The key list shown for a few seconds the first time a mouse-and-keyboard player clicks in (`n` shows it again) */
+  controlsCard: number;
   /** Increments every time we take damage. */
   damageFlash: number;
   /** Aiming down sights: the crosshair shrinks to a dot */
@@ -193,6 +197,7 @@ export interface HudState {
   /** The three ability slots */
   slots: (SlotView | null)[];
   /** Active timed effects; seconds / points left, rounded for display */
+  /** Running buffs: when each ends (performance.now() ms), null when off; the shield is the damage it has left */
   buffs: { speed: number | null; shield: number | null; cloak: number | null; lifesteal: number | null; scan: number | null };
   /** Flashbang white-out: how strong (0..1) and how long it lasts (s); `n` restarts the fade */
   flash: { n: number; strength: number; seconds: number } | null;
@@ -248,7 +253,9 @@ const initialState: HudState = {
   scoped: false,
   melee: false,
   reloading: false,
-  hitmarker: { n: 0, head: false },
+  hitmarker: { n: 0, head: false, kill: false },
+  killConfirm: null,
+  controlsCard: 0,
   damageFlash: 0,
   aiming: false,
   damageIndicators: [],
@@ -311,8 +318,14 @@ export class HudStore {
     this.listeners.forEach((l) => l());
   }
 
-  hitmarker(head: boolean): void {
-    this.update({ hitmarker: { n: this.state.hitmarker.n + 1, head } });
+  hitmarker(head: boolean, kill = false): void {
+    this.update({ hitmarker: { n: this.state.hitmarker.n + 1, head, kill } });
+  }
+
+  /** Our kill: the kill marker on the crosshair and the victim's name under it. */
+  killConfirm(name: string, head: boolean): void {
+    this.hitmarker(head, true);
+    this.update({ killConfirm: { n: (this.state.killConfirm?.n ?? 0) + 1, name } });
   }
 
   flashDamage(): void {

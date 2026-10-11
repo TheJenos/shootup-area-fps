@@ -78,6 +78,17 @@ hygiene you can pick from.
 
 ## M2 — First run, solo play and HUD
 
+**Status (11 Oct 2026): 2.1–2.10 implemented; 2.11 deferred.** Notes:
+- 2.1: "▶ Quick play" in the room list (and "Play against bots" in the empty state) makes a 5-bot FFA; a room created while no other room is open defaults to 3 bots. Not offered inside Discord (the channel's match is the room).
+- 2.2: Settings → "Your name" in the lobby (`src/ui/playerName.ts` holds the name helpers now); not in a match.
+- 2.3: `src/game/minimap.ts` — rotates with you, 42 m radius, map drawn once per map; teammates always, enemies only when scanned or firing in the last 2 s; flags, sites, bomb, pickups. Settings → Video → Radar.
+- 2.4: `src/game/objectiveMarkers.ts` — enemy flag / our flag when away / sites while carrying the bomb / the planted or dropped bomb; pinned to the screen edge with an arrow when off screen.
+- 2.5: kill marker (bigger red X + ring) and "ELIMINATED name" under the crosshair, on the kill event.
+- 2.6: 1.5 s after respawn (`inv` on the record; a white shimmer for others); shooting, knifing, swinging the flag or throwing/placing anything ends it; medkit/shield/speed/dash/cloak/scan don't.
+- 2.8: synthesised (no clips): bomb beeps that quicken with the fuse and fade with distance, a tick per half second of planting/defusing, rising/falling stings for planted/defused.
+- 2.10 scoped: buffs and slot cooldowns are sent as *times* and counted down in the component that shows them (`src/ui/useCountdown.ts`); `KillFeed`/`HealthPanel`/`AbilityBar` memoised; damage arcs in 4° steps. `ScoreBar` still takes the whole state (it reads most of it) — left as is.
+- **2.11 deferred**: emoji → SVG is cosmetic, only misrenders on older Linux/Android, and touches ~15 sites (HUD, inventory, pickups prompt, touch buttons); better done with a proper icon set.
+
 | # | Task | Where | Verify |
 |---|---|---|---|
 | 2.1 | **Quick Play / Practice button** on the lobby's empty state and header: creates an FFA room with 5 Normal bots and jumps in. Also default `bots` to 3 for a room created with no one else online. | `src/ui/Lobby.tsx:57`, `src/ui/RoomBrowser.tsx:122-125`, `src/game/rules.ts:77`, `src/ui/ModePicker.tsx:97-113` | e2e: 2 clicks from name to playing against bots |

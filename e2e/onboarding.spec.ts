@@ -1,4 +1,4 @@
-import { expect, test } from './support/fixtures';
+import { expect, rules, test, uniqueName } from './support/fixtures';
 
 test.describe('first visit', () => {
   test('asks for a name once, checks it, and keeps it', async ({ players }) => {
@@ -34,5 +34,21 @@ test.describe('first visit', () => {
     const input = p.page.getByLabel('Your name');
     await input.fill('ABCDEFGHIJKLMNOPQRSTUV');
     await expect(input).toHaveValue('ABCDEFGHIJKLMNOP');
+  });
+
+  test('the first match shows the controls for a few seconds, once', async ({ players, rooms }) => {
+    // `hints: true` keeps the one-time tips, which the other tests silence.
+    const p = await players.open({ name: uniqueName('Newbie'), hints: true });
+    const code = await rooms.seed(rules('ffa'));
+    await p.gotoLobby();
+    await p.joinByCode(code);
+    await p.play();
+    const card = p.page.locator('#controls-card');
+    await expect(card).toBeVisible();
+    await expect(card).toContainText('move');
+    await expect(card).toContainText('shoot');
+    await expect(card).toBeHidden({ timeout: 15_000 });
+    // Remembered: not again next time
+    expect(JSON.parse(await p.page.evaluate(() => localStorage.getItem('fps-hints') ?? '[]'))).toContain('controls');
   });
 });

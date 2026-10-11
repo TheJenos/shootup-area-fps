@@ -1,4 +1,5 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { isValidName } from './playerName';
 import {
   ACTIONS, CROSSHAIR_COLORS, CROSSHAIR_SIZE_MAX, CROSSHAIR_SIZE_MIN, FOV_MAX, FOV_MIN, HUD_SCALE_MAX, HUD_SCALE_MIN,
   MOTION_OPTIONS, QUALITIES, RESERVED_KEYS, SENSITIVITY_MAX, SENSITIVITY_MIN, keyLabel, settings, type Action, type Settings,
@@ -13,6 +14,8 @@ export function useSettings(): Settings {
 
 interface Props {
   onClose(): void;
+  /** In the lobby: the player's name, changeable here (not in a match: the room knows us by it) */
+  profile?: { name: string; onRename(name: string): void };
 }
 
 type SettingsTab = 'controls' | 'video' | 'audio' | 'access';
@@ -28,8 +31,18 @@ let lastTab: SettingsTab = 'controls';
 const rememberTab = (t: SettingsTab) => { lastTab = t; };
 
 /** Mouse, video, crosshair, audio, accessibility and key bindings. Opened from the lobby or the pause menu. */
-export function SettingsPanel({ onClose }: Props) {
+export function SettingsPanel({ onClose, profile }: Props) {
   const current = useSettings();
+  const [draftName, setDraftName] = useState(profile?.name ?? '');
+  const [renamed, setRenamed] = useState(false);
+  const nameValid = isValidName(draftName.trim());
+  const rename = (e: FormEvent) => {
+    e.preventDefault();
+    const name = draftName.trim();
+    if (!profile || !nameValid || name === profile.name) return;
+    profile.onRename(name);
+    setRenamed(true);
+  };
   const [listening, setListening] = useState<Action | null>(null);
   const [tipsReset, setTipsReset] = useState(false);
   const [tab, setTab] = useState<SettingsTab>(lastTab);
@@ -67,6 +80,23 @@ export function SettingsPanel({ onClose }: Props) {
           <h3 id="settings-title">Settings</h3>
           <button onClick={onClose} autoFocus>Done</button>
         </header>
+
+        {profile && (
+          <form className="profile-row" onSubmit={rename} aria-label="Profile">
+            <label className="setting">
+              <span>Your name</span>
+              <input
+                value={draftName}
+                onChange={(e) => { setDraftName(e.target.value); setRenamed(false); }}
+                maxLength={16}
+                autoComplete="off"
+                aria-label="Your name"
+              />
+            </label>
+            <button type="submit" disabled={!nameValid || draftName.trim() === profile.name}>{renamed ? 'Saved' : 'Rename'}</button>
+            <small className="muted">2–16 characters: letters, numbers, spaces, - or _. The leaderboard shows the name you last played with.</small>
+          </form>
+        )}
 
         <nav className="tabs settings-tabs" role="tablist" aria-label="Settings">
           {SETTINGS_TABS.map((t) => (
@@ -222,6 +252,14 @@ export function SettingsPanel({ onClose }: Props) {
               onChange={(e) => settings.update({ showFps: e.target.checked })}
             />
             <span>Show FPS counter</span>
+          </label>
+          <label className="setting check">
+            <input
+              type="checkbox"
+              checked={current.minimap}
+              onChange={(e) => settings.update({ minimap: e.target.checked })}
+            />
+            <span>Radar (top-left map with teammates, flags and pickups)</span>
           </label>
           <label className="setting check">
             <input
