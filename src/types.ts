@@ -28,6 +28,11 @@ export interface PlayerState {
   rl?: boolean;
   /** Counts up on every throw, so others play the throw animation */
   th?: number;
+  /**
+   * When this pose was taken (server ms), sent with every change of it. Others draw the player a
+   * little behind this clock, between the poses either side of that moment (see game/poseBuffer.ts).
+   */
+  t?: number;
   /** Watching rather than playing: no body, no hitboxes, not in the standings */
   spec?: boolean;
   /** A bot, played by the room owner's client */
@@ -276,6 +281,8 @@ export interface FlagRecord {
   x?: number;
   y?: number;
   z?: number;
+  /** When it was dropped (server ms), so it's sent home on time whoever referees */
+  at?: number;
 }
 
 /** A bomb site in Search & Destroy */

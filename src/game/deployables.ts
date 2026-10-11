@@ -112,8 +112,13 @@ export class SmokeField {
     this.smokes.delete(id);
   }
 
-  dispose(): void {
+  /** Take every cloud away (a new map) */
+  clear(): void {
     for (const id of [...this.smokes.keys()]) this.remove(id);
+  }
+
+  dispose(): void {
+    this.clear();
   }
 }
 

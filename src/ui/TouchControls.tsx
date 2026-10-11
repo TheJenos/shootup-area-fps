@@ -1,4 +1,4 @@
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { Game } from '../game/game';
 
 /** How far the stick can be pushed from where the thumb landed (px) */
@@ -22,6 +22,16 @@ export function TouchControls(
   /** Last position of each finger that is turning the view */
   const looking = useRef(new Map<number, { x: number; y: number }>());
   const [crouched, setCrouched] = useState(game.touchCrouched);
+  const crouchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // The controls go away on death, in menus and in replays, sometimes with a finger still down: let go of
+  // the stick, the trigger and the jump button for the player, or they'd stay pressed into the next life.
+  useEffect(() => () => {
+    if (crouchTimer.current) clearTimeout(crouchTimer.current);
+    if (stick.current) game.setTouchMove(null);
+    game.setTouchFire(false);
+    game.setTouchJump(false);
+  }, [game]);
 
   const capture = (e: ReactPointerEvent<HTMLElement>) => {
     e.preventDefault();
@@ -140,7 +150,11 @@ export function TouchControls(
         type="button"
         className={crouched ? 'tbtn crouch on' : 'tbtn crouch'}
         aria-label="Crouch or slide"
-        onPointerDown={tap(() => { game.tapTouchCrouch(); setTimeout(() => setCrouched(game.touchCrouched), 100); })}
+        onPointerDown={tap(() => {
+          game.tapTouchCrouch();
+          if (crouchTimer.current) clearTimeout(crouchTimer.current);
+          crouchTimer.current = setTimeout(() => setCrouched(game.touchCrouched), 100);
+        })}
       >
         ⤓
       </button>

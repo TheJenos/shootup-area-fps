@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { connectDiscord, step, type DiscordSession } from '../discord/discord';
 import { createRoomWithCode, getRoomSetup, randomId } from '../net/network';
+import { sessionPlayerId } from '../game/session';
 import { initAudio } from '../game/audio';
 import { loadCharacter } from '../game/character';
 import { loadGunModels } from '../game/guns';
@@ -83,7 +84,8 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
     setBusy(true);
     setError('');
     try {
-      const playerId = randomId();
+      // A refreshed Activity comes back as the same player (see game/session.ts).
+      const playerId = sessionPlayerId(roomCode, randomId);
       await afterLeave();
       // Always try: the match we saw may have ended since (its last player left), and then we
       // start it again as it was. If someone else started one since we looked, we join theirs.
@@ -120,7 +122,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
       const setup = await getRoomSetup(normalized);
       if (!setup) throw new Error(`Room ${normalized} doesn't exist.`);
       if (!isPlayableSpec(setup.map)) throw new Error(versionMessage(setup.map.gen));
-      onEnter({ roomCode: normalized, playerId: randomId(), name: discord.name, map: setup.map, profileId: discordProfileId(discord.userId), guildId: discord.guildId });
+      onEnter({ roomCode: normalized, playerId: sessionPlayerId(normalized, randomId), name: discord.name, map: setup.map, profileId: discordProfileId(discord.userId), guildId: discord.guildId });
     } catch (err) {
       console.error(err);
       setError(friendlyError(err));

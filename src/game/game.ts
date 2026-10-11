@@ -25,7 +25,8 @@ import { SmokeField, WALL_DISTANCE, WALL_DURATION, WallField, type DeployableDat
 import { GUNS, PICKUP_GUNS, isPickupGun, loadGunModels, maxShotDamage, shotDamage } from './guns';
 import { loadFpArms } from './fpArms';
 import { loadPropModels } from './props';
-import { GrenadeFx, simulateGrenade, THROW_LIFT, THROW_SPEED } from './grenades';
+import { GrenadeFx, setThrowGravity, simulateGrenade, THROW_LIFT, THROW_SPEED } from './grenades';
+import { clearSession, rememberSession, resumeSession, type SessionRecord } from './session';
 import { FlagField, placementOf, type FlagPlacement } from './flags';
 import { BombField } from './bombsites';
 import {
@@ -66,6 +67,8 @@ import type {
 const SEND_INTERVAL = 1 / 15;
 /** Even when nothing changed, the whole pose is resent this often (s) */
 const HEARTBEAT = 5;
+/** Events older than this (server ms) are ignored on arrival and swept up at round start */
+const STALE_EVENT_MS = 10_000;
 /** Stats change on every shot; they're sent at most this often (s), and right away once the round is over */
 const STATS_INTERVAL = 1;
 /** Most damage one hit of each kind can deal; anything above that from another client is clamped. */
@@ -249,6 +252,12 @@ export class Game {
   private statsTimer = 0;
   private scoreTimer = 0;
   private disposed = false;
+  /** The join in progress (see start) */
+  private joining: Promise<void> | null = null;
+  /** The session this tab is coming back to, until the first round record says whether it still applies */
+  private resume: SessionRecord | null = null;
+  /** Who owns the room (runs the shared chores and the bots); null until the lobby record says */
+  private ownerId: string | null = null;
   private character: CharacterAsset | null = null;
 
   // Abilities
@@ -314,7 +323,7 @@ export class Game {
   private flagBusy = false;
   private refereeBusy = false;
   private flagHomeToast = false;
-  /** When each flag was dropped, as seen by this client, so it can be sent home after a while */
+  /** When each flag lying on the ground was dropped (server ms), so it can be sent home after a while */
   private flagDroppedAt: Partial<Record<Team, number>> = {};
   // Search & Destroy
   private bombField: BombField | null = null;
@@ -413,6 +422,13 @@ export class Game {
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.autoClear = false;
     host.appendChild(this.renderer.domElement);
+    // The GPU can take the context away (a driver reset, a phone going to the background). three.js
+    // carries on drawing once it's back; until then the picture is frozen, so say what's going on.
+    this.renderer.domElement.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault(); // lets the browser restore it
+      this.hud.pushInfo('Graphics interrupted — waiting for the display to come back…');
+    }, { signal });
+    this.renderer.domElement.addEventListener('webglcontextrestored', () => this.hud.pushInfo('Display is back'), { signal });
 
     const aspect = host.clientWidth / host.clientHeight;
     this.camera = new THREE.PerspectiveCamera(settings.get().fov, aspect, 0.05, 300);
@@ -448,6 +464,7 @@ export class Game {
       onPickupRemoved: (id) => this.pickups.remove(id),
       onGame: (game) => this.onGame(game),
       onOwner: (id, ownerName) => {
+        this.ownerId = id;
         this.hud.update({ owner: { name: ownerName, me: id === playerId } });
         this.bots.setOwner(id === playerId);
       },
@@ -472,11 +489,15 @@ export class Game {
     const map = generateMap(spec);
     this.world?.dispose();
     this.walls?.clear();
-    // Fires, turrets and mines belong to the old map (the collider list is rebuilt for the new one).
+    // Fires, turrets, mines and smoke belong to the old map (the collider list is rebuilt for the new
+    // one), and so does anything still in the air: it would go off on the new map otherwise.
     this.fires?.clear();
     this.turrets?.clear();
     this.mines?.clear();
+    this.smoke?.clear();
     this.pendingThrown = [];
+    this.pendingSmokes = [];
+    this.pendingBlasts = [];
     this.world = buildWorld(this.scene, map, {
       colliders: this.colliders, solids: this.solids, ramps: this.ramps, obstacles: this.obstacles,
     }, { looseProps: LOOSE_PROPS });
@@ -956,7 +977,10 @@ export class Game {
     this.mode = this.rules.base;
     this.applyRules();
     this.applyLoadout();
-    if (MODES[this.mode].teams) this.setTeam(await this.pickTeam());
+    // A refreshed tab goes back to its team; its score comes back with the round (see onGame).
+    const resume = resumeSession(this.roomCode);
+    this.resume = resume?.playerId === this.playerId ? resume : null;
+    if (MODES[this.mode].teams) this.setTeam(this.resume?.team ?? await this.pickTeam());
     if (this.mode === 'ctf') this.flagField = new FlagField(this.scene);
     if (this.mode === 'snd') this.bombField = new BombField(this.scene);
     if (info) this.hud.update({ match: { roomName: info.name, startedAt: info.createdAt } });
@@ -965,12 +989,15 @@ export class Game {
 
     const spawn = this.pickSpawn();
     this.player.teleport(spawn, Math.atan2(spawn.x, spawn.z));
-    await this.net.join(() => this.fullState());
+    // Kept so dispose() can wait for it: leaving halfway through joining would leave listeners behind.
+    this.joining = this.net.join(() => this.fullState());
+    await this.joining;
     if (this.disposed) return;
 
     this.joined = true;
     this.joinedAt = performance.now();
     this.hud.update({ connecting: false, paused: !this.locked });
+    this.saveSession();
   }
 
   /** Join whichever team is smaller. */
@@ -987,6 +1014,7 @@ export class Game {
     this.team = team;
     this.color = TEAM_INFO[team].color;
     this.hud.update({ team });
+    this.saveSession();
   }
 
   // ---------------------------------------------------------------- spectating
@@ -1148,8 +1176,9 @@ export class Game {
 
   /** The player with the lowest id runs shared chores (pickups, flag returns). */
   private isLeader(): boolean {
-    // Bots never lead: whoever plays them already has enough to do.
-    return Object.keys(this.players).filter((id) => !isBotId(id)).sort()[0] === this.playerId;
+    // The room's owner (lobby/{code}/hostId), which everyone reads from the same record. Working it
+    // out from each client's own view of the players, two could lead at once for a moment.
+    return this.ownerId === this.playerId;
   }
 
   /** The bot host's view of the game */
@@ -1205,6 +1234,7 @@ export class Game {
       },
       botRoster: () => this.botRoster,
       firesAt: (x, y, z) => this.fires.burning(new THREE.Vector3(x, y, z)).map((f) => ({ owner: f.owner, center: f.center })),
+      notify: (text) => this.hud.toast(text),
     });
   }
 
@@ -1265,6 +1295,8 @@ export class Game {
 
   private onPlayerChanged(id: string, data: PlayerState): void {
     this.players[id] = data;
+    // One of our bots: keep its record whole on our side, for putting back after a reconnect.
+    if (isBotId(id)) this.net.syncBotState(id, data);
     if (id === this.playerId) {
       // Kills are incremented by our victims, so take them from the server copy.
       const kills = data.kills || 0;
@@ -1273,17 +1305,27 @@ export class Game {
         this.stats.best = Math.max(this.stats.best, this.stats.streak);
         if (this.rules.loadout === 'gungame') this.gunGameLevelUp(kills);
       }
+      const changed = kills !== this.kills;
       this.kills = kills;
+      // A refresh right after a kill should bring the kill back too.
+      if (changed) this.saveSession();
       return;
     }
     const remote = this.remotes.get(id);
     remote?.setData(data);
     if (remote && !this.playback) remote.setVisible(!data.spec);
-    if (!data.spec) this.recorder.pose(id, data, this.net.serverNow());
+    // Recorded at the time the pose was taken, where known, so a replay isn't skewed by the trip here.
+    if (!data.spec) this.recorder.pose(id, data, typeof data.t === 'number' ? data.t : this.net.serverNow());
   }
 
   private onPlayerRemoved(id: string): void {
-    if (id === this.playerId) return; // presence is re-registered when the connection recovers
+    if (id === this.playerId) {
+      // Offline: presence is re-registered when the connection recovers. Still connected, the server
+      // took our record for another reason (a refreshed tab's old socket closing after the new one
+      // had joined): put it back, or we'd play on invisible.
+      if (this.joined && !this.offline && !this.disposed) this.net.reRegister().catch((err: unknown) => console.warn('Could not re-register', err));
+      return;
+    }
     const remote = this.remotes.get(id);
     // Their turrets and mines go with them.
     this.turrets.removeOwnedBy(id);
@@ -1298,6 +1340,8 @@ export class Game {
   }
 
   private onEvent(evt: GameEvent): void {
+    // Left behind by a sender whose tab closed before its own clean-up ran: long past mattering.
+    if (typeof evt.t === 'number' && this.net.serverNow() - evt.t > STALE_EVENT_MS) return;
     // Hits on the bots we play are ours to apply.
     this.bots.onEvent(evt);
     // Server timestamp of the event, for the replay recording.
@@ -1346,9 +1390,12 @@ export class Game {
       if (!this.killcam) sfx.playShot(1 / (1 + dist / 10), gun);
       // Turret shots never carry this; a player's can (at most a full shotgun blast per barrier or turret).
       if (evt.dep && !evt.tur) this.damageDeployables(evt.dep, evt.from, maxShotDamage(gun) * GUNS[gun].pellets);
-      // Shotguns send damage per player hit; everything else a single hit.
+      // Shotguns send damage per player hit; everything else a single hit. A shot from further
+      // than its gun carries (with room for where we've moved since) can't have been at us.
       const pellets = evt.hits?.[this.playerId];
-      if (pellets) this.takeDamage(pellets, evt.from, false, weapon, origin);
+      const inRange = evt.tur || origin.distanceTo(this.player.position) <= GUNS[gun].range + 10;
+      if (!inRange) { /* nothing to take */ }
+      else if (pellets) this.takeDamage(pellets, evt.from, false, weapon, origin);
       else if (evt.hit === this.playerId) this.takeDamage(evt.dmg, evt.from, !!evt.head, weapon, origin);
     } else if (evt.type === 'grenade') {
       if (evt.from === this.playerId) return;
@@ -1442,6 +1489,7 @@ export class Game {
   private applyRules(): void {
     this.player.speedScale = this.rules.speed;
     this.player.gravityScale = this.rules.gravity;
+    setThrowGravity(this.rules.gravity);
     this.hp = this.rules.health;
     this.hud.update({ hp: this.hp, maxHp: this.rules.health });
   }
@@ -1539,12 +1587,39 @@ export class Game {
 
   // ---------------------------------------------------------------- rounds
 
+  /**
+   * Back after a refresh, in the same round we left: pick the score up where it was. (The room
+   * saw our old record go and this one arrive; to it we're the same player a moment later.)
+   */
+  private restoreSession(round: number): void {
+    const s = this.resume;
+    this.resume = null;
+    if (!s || s.round !== round) return;
+    this.kills = s.kills;
+    this.deaths = s.deaths;
+    this.stats = { ...EMPTY_STATS, ...s.stats };
+    this.lastStatsKey = '';
+    this.hud.update({ myMatch: this.myMatch });
+    this.net.sendState({ kills: this.kills, deaths: this.deaths, ...this.stats })
+      .catch((err: unknown) => console.warn('Could not restore our score', err));
+  }
+
+  /** What a refresh of this tab should come back to (see game/session.ts) */
+  private saveSession(): void {
+    if (!this.joined) return;
+    rememberSession({
+      roomCode: this.roomCode, playerId: this.playerId, team: this.team, round: this.game.round,
+      kills: this.kills, deaths: this.deaths, stats: { ...this.stats },
+    });
+  }
+
   private onGame(next: GameState): void {
     const prev = this.game;
     this.game = next;
     const first = !this.gameLoaded;
     this.gameLoaded = true;
     const newRound = !first && next.round > prev.round;
+    if (first) this.restoreSession(next.round);
 
     // Every round has its own map. A late joiner may also find the room has moved on from the lobby's seed.
     if (next.seed) {
@@ -1577,8 +1652,10 @@ export class Game {
         const was = placementOf(prev.flags[team]);
         const is = placementOf(next.flags[team]);
         if (!this.playback) this.flagField?.set(team, is);
+        // When it was dropped, on the server's clock: the record says (so a new referee doesn't restart
+        // the countdown); a record from before that field has it from when we saw it land.
         if (is.at !== 'ground') delete this.flagDroppedAt[team];
-        else if (first || !samePlacement(was, is)) this.flagDroppedAt[team] = now;
+        else if (first || !samePlacement(was, is)) this.flagDroppedAt[team] = next.flags[team]?.at ?? t;
         if (!samePlacement(was, is)) this.recorder.event({ t, kind: 'flag', team, placement: is });
         if (was.at === 'carried' && is.at !== 'carried') this.lastDrop[team] = { id: was.carrier, at: now };
         // Our flag run starts when we pick up their flag.
@@ -1604,7 +1681,8 @@ export class Game {
     if (this.kills + this.deaths + this.stats.captures === 0 && performance.now() - this.joinedAt < 60_000) return;
     this.rankedRound = this.game.round;
     const won = ended.winner !== 'draw' && (this.team ? ended.winner === this.team : ended.winner === this.playerId);
-    recordRound(this.profileId, this.name, { kills: this.kills, deaths: this.deaths, captures: Math.min(10, this.stats.captures), won }, this.guildId)
+    // The database rules cap what one round can add (see leaderboard.ts); over the cap the whole round would be refused.
+    recordRound(this.profileId, this.name, { kills: Math.min(100, this.kills), deaths: Math.min(100, this.deaths), captures: Math.min(10, this.stats.captures), won }, this.guildId)
       .catch((err: unknown) => console.warn('Could not update the leaderboard', err));
   }
 
@@ -1674,6 +1752,13 @@ export class Game {
     this.hud.update({ myMatch: this.myMatch });
     this.respawn(this.roundSpawnFor(this.playerId, this.team));
     this.bots.startRound();
+    // Pickups were placed for the old walls. The leader clears them before its spawner (same client,
+    // writes in order) restocks the new map; it's also the client that spawns them, so nobody else's are lost.
+    // It also sweeps up events left behind by senders whose tabs closed before their own clean-up ran.
+    if (this.isLeader()) {
+      this.net.clearPickups().catch((err: unknown) => console.warn('Could not clear the old pickups', err));
+      this.net.sweepEvents(STALE_EVENT_MS).catch((err: unknown) => console.warn('Could not sweep old events', err));
+    }
     this.cloakUntil = 0;
     this.hud.update({ cloaked: false });
     void this.net.sendState({ kills: 0, deaths: 0, shield: false, cloak: false, moment: null, ...this.stats });
@@ -1823,9 +1908,10 @@ export class Game {
     })
       .then((committed) => {
         if (!committed) return;
-        // Pickups were placed for the old walls, and the lobby should list the new map.
-        void this.net.clearPickups();
-        void this.net.setLobbyMap({ ...this.mapSpec, seed: normalizeSeed(seed) || CLASSIC_SEED });
+        // The lobby should list the new map. (The old map's pickups are cleared by the leader when it
+        // starts the round, so they can't be swept away after its spawner has restocked the new map.)
+        this.net.setLobbyMap({ ...this.mapSpec, seed: normalizeSeed(seed) || CLASSIC_SEED })
+          .catch((err: unknown) => console.warn('Could not update the lobby map', err));
       })
       .catch((err: unknown) => console.warn('Could not start the next round', err));
   }
@@ -1885,7 +1971,9 @@ export class Game {
   private checkTimeLimit(): void {
     const g = this.game;
     if (this.roundOver || !g.startedAt || this.timeUpRequested === g.round) return;
-    if (this.net.serverNow() < g.startedAt + this.rules.minutes * 60_000) return;
+    if (!this.timeIsUp()) return;
+    // S&D rounds are one life each: the one being fought is played out, and the match ends after it.
+    if (this.mode === 'snd' && g.snd && !g.snd.over) return;
     this.timeUpRequested = g.round;
     const round = g.round;
     this.net.mutateGame((next) => {
@@ -1894,6 +1982,12 @@ export class Game {
       this.finishRound(next, winner, name, 'time');
       return true;
     }).catch((err: unknown) => console.warn('Could not end the round on time', err));
+  }
+
+  /** The round's time limit has passed (by the server's clock). */
+  private timeIsUp(): boolean {
+    const g = this.game;
+    return !!g.startedAt && this.net.serverNow() >= g.startedAt + this.rules.minutes * 60_000;
   }
 
   /** Rooms made before time limits (or before this round had a clock) get one now. */
@@ -2133,7 +2227,7 @@ export class Game {
         const droppedAt = this.flagDroppedAt[team];
         const returnIn = droppedAt === undefined
           ? FLAG_RETURN_TIME
-          : Math.max(0, Math.ceil(FLAG_RETURN_TIME - (performance.now() - droppedAt) / 1000));
+          : Math.max(0, Math.ceil(FLAG_RETURN_TIME - (now - droppedAt) / 1000));
         return [team, { state: 'dropped', returnIn }];
       })) as HudState['flags']
       : null;
@@ -2296,7 +2390,7 @@ export class Game {
     if (!this.team || !this.carryingFlag()) return Promise.resolve();
     const enemy = otherTeam(this.team);
     const p = this.player.position;
-    const spot = { x: r2(p.x), y: r2(this.groundBelow(p)), z: r2(p.z) };
+    const spot = { x: r2(p.x), y: r2(this.groundBelow(p)), z: r2(p.z), at: this.net.serverNow() };
     return this.net.mutateGame((g) => {
       if (g.flags[enemy]?.by !== this.playerId) return false;
       g.flags[enemy] = spot;
@@ -2312,7 +2406,7 @@ export class Game {
     if (!this.team || this.flagBusy || !this.carryingFlag()) return;
     const enemy = otherTeam(this.team);
     const { x, z } = this.dropSpot();
-    const spot = { x, y: r2(this.groundBelow(new THREE.Vector3(x, this.player.position.y + 0.1, z))), z };
+    const spot = { x, y: r2(this.groundBelow(new THREE.Vector3(x, this.player.position.y + 0.1, z))), z, at: this.net.serverNow() };
     this.flagLeftAt = { x, z };
     this.flagTransaction((g) => {
       if (g.flags[enemy]?.by !== this.playerId) return false;
@@ -2333,7 +2427,7 @@ export class Game {
   private refereeFlags(): void {
     if (this.refereeBusy || this.roundOver || !this.isLeader()) return;
     if (performance.now() - this.joinedAt < REFEREE_GRACE_MS) return;
-    const now = performance.now();
+    const now = this.net.serverNow();
     for (const team of TEAMS) {
       const flag = this.game.flags[team];
       const at = placementOf(flag);
@@ -2584,6 +2678,8 @@ export class Game {
       };
     } else if (s.over) {
       if (now < s.over.at + ROUND_END_TIME * 1000) return;
+      // Out of match time: checkTimeLimit ends the match here instead of a round starting.
+      if (this.timeIsUp()) return;
       change = (next) => {
         if (!live(next) || next.snd?.n !== s.n || !next.snd.over) return false;
         next.snd = this.freshSnd(s.n + 1);
@@ -2809,6 +2905,7 @@ export class Game {
     this.alive = false;
     this.hp = 0;
     this.deaths++;
+    this.saveSession();
     // Search & Destroy: no respawns, the next round brings everyone back.
     const waiting = this.mode === 'snd';
     this.respawnTimer = waiting ? Infinity : this.rules.respawn;
@@ -3868,7 +3965,8 @@ export class Game {
 
   /** One player (the lowest id) keeps the map stocked; if they leave, the next one takes over. */
   private runSpawner(dt: number): void {
-    if (!this.isLeader()) return;
+    // Nothing is placed during the results: the next map is on its way, and these would litter it.
+    if (!this.isLeader() || this.roundOver) return;
     this.spawnTimer -= dt;
     if (this.spawnTimer > 0) return;
     // What spawns is up to the mode (a fixed-gun loadout already switched guns and ammo off).
@@ -4090,11 +4188,12 @@ export class Game {
       if (step) this.playStep(step, this.player.position, false, this.player.stance === 'crouch');
     }
 
+    const serverNow = this.net.serverNow();
     for (const [id, r] of this.remotes) {
       r.setAlly(this.isAlly(id));
       r.setMaxHealth(this.rules.health);
       r.setCarrying(this.mode === 'ctf' && TEAMS.some((t) => this.game.flags[t]?.by === id));
-      r.update(dt);
+      r.update(dt, serverNow);
       this.updateRemoteSteps(id, r, dt);
       if (r.consumeReloadStart()) {
         const heard = this.heardFrom(r.position);
@@ -4123,7 +4222,9 @@ export class Game {
       this.heartbeat += dt;
       this.statsTimer += dt;
       if (this.sendTimer >= SEND_INTERVAL && !this.offline) {
-        this.sendTimer = 0;
+        // Keep the remainder, so the rate is the same at every frame rate (reset to zero, a 60 fps
+        // client sent about 12 times a second, a 144 fps one 14). Never more than one send in arrears.
+        this.sendTimer = Math.min(this.sendTimer - SEND_INTERVAL, SEND_INTERVAL);
         const pose = this.poseState();
         // update() merges into our record, so everyone keeps the fields we leave out.
         const full = !this.lastPose || this.heartbeat > HEARTBEAT;
@@ -4136,12 +4237,16 @@ export class Game {
             this.lastStatsKey = statsKey;
             this.statsTimer = 0;
             stats = { ...this.stats, ...(moment ? { moment } : {}) };
+            this.saveSession();
           }
         }
         if (changes || stats) {
           this.lastPose = pose;
           if (full) this.heartbeat = 0;
-          void this.net.sendState({ ...changes, ...stats });
+          // Stamped with when it was taken (server ms), so others can draw us between poses.
+          // Only sent with a change, else the stamp alone would count as one.
+          this.net.sendState({ ...changes, ...stats, t: Math.round(this.net.serverNow()) })
+            .catch((err: unknown) => console.warn('Could not send our state', err));
         }
       }
     }
@@ -4476,6 +4581,8 @@ export class Game {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    // Leaving for good (a refresh never gets here): the next visit to this room is a fresh start.
+    clearSession();
     this.renderer.setAnimationLoop(null);
     this.player.detachPhysics();
     this.bots.dispose();
@@ -4506,6 +4613,8 @@ export class Game {
     this.renderer.domElement.remove();
     this.hud.dispose();
     await Promise.all([this.dropFlag(), this.dropBomb()]);
+    // leave() stops a join still under way, but only once that join has reached its next check.
+    await this.joining?.catch(() => {});
     await this.net.leave();
   }
 }

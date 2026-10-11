@@ -21,6 +21,8 @@ import { Crosshair } from './Crosshair';
 
 /** After this long on "Connecting…" we offer a way back to the lobby (ms). */
 const SLOW_CONNECT_MS = 10_000;
+/** After this long on "Reconnecting…" the banner offers the lobby (ms). */
+const SLOW_OFFLINE_MS = 20_000;
 const TOUCH_INTRO_KEY = 'fps-touch-intro';
 
 function useHud(game: Game): HudState {
@@ -34,16 +36,24 @@ export const weaponIcon = (w: WeaponKind): string =>
 /** Copy (or, on phones, share) the invite link for this room. */
 export function useCopyInvite(game: Game, roomCode: string): { copy(): void; copied: boolean } {
   const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
   const copy = () => {
     const url = `${location.origin}${location.pathname}?room=${roomCode}`;
     if (game.touch && typeof navigator.share === 'function') {
       navigator.share({ title: 'Arena FPS', text: `Join my match, room ${roomCode}`, url }).catch(() => {});
       return;
     }
-    void navigator.clipboard?.writeText(url).then(() => {
+    // No clipboard (not a secure context, or inside Discord): the code is on screen next to the button.
+    if (!navigator.clipboard) {
+      game.hud.toast(`Copy the room code: ${roomCode}`);
+      return;
+    }
+    navigator.clipboard.writeText(url).then(() => {
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 1500);
+    }).catch(() => game.hud.toast(`Couldn't copy — the room code is ${roomCode}`));
   };
   return { copy, copied };
 }
@@ -86,6 +96,16 @@ export function Hud({ game, roomCode, onLeave }: Props) {
     return () => clearTimeout(timer);
   }, [hud.connecting]);
   const { copy, copied } = useCopyInvite(game, roomCode);
+  // "Reconnecting…" that drags on gets a way out too.
+  const [slowOffline, setSlowOffline] = useState(false);
+  useEffect(() => {
+    if (!hud.offline) {
+      setSlowOffline(false);
+      return;
+    }
+    const timer = setTimeout(() => setSlowOffline(true), SLOW_OFFLINE_MS);
+    return () => clearTimeout(timer);
+  }, [hud.offline]);
 
   const classes = [
     hud.matchEnd?.phase === 'mvp' && 'cinematic', // the MVP replay hides the crosshair, panels and abilities
@@ -153,7 +173,8 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       <KillFeed entries={hud.feed} />
       {hud.offline && !hud.connecting && (
         <div id="offline-banner" className="hud-banner danger" role="status">
-          <span className="spinner" aria-hidden="true" />Reconnecting…
+          <span className="spinner" aria-hidden="true" />{slowOffline ? 'Still reconnecting…' : 'Reconnecting…'}
+          {slowOffline && <button type="button" onClick={onLeave}>Back to lobby</button>}
         </div>
       )}
       {waitingAlone && (

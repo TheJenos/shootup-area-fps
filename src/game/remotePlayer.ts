@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { NameTag } from './nameTag';
+import { PoseBuffer, RENDER_DELAY, type PoseSnap } from './poseBuffer';
 import { makeXrayMaterial, makeXrayMeshes } from './xray';
 import { GUNS, buildRemoteGun, remoteGunLength } from './guns';
 import { buildKnifeModel } from './weapon';
@@ -56,6 +57,8 @@ const _pole = new THREE.Vector3();
 const _gunQuat = new THREE.Quaternion();
 const _q = new THREE.Quaternion();
 const _tmp = new THREE.Vector3();
+/** The pose sampled for this frame, as a vector */
+const _at = new THREE.Vector3();
 const _color = new THREE.Color();
 /** Lengths of the switch dip and the throw swing (s) */
 const SWITCH_LEN = 0.4;
@@ -265,6 +268,13 @@ export class RemotePlayer {
   private speed = 0;
   private targetYaw: number;
   private targetPitch: number;
+  /**
+   * Timed poses, drawn a little behind the clock so there's one either side of the moment shown
+   * (see poseBuffer.ts). Empty for a client that sends no times (an older build, replay stand-ins):
+   * those are eased towards their latest pose instead.
+   */
+  private readonly buffer = new PoseBuffer();
+  private readonly sampled: PoseSnap = { t: 0, x: 0, y: 0, z: 0, yaw: 0, pitch: 0 };
   private pitch: number;
   private fall: number;
   /** Health as last reported by the server */
@@ -281,6 +291,7 @@ export class RemotePlayer {
     this.target = new THREE.Vector3(data.x || 0, data.y || 0, data.z || 0);
     this.targetYaw = data.yaw || 0;
     this.targetPitch = this.pitch = data.pitch || 0;
+    if (typeof data.t === 'number') this.buffer.push({ t: data.t, x: this.target.x, y: this.target.y, z: this.target.z, yaw: this.targetYaw, pitch: this.targetPitch });
     this.fall = this.alive ? 0 : 1;
     this.hp = this.shownHp = data.hp ?? 100;
     this.group.rotation.order = 'YXZ';
@@ -388,10 +399,12 @@ export class RemotePlayer {
       this.group.position.copy(next);
       this.lastPos.copy(next);
       this.fall = 0;
+      this.buffer.reset();
     }
     this.target.copy(next);
     this.targetYaw = data.yaw ?? this.targetYaw;
     this.targetPitch = data.pitch ?? this.targetPitch;
+    if (typeof data.t === 'number') this.buffer.push({ t: data.t, x: next.x, y: next.y, z: next.z, yaw: this.targetYaw, pitch: this.targetPitch });
     // A colour comes with the whole record, so a missing team then means none (the owner switched to free-for-all).
     if (data.color || data.team) this.setColor(data.color ?? this.colorNow, data.color ? data.team : this.teamNow);
     if (data.name) this.tag.setName(data.name);
@@ -728,12 +741,25 @@ export class RemotePlayer {
     this.model.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = !faded; });
   }
 
-  update(dt: number): void {
-    const t = 1 - Math.exp(-14 * dt);
+  /** @param serverNow the server clock (ms), which timed poses are drawn against */
+  update(dt: number, serverNow?: number): void {
     this.updateCloak(dt);
-    this.group.position.lerp(this.target, t);
-    this.group.rotation.y = angleLerp(this.group.rotation.y, this.targetYaw, t);
-    this.pitch = THREE.MathUtils.lerp(this.pitch, this.targetPitch, t);
+    if (serverNow !== undefined && this.buffer.sample(serverNow - RENDER_DELAY, this.sampled) !== 'empty') {
+      // The pose for this moment is known: go to it nearly at once (the little ease hides the step
+      // when a late snapshot moves the line).
+      const s = this.sampled;
+      const t = 1 - Math.exp(-30 * dt);
+      _at.set(s.x, s.y, s.z);
+      this.group.position.lerp(_at, t);
+      this.group.rotation.y = angleLerp(this.group.rotation.y, s.yaw, t);
+      this.pitch = THREE.MathUtils.lerp(this.pitch, s.pitch, t);
+    } else {
+      // No times to go by: chase the latest pose.
+      const t = 1 - Math.exp(-14 * dt);
+      this.group.position.lerp(this.target, t);
+      this.group.rotation.y = angleLerp(this.group.rotation.y, this.targetYaw, t);
+      this.pitch = THREE.MathUtils.lerp(this.pitch, this.targetPitch, t);
+    }
 
     // A body doesn't change gait: with the mixer frozen a cross-fade would never finish and
     // both clips would end up at full weight.

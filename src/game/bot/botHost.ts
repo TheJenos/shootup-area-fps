@@ -46,6 +46,19 @@ const STATS_INTERVAL = 1;
 /** A knife slash, start to finish (the gun waits) (s) */
 const KNIFE_SLASH = 0.42;
 const SEND_RATE = 10;
+/** Seconds between sending a bot's whole pose rather than just what changed */
+const HEARTBEAT = 5;
+
+type BotPose = Pick<PlayerState, 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'stance' | 'aim' | 'rl' | 'th'>;
+
+/** The fields of `next` that differ from `prev`, or null if none do. */
+function poseChanges<T extends object>(prev: T, next: T): Partial<T> | null {
+  let changes: Partial<T> | null = null;
+  for (const key of Object.keys(next) as (keyof T)[]) {
+    if (next[key] !== prev[key]) (changes ??= {} as Partial<T>)[key] = next[key];
+  }
+  return changes;
+}
 /** How often the number of bots is checked against the room (s) */
 const SYNC_INTERVAL = 1;
 const MAX_PITCH = Math.PI / 2 - 0.01;
@@ -115,6 +128,8 @@ export interface BotHostApi {
   botRoster(): BotRoster;
   /** Fires burning where (x, y, z) stands: whose they are and where they burn */
   firesAt(x: number, y: number, z: number): { owner: string; center: THREE.Vector3 }[];
+  /** Tell the player something about their bots (a toast) */
+  notify(text: string): void;
 }
 
 /** A bot as something that places things */
@@ -150,7 +165,9 @@ interface HostedBot {
   deaths: number;
   captures: number;
   decideIn: number;
-  sendIn: number;
+  /** The pose (and gun) as last sent, and when the whole of it last went out (bot host clock) */
+  lastPose: (BotPose & { gun: GunKind }) | null;
+  fullAt: number;
   flagBusy: boolean;
   /** S&D: seconds spent planting or defusing so far (0: not at it) */
   channel: number;
@@ -198,6 +215,8 @@ export class BotHost {
   private pending = 0;
   private senses: MapSenses | null = null;
   private readonly obs = new Float32Array(OBS_SIZE);
+  /** Seconds until the next batch of bot poses goes out */
+  private sendIn = 0;
   /** Seconds since we started, for the bots' memories */
   private clock = 0;
   private patrolMap: MapData | null = null;
@@ -247,7 +266,12 @@ export class BotHost {
     if (want.length && !this.policy) {
       if (!this.loading) {
         this.loading = true;
-        void loadPolicy().then((p) => { this.policy = p; this.syncIn = 0; });
+        void loadPolicy().then((p) => {
+          this.policy = p;
+          this.syncIn = 0;
+          // Without a brain there are no bots: say so once, rather than leaving the list unplayed in silence.
+          if (!p) this.api.notify('Bots are unavailable: their brain failed to load. Reload to try again.');
+        });
       }
       return;
     }
@@ -316,7 +340,7 @@ export class BotHost {
     const bot: HostedBot = {
       id, slot: slotId, skill: slot.skill, name, team, mover, attached: null, brain: new BotBrain(policy, SKILLS[slot.skill]),
       yaw: 0, pitch: 0, hp: rules.health, alive: true, respawnIn: 0, gun: 'rifle', ammo: 0, reloadLeft: 0, cooldown: 0, burst: 0,
-      meleeCooldown: 0, deaths: 0, captures: 0, decideIn: Math.random() * DECISION_DT, sendIn: 0, flagBusy: false, channel: 0, patrol: newPatrol(), gear: new Gear(), detour: null, goal: null, goalDist: 0, spawnedAt: 0,
+      meleeCooldown: 0, deaths: 0, captures: 0, decideIn: Math.random() * DECISION_DT, lastPose: null, fullAt: 0, flagBusy: false, channel: 0, patrol: newPatrol(), gear: new Gear(), detour: null, goal: null, goalDist: 0, spawnedAt: 0,
       stats: { damage: 0, shots: 0, hits: 0, headshots: 0, streak: 0, best: 0 }, seenKills: 0, statsKey: '', statsAt: 0,
     };
     this.bots.set(id, bot);
@@ -488,10 +512,14 @@ export class BotHost {
       if (snd && !roundOver) this.updateBomb(bot, snd, dt);
     }
 
+    // All the bots' poses go out together, SEND_RATE times a second, as one write: only what changed
+    // for each (everything, every HEARTBEAT seconds, in case a change was lost), like a player's own.
+    this.sendIn -= dt;
+    if (this.sendIn > 0) return;
+    this.sendIn = 1 / SEND_RATE;
+    const batch = new Map<string, Partial<PlayerState>>();
+    const t = Math.round(api.net.serverNow());
     for (const bot of this.bots.values()) {
-      bot.sendIn -= dt;
-      if (bot.sendIn > 0) continue;
-      bot.sendIn = 1 / SEND_RATE;
       // Kills are credited by the victims: a new one extends the streak.
       const kills = api.players()[bot.id]?.kills ?? 0;
       if (kills > bot.seenKills) {
@@ -505,11 +533,19 @@ export class BotHost {
         bot.statsKey = key;
         bot.statsAt = this.clock;
       }
-      void api.net.sendStateAs(bot.id, { ...this.pose(bot), gun: bot.gun, ...stats });
+      const pose = { ...this.pose(bot), gun: bot.gun };
+      const full = !bot.lastPose || this.clock - bot.fullAt >= HEARTBEAT;
+      const changes = full ? pose : poseChanges(bot.lastPose!, pose);
+      if (!changes && !stats) continue;
+      bot.lastPose = pose;
+      if (full) bot.fullAt = this.clock;
+      // Stamped with when the pose was taken (server ms), so others draw the bot between poses like any player.
+      batch.set(bot.id, { ...changes, ...stats, t });
     }
+    if (batch.size) api.net.sendStatesAs(batch).catch((err: unknown) => console.warn('Could not send the bots', err));
   }
 
-  private pose(bot: HostedBot) {
+  private pose(bot: HostedBot): BotPose {
     const p = bot.mover.position;
     return {
       x: r2(p.x), y: r2(p.y), z: r2(p.z), yaw: r3(bot.yaw), pitch: r3(bot.pitch), stance: bot.mover.stance, aim: bot.alive && bot.brain.aim.ads > 0.5, rl: bot.reloadLeft > 0,

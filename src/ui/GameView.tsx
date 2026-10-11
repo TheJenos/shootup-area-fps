@@ -49,7 +49,15 @@ export function GameView({ session, onExit }: Props) {
     void ready.then(() => {
       if (cancelled) return;
       setBuilding(false);
-      const game = new Game({ host, ...session });
+      let game: Game;
+      try {
+        game = new Game({ host, ...session });
+      } catch (err) {
+        // Most likely no WebGL (blocked, or a GPU driver problem): back to the lobby with a reason, not a blank page.
+        console.error(err);
+        onExitRef.current(`Could not start the game: ${friendlyError(err)}`);
+        return;
+      }
       instance = game;
       setGame(game);
       if (import.meta.env.DEV || import.meta.env.VITE_E2E === 'true') window.game = game;

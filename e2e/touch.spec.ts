@@ -76,6 +76,40 @@ test.describe('touch screens', () => {
     await expect(page.locator('#inventory')).toBeHidden();
   });
 
+  test('a thumb on the stick when you die does not keep you walking after the respawn', async ({ players, rooms }) => {
+    test.slow();
+    const p = await players.open({ name: uniqueName('Walker'), touch: true });
+    await p.page.addInitScript(() => localStorage.setItem('fps-touch-intro', '1'));
+    const code = await rooms.seed(rules('ffa', { respawn: 1 }));
+    await joinOnTouch(p, code);
+    await p.page.getByRole('button', { name: 'Tap to play' }).click();
+    const bob = await players.open(uniqueName('Bob'));
+    await bob.gotoLobby();
+    await bob.joinByCode(code);
+    await bob.play();
+    await p.teleport(0, 0, 18, 0);
+
+    // A slow walk forward, thumb kept on the stick
+    const zone = (await p.page.locator('.stick-zone').boundingBox())!;
+    const [sx, sy] = [zone.x + zone.width / 2, zone.y + zone.height / 2];
+    await p.page.mouse.move(sx, sy);
+    await p.page.mouse.down();
+    await p.page.mouse.move(sx, sy - 14, { steps: 3 });
+    await expect.poll(async () => (await p.state()).speed, { timeout: 5_000 }).toBeGreaterThan(0.3);
+
+    // Bob catches up and takes them out: the on-screen controls go away with the thumb still down
+    const [x, y, z] = (await p.state()).pos;
+    await bob.teleport(x + 3, y, z - 1);
+    await bob.waitForRemote(p);
+    await bob.kill(p);
+    await expect.poll(async () => (await p.state()).alive, { timeout: 15_000 }).toBe(true);
+
+    // Back in the game, standing still: the stick was let go of for them when the controls went
+    await p.page.waitForTimeout(1_500);
+    expect((await p.state()).speed).toBeLessThan(0.1);
+    await p.page.mouse.up();
+  });
+
   test('portrait asks to rotate the device', async ({ players, rooms }) => {
     const p = await players.open({ name: uniqueName('Portrait'), touch: true, viewport: { width: 390, height: 780 } });
     await p.page.addInitScript(() => localStorage.setItem('fps-touch-intro', '1'));

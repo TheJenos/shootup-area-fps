@@ -78,9 +78,13 @@ function room(seed = 'GEARTEST') {
   void raycaster;
   const api: BotHostApi = {
     selfId: 'HUMAN',
+    notify: () => {},
     net: {
       addBot: async (id: string, state: PlayerState) => { players[id] = state; },
       sendStateAs: async (id: string, s: Partial<PlayerState>) => { log.states.push(s); Object.assign(players[id] ?? {}, s); },
+      sendStatesAs: async (batch: Map<string, Partial<PlayerState>>) => {
+        for (const [id, s] of batch) { log.states.push(s); Object.assign(players[id] ?? {}, s); }
+      },
       sendEventAs: (_id: string, e: { type: string }) => { log.events.push(e); },
       claimPickup: async (id: string) => { const p = pickups.get(id) ?? null; pickups.delete(id); return p; },
       spawnPickup: (r: PickupRecord) => { log.spawned.push(r); return 'x'; },
@@ -88,6 +92,7 @@ function room(seed = 'GEARTEST') {
       creditKill: async () => null,
       renameBot: async (_id: string, name: string) => { log.renamed.push(name); },
       removeBot: async (id: string) => { log.removed.push(id); },
+      serverNow: () => Date.now(),
     } as unknown as BotHostApi['net'],
     joined: () => true,
     physics: () => physics,

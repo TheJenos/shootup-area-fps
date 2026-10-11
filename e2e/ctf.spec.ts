@@ -1,5 +1,5 @@
-import { db, waitForValue } from './support/db';
-import { expect, rules, test, type Fixtures } from './support/fixtures';
+import { db, dropPlaceholder, serverNow, waitForValue } from './support/db';
+import { expect, rules, test, uniqueName, type Fixtures } from './support/fixtures';
 import type { Player } from './support/player';
 
 const BASE = { red: [0, 0, 32], blue: [0, 0, -32] } as const;
@@ -68,6 +68,36 @@ test.describe('capture the flag', () => {
     await waitForValue(flagPath, (f) => typeof f?.x === 'number');
     await alice.teleport(10, 0, 0);
     await waitForValue(flagPath, (f) => f === null, 40_000);
+  });
+
+  test('a dropped flag is timed from the drop, even by a referee who arrived after it', async ({ duel }) => {
+    const { alice, aTeam, flagPath } = await ctf(duel);
+    await grab(alice, aTeam);
+    await alice.page.keyboard.press('KeyE');
+    const dropped = await waitForValue(flagPath, (f) => typeof f?.x === 'number');
+    // The record carries the drop time (the server's clock), which is what every referee counts from.
+    expect(typeof dropped.at).toBe('number');
+    expect(Math.abs(dropped.at - serverNow())).toBeLessThan(10_000);
+  });
+
+  test('a referee who arrives mid-countdown sends the flag home on time', async ({ players, rooms }) => {
+    test.slow();
+    // A flag that has lain on the ground for 15 of its 20 s when Carol, alone and so the referee, joins.
+    const code = await rooms.seed(rules('ctf'));
+    const enemy: Team = 'blue';
+    await db.put(`rooms/${code}/game/flags/${enemy}`, { x: 6, y: 0, z: 6, at: serverNow() - 15_000 });
+    const carol = await players.open(uniqueName('Carol'));
+    await carol.gotoLobby();
+    await carol.joinByCode(code);
+    await dropPlaceholder(code);
+    const joinedAt = Date.now();
+    await carol.play();
+    // Her clock shows the time left, not a fresh 20 s...
+    await expect.poll(async () => (await carol.hud()).flags?.[enemy]?.state).toBe('dropped');
+    expect((await carol.hud()).flags[enemy].returnIn).toBeLessThanOrEqual(7);
+    // ...and she returns it when it runs out, not 20 s after she first saw it (plus her 3 s referee grace).
+    await waitForValue(`rooms/${code}/game/flags/${enemy}`, (f) => f === null, 20_000);
+    expect(Date.now() - joinedAt).toBeLessThan(16_000);
   });
 
   test('no capture while your own flag is away', async ({ duel }) => {

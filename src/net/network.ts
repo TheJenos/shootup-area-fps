@@ -150,15 +150,19 @@ export class RoomConnection {
   readonly playerId: string;
   private readonly handlers: RoomHandlers;
   private readonly lobbyRef: DatabaseReference;
-  private readonly roomRef: DatabaseReference;
   private readonly playerRef: DatabaseReference;
   private readonly memberRef: DatabaseReference;
   private readonly eventsRef: DatabaseReference;
   private readonly pickupsRef: DatabaseReference;
   private readonly gameRef: DatabaseReference;
-  private lastOneHere = false;
-  /** Bots this client plays for (see game/bot/botHost.ts): their records go when we do */
-  private readonly bots = new Map<string, { player: DatabaseReference; member: DatabaseReference }>();
+  /**
+   * Bots this client plays for (see game/bot/botHost.ts): their records go when we do. `state` is
+   * each one's record as last written, so it can be put back whole after a reconnect (onDisconnect
+   * removed it meanwhile; a partial update would leave a record with no name or kills).
+   */
+  private readonly bots = new Map<string, { player: DatabaseReference; member: DatabaseReference; state: PlayerState; ready: boolean }>();
+  /** leave() was called: a join() still under way must not register anything more */
+  private left = false;
   /** Server clock minus ours, in ms, kept up to date by Firebase */
   private serverOffset = 0;
   private unsubs: Unsubscribe[] = [];
@@ -172,7 +176,6 @@ export class RoomConnection {
     this.playerId = playerId;
     this.handlers = handlers;
     this.lobbyRef = ref(db(), `lobby/${code}`);
-    this.roomRef = ref(db(), `rooms/${code}`);
     this.playerRef = ref(db(), `rooms/${code}/players/${playerId}`);
     this.memberRef = ref(db(), `lobby/${code}/members/${playerId}`);
     this.eventsRef = ref(db(), `rooms/${code}/events`);
@@ -191,7 +194,7 @@ export class RoomConnection {
       this.unsubs.push(
         onValue(ref(db(), '.info/connected'), async (snap) => {
           this.handlers.onConnection?.(!!snap.val());
-          if (!snap.val()) return;
+          if (!snap.val() || this.left) return;
           try {
             await this.registerPresence();
             if (first) { first = false; resolve(); }
@@ -201,9 +204,13 @@ export class RoomConnection {
         }),
       );
     });
+    // leave() ran while we were registering: nothing below may start (its listeners would outlive the game).
+    if (this.left) return;
 
-    // Whoever is alone in the room arranges for the whole room to be deleted
-    // server-side when they disconnect, so closing the tab still cleans up.
+    // A room nobody is left in is cleaned up by whoever next looks at the lobby list (watchRooms) or
+    // by the last player to leave through the menu (leave()). It is never deleted from a client's
+    // guess that it's alone: that guess lags the server, and someone joining just as the "last"
+    // player's tab closed would be wiped out with the room.
     let members: Record<string, string> = {};
     let hostId: string | null = null;
     // Ownership is only settled once both have loaded: with the members in but the owner not yet, it
@@ -214,12 +221,6 @@ export class RoomConnection {
       onValue(ref(db(), `lobby/${this.code}/members`), (snap) => {
         members = (snap.val() || {}) as Record<string, string>;
         membersLoaded = true;
-        // Bots don't count: a room with only our bots in it goes when we do.
-        const alone = Object.keys(members).every((id) => id === this.playerId || isBotId(id));
-        if (alone !== this.lastOneHere) {
-          this.lastOneHere = alone;
-          this.armDisconnect().catch((err) => console.warn('onDisconnect update failed', err));
-        }
         if (hostLoaded) this.updateOwner(members, hostId);
       }),
       onValue(ref(db(), `lobby/${this.code}/hostId`), (snap) => {
@@ -273,36 +274,43 @@ export class RoomConnection {
     }
   }
 
+  /**
+   * Write our record (and our bots', whole) and queue their removal for when the socket drops. Runs
+   * again after every reconnect: the server has removed them all by then.
+   */
   private async registerPresence(): Promise<void> {
+    if (this.left) return;
     const state = this.getFullState();
-    await this.armDisconnect();
+    const bots = [...this.bots.values()];
+    await this.armDisconnect(this.ownRefs(bots));
     await set(this.playerRef, state);
     await set(this.memberRef, state.name);
+    await Promise.all(bots.flatMap((b) => [set(b.player, b.state), set(b.member, b.state.name)]));
   }
 
-  /** Queue what the server should delete if we drop: just us, or the whole room if we're the last one. */
-  private async armDisconnect(): Promise<void> {
-    // cancel() on a parent also clears handlers queued on its children.
-    await Promise.all([onDisconnect(this.lobbyRef).cancel(), onDisconnect(this.roomRef).cancel()]);
-    if (this.lastOneHere) {
-      await Promise.all([onDisconnect(this.lobbyRef).remove(), onDisconnect(this.roomRef).remove()]);
-    } else {
-      await Promise.all([onDisconnect(this.playerRef).remove(), onDisconnect(this.memberRef).remove()]);
-      // The cancel above cleared our bots' handlers too.
-      await Promise.all([...this.bots.values()].flatMap((b) => [onDisconnect(b.player).remove(), onDisconnect(b.member).remove()]));
-    }
+  /** Queue the deletion of `refs` for when we drop. */
+  private armDisconnect(refs: DatabaseReference[]): Promise<unknown> {
+    return Promise.all(refs.map((r) => onDisconnect(r).remove()));
+  }
+
+  /** Our own records and those of the given bots: everything that leaves with us */
+  private ownRefs(bots: { player: DatabaseReference; member: DatabaseReference }[]): DatabaseReference[] {
+    return [this.playerRef, this.memberRef, ...bots.flatMap((b) => [b.player, b.member])];
   }
 
   // ---------------------------------------------------------------- bots
 
   /** Put a bot in the room, played by this client; it leaves when we disconnect. */
   async addBot(id: string, state: PlayerState): Promise<void> {
-    const refs = { player: ref(db(), `rooms/${this.code}/players/${id}`), member: ref(db(), `lobby/${this.code}/members/${id}`) };
+    // Not `ready` until its whole record is on its way: an update sent before it (while the removal
+    // below is being queued) would create a partial record, with no name for anyone to see.
+    const refs = { player: ref(db(), `rooms/${this.code}/players/${id}`), member: ref(db(), `lobby/${this.code}/members/${id}`), state, ready: false };
     this.bots.set(id, refs);
-    if (!this.lastOneHere) await Promise.all([onDisconnect(refs.player).remove(), onDisconnect(refs.member).remove()]);
-    countNet('up', state);
-    await set(refs.player, state);
-    await set(refs.member, state.name);
+    await this.armDisconnect([refs.player, refs.member]);
+    countNet('up', refs.state);
+    const written = Promise.all([set(refs.player, refs.state), set(refs.member, refs.state.name)]);
+    refs.ready = true;
+    await written;
     // Removed (or we left) while those writes were on their way: they mustn't leave an orphan behind.
     if (this.bots.get(id) !== refs) await Promise.all([remove(refs.player), remove(refs.member)]);
   }
@@ -332,6 +340,9 @@ export class RoomConnection {
   async renameBot(id: string, name: string): Promise<void> {
     const refs = this.bots.get(id);
     if (!refs) return;
+    refs.state = { ...refs.state, name };
+    // Still being added: the record goes out with the new name.
+    if (!refs.ready) return;
     await Promise.all([update(refs.player, { name }), set(refs.member, name)]);
   }
 
@@ -339,8 +350,57 @@ export class RoomConnection {
   sendStateAs(id: string, partial: { [K in keyof PlayerState]?: PlayerState[K] | null }): Promise<void> {
     const refs = this.bots.get(id);
     if (!refs) return Promise.resolve();
+    refs.state = mergeState(refs.state, partial);
+    // Still being added: the record goes out whole, with these changes in it.
+    if (!refs.ready) return Promise.resolve();
     countNet('up', partial);
     return update(refs.player, partial);
+  }
+
+  /**
+   * Partial updates of several of our bots' records in one write (a multi-path update), so a room
+   * full of bots costs the owner one message a tick rather than one per bot.
+   */
+  sendStatesAs(batch: Map<string, { [K in keyof PlayerState]?: PlayerState[K] | null }>): Promise<void> {
+    const paths: Record<string, unknown> = {};
+    for (const [id, partial] of batch) {
+      const refs = this.bots.get(id);
+      if (!refs) continue;
+      refs.state = mergeState(refs.state, partial);
+      if (!refs.ready) continue;
+      countNet('up', partial);
+      for (const [key, value] of Object.entries(partial)) paths[`${id}/${key}`] = value;
+    }
+    return Object.keys(paths).length ? update(ref(db(), `rooms/${this.code}/players`), paths) : Promise.resolve();
+  }
+
+  /** One of our bots' records as the server has it (its kills are credited by its victims) */
+  syncBotState(id: string, state: PlayerState): void {
+    const refs = this.bots.get(id);
+    if (refs) refs.state = state;
+  }
+
+  /**
+   * Write our records again: the server took them away (a disconnect it noticed late, after we
+   * were already back, or a refreshed tab's old socket closing after the new one joined).
+   */
+  reRegister(): Promise<void> {
+    return this.registerPresence();
+  }
+
+  /**
+   * Remove events older than `olderThanMs` (by the server's clock). Senders delete their own after
+   * a few seconds, but one that closed its tab first leaves its events behind for good.
+   */
+  async sweepEvents(olderThanMs: number): Promise<void> {
+    const snap = await get(this.eventsRef);
+    const cutoff = this.serverNow() - olderThanMs;
+    const stale: Record<string, null> = {};
+    snap.forEach((child) => {
+      const t = (child.val() as { t?: unknown } | null)?.t;
+      if (typeof t !== 'number' || t < cutoff) stale[child.key] = null;
+    });
+    if (Object.keys(stale).length) await update(this.eventsRef, stale);
   }
 
   /** An event from one of our bots */
@@ -380,10 +440,10 @@ export class RoomConnection {
   private pushEvent(event: OutgoingEvent, from: string): void {
     const eventRef = push(this.eventsRef);
     countNet('up', event);
-    set(eventRef, { ...event, from, t: serverTimestamp() });
+    set(eventRef, { ...event, from, t: serverTimestamp() }).catch((err: unknown) => console.warn('Could not send event', event.type, err));
     const timer = setTimeout(() => {
       this.timers.delete(timer);
-      remove(eventRef);
+      remove(eventRef).catch(() => {});
     }, EVENT_TTL);
     this.timers.add(timer);
   }
@@ -489,21 +549,31 @@ export class RoomConnection {
     return result.committed && kills !== null ? kills : null;
   }
 
+  /** Safe to call more than once, and while join() is still under way (it then stops where it is). */
   async leave(): Promise<void> {
+    if (this.left) return;
+    this.left = true;
     this.unsubs.forEach((u) => u());
     this.unsubs = [];
     this.timers.forEach(clearTimeout);
     this.timers.clear();
-    // Our bots' records go first, before anything is awaited: cancelling the room's disconnect
-    // handlers below also cancels theirs, so they must already be on their way out if the page closes.
     const bots = [...this.bots.values()];
     this.bots.clear();
-    const botsGone = Promise.all(bots.flatMap((b) => [remove(b.player), remove(b.member)]));
-    await Promise.all([onDisconnect(this.lobbyRef).cancel(), onDisconnect(this.roomRef).cancel()]);
-    await Promise.all([remove(this.playerRef), remove(this.memberRef), botsGone]);
+    // The queued removals are no longer needed, but harmless if the page closes before this finishes.
+    await Promise.all(this.ownRefs(bots).map((r) => remove(r)));
     const members = await get(ref(db(), `lobby/${this.code}/members`));
     if (!members.exists()) await deleteRoom(this.code);
   }
+}
+
+/** `base` with `partial` applied the way a database update() applies it: null deletes a field. */
+function mergeState(base: PlayerState, partial: { [K in keyof PlayerState]?: PlayerState[K] | null }): PlayerState {
+  const next = { ...base } as Record<string, unknown>;
+  for (const [key, value] of Object.entries(partial)) {
+    if (value === null) delete next[key];
+    else next[key] = value;
+  }
+  return next as unknown as PlayerState;
 }
 
 /** Fill in the parts Firebase leaves out, since it never stores empty objects. */

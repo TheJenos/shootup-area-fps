@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { isConfigured } from '../net/firebase';
 import { createRoom, getRoomSetup, randomId } from '../net/network';
+import { sessionPlayerId } from '../game/session';
 import { isPlayableSpec } from '../game/mapgen';
 import { MapPicker, useMapChoice } from './MapPicker';
 import { initAudio } from '../game/audio';
@@ -135,7 +136,8 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
         throw new Error(`Room ${normalized} doesn't exist.`);
       }
       if (!isPlayableSpec(setup.map)) throw new Error(versionMessage(setup.map.gen));
-      onEnter({ roomCode: normalized, playerId: randomId(), name: playerName, map: setup.map, profileId });
+      // A refreshed tab comes back as the same player (see game/session.ts).
+      onEnter({ roomCode: normalized, playerId: sessionPlayerId(normalized, randomId), name: playerName, map: setup.map, profileId });
     });
   };
 

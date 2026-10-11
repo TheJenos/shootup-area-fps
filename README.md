@@ -164,7 +164,8 @@ killing everyone within 14 m. Defenders win by holding **E** for 6 s at the plan
 for the attackers (planted or not). Everyone is held at their spawn for 5 s before each round. Nobody respawns
 mid-round: the dead watch a teammate (click to switch) until the next round. Anyone who joins or switches team
 in the first 15 s of a round still plays it. Teams swap sides after limit − 1 rounds (past that, they alternate).
-Plants and defuses count as objectives (the leaderboard's captures). The lowest player id referees: it sets
+When the match's time limit runs out mid-round, that round is played to the end and the match ends on it.
+Plants and defuses count as objectives (the leaderboard's captures). The room owner referees: it sets
 rounds up, decides them and starts the next one 5 s later (`game/snd` in the database). Bots carry, plant,
 escort, hold the sites and defuse.
 
@@ -531,7 +532,11 @@ doesn't. The match keeps running while the menu is open. Round results and the M
 - In CTF, taking, losing, capturing and returning flags get centre-screen banners, and a dropped flag's icon
   counts down to its return.
 - A "Waiting for players" banner with a Copy invite button shows while you're alone; "Reconnecting…" shows
-  when the connection to the server drops; "Connecting…" offers a way back to the lobby after 10 s.
+  when the connection to the server drops (and offers the lobby after 20 s); "Connecting…" offers a way back
+  to the lobby after 10 s.
+- **Refreshing the page mid-match brings you back as the same player**, on the same team, with the round's
+  kills, deaths and stats (kept in this tab's `sessionStorage`, `fps-session`; a later round starts you from
+  zero, and leaving through the menu forgets it).
 
 ### Invite links
 
@@ -706,7 +711,7 @@ button. Dropped abilities land in front of you with their remaining uses, and an
 
 All numbers live in `src/game/abilities.ts`.
 
-- **Spawning:** the player with the lowest id keeps the map stocked; if they leave, the next one takes over.
+- **Spawning:** the room owner keeps the map stocked; if they leave, whoever owns the room next takes over.
 - **Picking up:** claimed with a database transaction, so only one player gets a pickup even if two touch it at once.
 - **Grenades:** every client simulates the same arc from the thrower's start position and velocity. The thrower
   decides who the blast hit (with a line-of-sight check) and the victims apply the damage, like rifle hits.
@@ -835,7 +840,11 @@ rooms/{code}/pickups/{id}  abilities lying on the map
 rooms/{code}/game          round number, map seed, start time, winner + MVP + next seed, scores, flags
 ```
 
-- Each client sends its own position ~15×/s (only when it changes) and interpolates everyone else.
+- Each client sends its own position 15×/s (only when it changes), stamped with the server time it was
+  taken (`t`). Everyone else is drawn 120 ms behind that clock, between the two poses either side of the
+  moment (`src/game/poseBuffer.ts`): a steady walk looks steady however unevenly the updates arrive. Past the
+  newest pose the avatar is carried on at its last speed for up to 100 ms, then held. Bots (10×/s, all in one
+  write from their owner, only what changed) are drawn the same way. Respawns and teleports snap.
 - Shooting is hitscan: the shooter raycasts locally against the map and other players' hitboxes,
   then publishes a `shot` event (tracer + who was hit). Body shots do 20, headshots 50 (rifle). The shooter
   sees a hit marker on the crosshair right away: a quick white X for a body hit, a bigger red X with a burst ring
@@ -845,8 +854,13 @@ rooms/{code}/game          round number, map seed, start time, winner + MVP + ne
 - The `game` node is only ever changed with transactions (scoring, ending a round, taking / dropping /
   capturing flags), so two players can't both grab the same flag or both start the next round.
   The TDM victim scores the point for the killer's team; the FFA victim ends the round when crediting
-  the killer's 25th kill. Sending abandoned flags home is done by the same "lowest id" player who spawns pickups.
-- Presence uses `onDisconnect()`, so closing the tab removes you; empty rooms get cleaned up.
+  the killer's 25th kill. Sending abandoned flags home is done by the room owner, who also spawns pickups and
+  referees S&D: one client runs every shared chore, read from the same `hostId` by everyone, so two can't both
+  do it at once.
+- Presence uses `onDisconnect()`, so closing the tab removes you (and your bots). A room left empty is deleted by
+  the last player to leave through the menu, or else by the next client to open the lobby list. No client ever
+  queues the whole room's deletion on its own disconnect: its idea of being alone lags the server, and someone
+  joining at that moment would be wiped out with it.
 
 The game is **client-authoritative**, which is fine for playing with friends but means a modified client can cheat.
 The included rules also allow anyone to read/write. For a public game you would add Firebase Auth

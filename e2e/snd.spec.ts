@@ -1,4 +1,4 @@
-import { db, serverNow, waitForValue } from './support/db';
+import { db, expireClock, serverNow, waitForValue } from './support/db';
 import { expect, rules, test, type Fixtures } from './support/fixtures';
 import type { Player } from './support/player';
 
@@ -96,5 +96,24 @@ test.describe('search & destroy', () => {
     const over = await waitForValue(`${path}/over`, (o) => !!o, 60_000);
     expect(over).toMatchObject({ winner: atk, why: 'bomb' });
     await expect.poll(async () => (await defender.state()).alive).toBe(false);
+  });
+
+  test('the match clock running out waits for the round being fought', async ({ duel }) => {
+    test.slow();
+    const { code, path, atk, attacker, defender } = await snd(duel);
+    // Time's up mid-round: one life each, so this round is played out first.
+    await expireClock(code, 20);
+    await attacker.page.waitForTimeout(4_000);
+    expect(await db.get(`rooms/${code}/game/ended`)).toBeNull();
+    expect(await db.get(`${path}/over`)).toBeNull();
+
+    const [x, y, z] = (await defender.state()).pos;
+    await attacker.teleport(x + 4, y, z);
+    await attacker.waitForRemote(defender, [x, y, z]);
+    await attacker.kill(defender);
+    expect(await waitForValue(`${path}/over`, (o) => !!o)).toMatchObject({ winner: atk, why: 'elim' });
+    // The round decided, the match ends on time instead of a new round starting.
+    const ended = await waitForValue(`rooms/${code}/game/ended`, (e) => !!e, 20_000);
+    expect(ended).toMatchObject({ winner: atk, reason: 'time' });
   });
 });

@@ -2,8 +2,16 @@ import * as THREE from 'three';
 import { grenadeTexture } from './textures';
 import { GROUP, activePhysics, groups, type PhysicsWorld } from './physics';
 
-const GRAVITY = 18;
+/** Thrown things fall a little slower than players (22), which gives throws a usable range */
+const BASE_GRAVITY = 18;
+/** Gravity after the mode's rule (Moon Gravity and the like); every client sets the same, so arcs still agree */
+let GRAVITY = BASE_GRAVITY;
 const STEP = 1 / 120;
+
+/** The mode's gravity rule (1 = normal), applied to every arc simulated from now on. */
+export function setThrowGravity(scale: number): void {
+  GRAVITY = BASE_GRAVITY * (Number.isFinite(scale) && scale > 0 ? scale : 1);
+}
 const FUSE = 2.5;
 /** A bouncing grenade goes off this long after the throw, wherever it has rolled to (s) */
 const GRENADE_FUSE = 1.8;

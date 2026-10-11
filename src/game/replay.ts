@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { RemotePlayer } from './remotePlayer';
+import { lerpPose } from './poseBuffer';
 import { simulateGrenade, type GrenadeFx } from './grenades';
 import type { Effects } from './weapon';
 import type { FlagCarrier, FlagField, FlagPlacement } from './flags';
@@ -110,21 +111,8 @@ function sampleAt(samples: PoseSample[], t: number): PoseSample | null {
   const b = samples[lo + 1];
   if (!b || !a.alive || !b.alive) return a;
   const k = (t - a.t) / Math.max(1, b.t - a.t);
-  let dYaw = (b.yaw - a.yaw) % (Math.PI * 2);
-  if (dYaw > Math.PI) dYaw -= Math.PI * 2;
-  if (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  return {
-    t,
-    x: a.x + (b.x - a.x) * k,
-    y: a.y + (b.y - a.y) * k,
-    z: a.z + (b.z - a.z) * k,
-    yaw: a.yaw + dYaw * k,
-    pitch: a.pitch + (b.pitch - a.pitch) * k,
-    alive: true,
-    stance: a.stance,
-    aim: a.aim,
-    gun: a.gun,
-  };
+  const p = lerpPose(a, b, k, { t, x: 0, y: 0, z: 0, yaw: 0, pitch: 0 });
+  return { ...p, t, alive: true, stance: a.stance, aim: a.aim, gun: a.gun };
 }
 
 const fromArr = (a: Vec3Tuple) => new THREE.Vector3(a[0], a[1], a[2]);
