@@ -101,15 +101,35 @@ export function lookDir(yaw: number, pitch: number): [number, number, number] {
   return [-Math.sin(yaw) * c, Math.sin(pitch), -Math.cos(yaw) * c];
 }
 
-/** `dir` pushed off by up to `spread` in a random direction (three's randomDirection, scaled, then normalised) */
+/**
+ * `dir` turned off by up to `spread` radians: a random point, evenly spread, on the disc the cone
+ * cuts (so shots aren't crowded at the edge, which adding a random 3D vector does: that piles a
+ * sphere's surface onto the rim). Shared by the player's shots and the bots', so both scatter alike.
+ */
 export function scatter(dir: readonly [number, number, number], spread: number, rand: () => number = Math.random): [number, number, number] {
-  const u = (rand() - 0.5) * 2;
-  const t = rand() * Math.PI * 2;
-  const f = Math.sqrt(1 - u * u);
-  const x = dir[0] + f * Math.cos(t) * spread;
-  const y = dir[1] + u * spread;
-  const z = dir[2] + f * Math.sin(t) * spread;
-  const l = Math.hypot(x, y, z);
+  const [dx, dy, dz] = dir;
+  // A basis across the direction: `right` and `up` perpendicular to it (and to each other)
+  const ux = Math.abs(dy) < 0.99 ? 0 : 1;
+  const uy = Math.abs(dy) < 0.99 ? 1 : 0;
+  let rx = dy * 0 - dz * uy;
+  let ry = dz * ux - dx * 0;
+  let rz = dx * uy - dy * ux;
+  const rl = Math.hypot(rx, ry, rz) || 1;
+  rx /= rl; ry /= rl; rz /= rl;
+  const px = ry * dz - rz * dy;
+  const py = rz * dx - rx * dz;
+  const pz = rx * dy - ry * dx;
+  // sqrt for even density over the disc; the azimuth all round
+  const theta = spread * Math.sqrt(rand());
+  const phi = rand() * Math.PI * 2;
+  const s = Math.sin(theta);
+  const c = Math.cos(theta);
+  const a = s * Math.cos(phi);
+  const b = s * Math.sin(phi);
+  const x = dx * c + rx * a + px * b;
+  const y = dy * c + ry * a + py * b;
+  const z = dz * c + rz * a + pz * b;
+  const l = Math.hypot(x, y, z) || 1;
   return [x / l, y / l, z / l];
 }
 

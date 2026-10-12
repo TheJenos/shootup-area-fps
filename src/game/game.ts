@@ -7,6 +7,7 @@ import { generateMap, isPlayableSpec, mapName, normalizeSeed, randomSeed, sameMa
 import { prefetchMap } from './mapgen/client';
 import { roomMap } from '../net/network';
 import { LocalPlayer } from './player';
+import { EYE_HEIGHT } from './playerDims';
 import { RemotePlayer, type HitboxData } from './remotePlayer';
 import { loadCharacter, type CharacterAsset } from './character';
 import { Weapon, Effects } from './weapon';
@@ -49,7 +50,7 @@ import { BotHost } from './bot/botHost';
 import { MAX_BOTS, botName, newSlotId, pickBase, rosterEntries, type BotRoster, type BotSlot } from './bot/roster';
 import type { BotSkill } from './bot/brain';
 import { RemoteBodies, type BodyPose } from './bodies';
-import { hitPlayer } from './bot/hitscan';
+import { hitPlayer, scatter } from './bot/hitscan';
 import { recordRound } from '../net/leaderboard';
 import { baseRules, goalOf, normalizeRules, sameRules, type ModeRules } from './rules';
 import * as sfx from './audio';
@@ -62,7 +63,7 @@ import { StepTracker, type StepEvent } from './footsteps';
 import { hints, type HintId } from './hints';
 import { PERF_DEBUG, perfStats } from './perfStats';
 import type {
-  AbilityType, BombRecord, GameEvent, GameMode, GameState, GunKind, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, SiteId, SndRecord, Team,
+  AbilityType, BombRecord, DeployableRecord, GameEvent, GameMode, GameState, GunKind, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, SiteId, SndRecord, Team,
   Vec3Tuple, WeaponKind,
 } from '../types';
 
@@ -142,6 +143,20 @@ const KILL_HEAL = 0.5;
 const SPAWN_PROTECT_MS = 1_500;
 /** Scratch for an objective's position */
 const _objective = new THREE.Vector3();
+/**
+ * Where an automatic's kick goes sideways, shot by shot through a burst (as a share of the kick up):
+ * a slow sway right then left, so a long burst can be learned and pulled against.
+ */
+const RECOIL_PATTERN = [0, 0.3, 0.6, 0.8, 0.6, 0.3, 0, -0.3, -0.6, -0.8, -0.6, -0.3];
+/** No shooting this long into a slide (s) */
+const SLIDE_FIRE_DELAY = 0.2;
+/** A round level at the buzzer goes on this much longer, next point wins (ms) */
+const OVERTIME_MS = 2 * 60_000;
+/** A spawn an enemy can see counts this much (m) nearer to them; beyond this range nobody is looking */
+const SPAWN_SEEN_PENALTY = 30;
+const SPAWN_SEEN_RANGE = 70;
+const _spawnEye = new THREE.Vector3();
+const _spawnTarget = new THREE.Vector3();
 
 /** "magazine/reserve" from a player record (see `am` on PlayerState); unknown when it was never sent */
 function parseAmmo(am: string | undefined): { ammo: number | null; reserve: number | null } {
@@ -278,6 +293,8 @@ export class Game {
   private nextBeepAt = 0;
   /** Our ability slots as last sent (see `ab` on PlayerState) */
   private lastAb = '';
+  /** Barriers this client put up (ours and our bots'): their records are ours to take down */
+  private readonly myWalls = new Set<string>();
   private lastWatchedKey = '';
   /** The radar and the objective markers: DOM of their own, mounted by the HUD */
   readonly minimap = new Minimap();
@@ -499,6 +516,8 @@ export class Game {
         this.botRoster = roster;
         this.bots.rosterChanged();
       },
+      onDeployableAdded: (id, rec) => this.onDeployableAdded(id, rec),
+      onDeployableRemoved: (id) => this.walls.remove(id),
     });
     this.bots = this.createBotHost();
 
@@ -1185,6 +1204,16 @@ export class Game {
   /** Move to the other team (pause menu). Respawns at the new team's side. */
   switchTeam(): void {
     if (!this.team || !this.joined) return;
+    // Never onto the bigger side: that's how teams get stacked. (Equal sides may be switched between: in a
+    // game of two or three, being able to swap at all matters more than a one-player difference.)
+    const other = otherTeam(this.team);
+    // Everyone else on each side; we're the +1 on ours.
+    const size = (t: Team) => Object.entries(this.players).filter(([id, p]) => p.team === t && !p.spec && id !== this.playerId).length;
+    if (size(other) > size(this.team) + 1) {
+      this.hud.toast(`${TEAM_INFO[other].name} team already has more players — teams stay even`);
+      sfx.playDenied();
+      return;
+    }
     void this.dropFlag();
     void this.dropBomb();
     this.setTeam(otherTeam(this.team));
@@ -1331,9 +1360,10 @@ export class Game {
       if (kills > this.kills) {
         this.stats.streak += kills - this.kills;
         this.stats.best = Math.max(this.stats.best, this.stats.streak);
-        if (this.rules.loadout === 'gungame') this.gunGameLevelUp(kills);
       }
       const changed = kills !== this.kills;
+      // Gun Game: the gun follows the level up — and down, after a knifing.
+      if (changed && this.rules.loadout === 'gungame') this.gunGameLevelUp(kills);
       this.kills = kills;
       // A refresh right after a kill should bring the kill back too.
       if (changed) this.saveSession();
@@ -1472,11 +1502,6 @@ export class Game {
         this.hud.toast("You've been scanned — they can see you through walls");
         sfx.playDenied();
       }
-    } else if (evt.type === 'wall') {
-      if (evt.from === this.playerId) return;
-      const color = new THREE.Color(this.players[evt.from]?.color ?? evt.c ?? '#6fa8ff').getHex();
-      this.walls.place(evt.id, evt.from, evt.x, evt.y, evt.z, evt.axis, evt.until, color);
-      sfx.playAbility();
     } else if (evt.type === 'blast') {
       if (evt.from === this.playerId) return;
       const at = fromArr(evt.p);
@@ -1504,6 +1529,11 @@ export class Game {
         this.hud.killConfirm(victim.name, !!evt.head);
         this.healForKill();
         this.onOwnKill(evt.victim, evt.head, t);
+      }
+      // Gun Game: knifed, you go down a level (your kills are your level). Our record, so we do it.
+      if (this.rules.loadout === 'gungame' && evt.victim === this.playerId && evt.weapon === 'knife' && evt.killer !== this.playerId && this.kills > 0) {
+        this.hud.toast('Knifed — down a level');
+        this.net.demoteKill(this.playerId).catch((err: unknown) => console.warn('Could not take the level', err));
       }
     }
   }
@@ -1673,6 +1703,10 @@ export class Game {
         this.recordRanking();
       }
     }
+    if (next.overtime && !prev.overtime && !first && !next.ended) {
+      this.hud.announce('OVERTIME', 'Level at the buzzer — the next point wins', 3500);
+      sfx.playLeadGained();
+    }
     if (newRound) this.startRound();
 
     if (this.mode === 'ctf') {
@@ -1787,8 +1821,10 @@ export class Game {
     // It also sweeps up events left behind by senders whose tabs closed before their own clean-up ran.
     if (this.isLeader()) {
       this.net.clearPickups().catch((err: unknown) => console.warn('Could not clear the old pickups', err));
+      this.net.clearDeployables().catch((err: unknown) => console.warn('Could not clear the old barriers', err));
       this.net.sweepEvents(STALE_EVENT_MS).catch((err: unknown) => console.warn('Could not sweep old events', err));
     }
+    this.myWalls.clear();
     this.cloakUntil = 0;
     this.hud.update({ cloaked: false });
     void this.net.sendState({ kills: 0, deaths: 0, shield: false, cloak: false, moment: null, ...this.stats });
@@ -1975,7 +2011,8 @@ export class Game {
       if (g.round !== round || g.ended) return false;
       const score = (g.score[team] ?? 0) + 1;
       g.score[team] = score;
-      if (score >= limit) this.finishRound(g, team, TEAM_INFO[team].name, 'score');
+      // The limit, or the first point of overtime, wins it.
+      if (score >= limit || g.overtime) this.finishRound(g, team, TEAM_INFO[team].name, g.overtime ? 'time' : 'score');
       return true;
     }).catch((err: unknown) => console.warn('Could not add score', err));
   }
@@ -2009,15 +2046,30 @@ export class Game {
     this.net.mutateGame((next) => {
       if (next.round !== round || next.ended) return false;
       const [winner, name] = this.standings(next);
+      // Level at the buzzer: overtime, once (the next point wins); still level after that, a draw.
+      if (winner === 'draw' && !next.overtime && this.mode !== 'snd' && this.hasPoints(next)) {
+        next.overtime = this.net.serverNow() + OVERTIME_MS;
+        return true;
+      }
       this.finishRound(next, winner, name, 'time');
       return true;
     }).catch((err: unknown) => console.warn('Could not end the round on time', err));
   }
 
-  /** The round's time limit has passed (by the server's clock). */
+  /** Anyone has scored at all (an empty scoreboard isn't worth extending) */
+  private hasPoints(g: GameState): boolean {
+    if (this.team) return (g.score.red ?? 0) + (g.score.blue ?? 0) > 0;
+    return Object.values(this.players).some((p) => (p.kills || 0) > 0) || this.kills > 0;
+  }
+
+  /** When the round's clock runs out (server ms): the time limit, or the end of overtime once there is one */
+  private deadline(g: GameState = this.game): number {
+    return g.overtime ?? (g.startedAt ?? 0) + this.rules.minutes * 60_000;
+  }
+
+  /** The round's time limit (or its overtime) has passed, by the server's clock. */
   private timeIsUp(): boolean {
-    const g = this.game;
-    return !!g.startedAt && this.net.serverNow() >= g.startedAt + this.rules.minutes * 60_000;
+    return !!this.game.startedAt && this.net.serverNow() >= this.deadline();
   }
 
   /** Rooms made before time limits (or before this round had a clock) get one now. */
@@ -2269,8 +2321,8 @@ export class Game {
       const live = snd.phase === 'live' || snd.phase === 'planted';
       clock = { left: snd.left, urgent: live && snd.left <= (snd.phase === 'planted' ? CLOCK_WARNING : 15) };
     } else if (g.startedAt) {
-      const left = g.ended ? 0 : Math.max(0, Math.ceil((g.startedAt + this.rules.minutes * 60_000 - now) / 1000));
-      clock = { left, urgent: !g.ended && left <= CLOCK_WARNING };
+      const left = g.ended ? 0 : Math.max(0, Math.ceil((this.deadline(g) - now) / 1000));
+      clock = { left, urgent: !g.ended && left <= CLOCK_WARNING, ...(g.overtime ? { overtime: true } : {}) };
     }
 
     const matchEnd = this.matchEndView(now);
@@ -3002,9 +3054,11 @@ export class Game {
     if (this.mode === 'tdm' && killer?.team && killer.team !== victimTeam) this.addTeamScore(killer.team);
     this.net.creditKill(killerId)
       .then((kills) => {
-        if (!MODES[this.mode].teams && kills !== null && kills >= this.rules.limit) {
-          this.endRound(round, killerId, killer?.name || 'Someone');
-        }
+        if (MODES[this.mode].teams || kills === null) return;
+        // The limit, or, in overtime, pulling clear at the top, wins it.
+        const ahead = !!this.game.overtime && Object.entries(this.players)
+          .every(([id, p]) => id === killerId || p.spec || (id === this.playerId ? this.kills : p.kills || 0) < kills);
+        if (kills >= this.rules.limit || ahead) this.endRound(round, killerId, killer?.name || 'Someone');
       })
       .catch((err: unknown) => console.warn('Could not credit the kill', err));
   }
@@ -3084,16 +3138,35 @@ export class Game {
       .filter(([id, r]) => r.alive && !this.isAlly(id))
       .map(([, r]) => r.target);
     const standing = [...this.remotes.values()].filter((r) => r.alive).map((r) => r.target);
-    const all = this.team ? teamSpawns(this.world.spawns, this.team) : this.world.spawns.map((s) => s.pos);
+    // Free-for-all: the map's spawns sit mostly around the two team bases, so the pickup spots (reachable,
+    // clear, all over the map) are places to come back at too. Team modes come back at their own base.
+    const all = this.team
+      ? teamSpawns(this.world.spawns, this.team)
+      : [...this.world.spawns.map((s) => s.pos), ...this.world.pickupSpots.map((p) => new THREE.Vector3(p.x, p.y, p.z))];
     const free = all.filter((p) => standing.every((o) => Math.hypot(o.x - p.x, o.z - p.z) > SPAWN_CLEARANCE));
     const points = free.length ? free : all;
+    // Far from enemies, and out of their sight: a spot an enemy can see counts as much nearer than it is.
     const scored = points.map((p) => ({
       p,
-      d: enemies.length ? Math.min(...enemies.map((e) => e.distanceTo(p))) : Math.random() * 100,
+      d: enemies.length ? Math.min(...enemies.map((e) => e.distanceTo(p))) - (this.enemySees(p, enemies) ? SPAWN_SEEN_PENALTY : 0) : Math.random() * 100,
     }));
     scored.sort((a, b) => b.d - a.d);
     const choice = scored[Math.floor(Math.random() * Math.min(3, scored.length))];
     return (choice?.p ?? new THREE.Vector3()).clone();
+  }
+
+  /** Any of `enemies` (feet positions) has a clear line to someone standing at `p` */
+  private enemySees(p: THREE.Vector3, enemies: THREE.Vector3[]): boolean {
+    const from = _spawnEye.set(p.x, p.y + EYE_HEIGHT, p.z);
+    for (const e of enemies) {
+      const to = _spawnTarget.set(e.x, e.y + EYE_HEIGHT, e.z).sub(from);
+      const len = to.length();
+      if (len > SPAWN_SEEN_RANGE) continue;
+      this.losRay.set(from, to.normalize());
+      this.losRay.far = len;
+      if (this.losRay.intersectObjects(this.solids, false).length === 0) return true;
+    }
+    return false;
   }
 
   private shoot(): void {
@@ -3124,7 +3197,8 @@ export class Game {
     const depDamage = new Map<string, number>();
     let anyHead = false;
     for (let p = 0; p < def.pellets; p++) {
-      const dir = forward.clone().add(new THREE.Vector3().randomDirection().multiplyScalar(spread)).normalize();
+      // The same scatter as the bots' (even over the cone, not crowded at its edge).
+      const dir = fromArr(scatter([forward.x, forward.y, forward.z], spread));
       this.raycaster.set(origin, dir);
       const hit = this.raycaster.intersectObjects(targets, false)[0];
       const end = hit ? hit.point : origin.clone().addScaledVector(dir, def.range);
@@ -3171,8 +3245,11 @@ export class Game {
     const muzzle = this.camera.localToWorld(this.weapon.muzzleOffset());
     for (const end of ends) this.effects.tracer(muzzle, end);
     sfx.playShot(0.7, gun);
+    // The kick: up, and sideways along the gun's pattern (automatics; a single shot just wanders a
+    // little). It settles back on its own once the firing stops (see LocalPlayer.kick).
     const recoil = def.recoil * (1 - 0.45 * this.weapon.aim);
-    this.player.look((Math.random() - 0.5) * recoil * 0.5, recoil);
+    const pattern = def.auto ? RECOIL_PATTERN[(this.weapon.shotsInBurst - 1) % RECOIL_PATTERN.length]! * 0.6 : 0;
+    this.player.kick((pattern + (Math.random() - 0.5) * (def.auto ? 0.3 : 0.5)) * recoil, recoil);
 
     const [first, ...rest] = ends.map(toArr);
     const shot = { o: toArr(muzzle), e: first ?? toArr(origin) };
@@ -3827,14 +3904,29 @@ export class Game {
     if (this.occupied(box, 0.4) || box.clone().expandByScalar(0.4).containsPoint(p.clone().setY(p.y + 0.5))) return false;
     const id = randomId(8);
     const until = this.net.serverNow() + WALL_DURATION * 1000;
-    const event = { type: 'wall' as const, id, x, y, z, axis, until, c: actor.color };
-    if (actor.id !== this.playerId) {
-      this.net.sendEventAs(actor.id, event);
-      return true;
-    }
-    this.walls.place(id, this.playerId, x, y, z, axis, until, new THREE.Color(this.color).getHex());
-    this.net.sendEvent(event);
+    // A record, not an event: everyone places it from the record (ours comes straight back to us), and
+    // so does anyone who joins while it stands. We take it down again when it expires or breaks.
+    this.myWalls.add(id);
+    this.net.placeDeployable(id, { kind: 'wall', owner: actor.id, x, y, z, axis, until, c: actor.color })
+      .catch((err: unknown) => console.warn('Could not place the barrier', err));
     return true;
+  }
+
+  /** A barrier's record arrived: put it up, unless its time has already passed (we joined late). */
+  private onDeployableAdded(id: string, rec: DeployableRecord): void {
+    if (rec.kind !== 'wall' || rec.until <= this.net.serverNow()) return;
+    const color = new THREE.Color(this.players[rec.owner]?.color ?? rec.c ?? '#6fa8ff').getHex();
+    this.walls.place(id, rec.owner, rec.x, rec.y, rec.z, rec.axis, rec.until, color);
+    if (rec.owner !== this.playerId && !this.bots.has(rec.owner)) sfx.playAbility();
+  }
+
+  /** Ours (and our bots') that have come down: take their records with them. */
+  private sweepMyWalls(): void {
+    for (const id of this.myWalls) {
+      if (this.walls.ownerOf(id) !== undefined) continue;
+      this.myWalls.delete(id);
+      this.net.removeDeployable(id).catch((err: unknown) => console.warn('Could not take the barrier down', err));
+    }
   }
 
   /** Our grenade went off: work out who it hurt (walls block it) and tell everyone. */
@@ -3940,6 +4032,7 @@ export class Game {
     this.grenades.update();
     this.smoke.update();
     this.walls.update(this.net.serverNow());
+    this.sweepMyWalls();
     this.fires.update(this.net.serverNow(), now / 1000);
     this.turrets.update(this.net.serverNow(), dt);
     this.mines.update(this.net.serverNow(), (owner) => owner === this.playerId || this.isAlly(owner));
@@ -4221,7 +4314,11 @@ export class Game {
       this.hint('slide', () => (this.touch ? 'Tap ⤓ while sprinting to slide' : `Press ${keyLabel(keyFor('crouch'))} while sprinting to slide`));
     }
 
-    const canAttack = this.triggerHeld && this.alive && this.locked && this.joined && !this.roundOver;
+    // Holding the trigger drops the sprint (the gun comes up, then fires: see Weapon.update); the first
+    // moments of a slide are for sliding, not shooting.
+    this.player.firing = this.triggerHeld && this.alive && this.locked;
+    const canAttack = this.triggerHeld && this.alive && this.locked && this.joined && !this.roundOver
+      && !(this.player.stance === 'slide' && this.player.slideAge < SLIDE_FIRE_DELAY);
     if (canAttack && melee) {
       if (this.weapon.trySwing(MELEE_COOLDOWN)) this.swingFlag();
     } else if (canAttack && this.weapon.tryFire()) {

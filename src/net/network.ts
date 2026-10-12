@@ -9,7 +9,7 @@ import { rulesOfRoom, type ModeRules } from '../game/rules';
 import { toSpec, type MapSpec } from '../game/mapgen';
 import { startingRoster, type BotRoster, type BotSlot } from '../game/bot/roster';
 import type {
-  GameEvent, GameMode, GameRecord, GameState, LobbyRecord, OutgoingEvent, PickupRecord, PlayerState, RoomSummary,
+  DeployableRecord, GameEvent, GameMode, GameRecord, GameState, LobbyRecord, OutgoingEvent, PickupRecord, PlayerState, RoomSummary,
 } from '../types';
 
 /*
@@ -143,6 +143,9 @@ export interface RoomHandlers {
   onConnection?(connected: boolean): void;
   /** The room's bot list changed (see game/bot/roster.ts) */
   onBotRoster?(roster: BotRoster): void;
+  /** A barrier went up / came down (rooms/{code}/deployables) */
+  onDeployableAdded?(id: string, record: DeployableRecord): void;
+  onDeployableRemoved?(id: string): void;
 }
 
 export class RoomConnection {
@@ -154,6 +157,7 @@ export class RoomConnection {
   private readonly memberRef: DatabaseReference;
   private readonly eventsRef: DatabaseReference;
   private readonly pickupsRef: DatabaseReference;
+  private readonly deployablesRef: DatabaseReference;
   private readonly gameRef: DatabaseReference;
   /**
    * Bots this client plays for (see game/bot/botHost.ts): their records go when we do. `state` is
@@ -180,6 +184,7 @@ export class RoomConnection {
     this.memberRef = ref(db(), `lobby/${code}/members/${playerId}`);
     this.eventsRef = ref(db(), `rooms/${code}/events`);
     this.pickupsRef = ref(db(), `rooms/${code}/pickups`);
+    this.deployablesRef = ref(db(), `rooms/${code}/deployables`);
     this.gameRef = ref(db(), `rooms/${code}/game`);
   }
 
@@ -239,13 +244,15 @@ export class RoomConnection {
     }));
 
     const playersRef = ref(db(), `rooms/${this.code}/players`);
-    const { onPlayerAdded, onPlayerChanged, onPlayerRemoved, onEvent, onPickupAdded, onPickupRemoved, onGame } = this.handlers;
+    const { onPlayerAdded, onPlayerChanged, onPlayerRemoved, onEvent, onPickupAdded, onPickupRemoved, onGame, onDeployableAdded, onDeployableRemoved } = this.handlers;
     this.unsubs.push(
       onChildAdded(playersRef, (s) => s.key && (countNet('down', s.val()), onPlayerAdded(s.key, s.val() as PlayerState))),
       onChildChanged(playersRef, (s) => s.key && (countNet('down', s.val()), onPlayerChanged(s.key, s.val() as PlayerState))),
       onChildRemoved(playersRef, (s) => s.key && onPlayerRemoved(s.key)),
       onChildAdded(this.pickupsRef, (s) => s.key && onPickupAdded(s.key, s.val() as PickupRecord)),
       onChildRemoved(this.pickupsRef, (s) => s.key && onPickupRemoved(s.key)),
+      onChildAdded(this.deployablesRef, (s) => s.key && onDeployableAdded?.(s.key, s.val() as DeployableRecord)),
+      onChildRemoved(this.deployablesRef, (s) => s.key && onDeployableRemoved?.(s.key)),
       onValue(this.gameRef, (s) => onGame(normalizeGame(s.val()))),
     );
 
@@ -465,6 +472,22 @@ export class RoomConnection {
     return remove(this.pickupsRef);
   }
 
+  /** A barrier goes up: a record everyone (including whoever joins later) places from. */
+  placeDeployable(id: string, record: DeployableRecord): Promise<void> {
+    countNet('up', record);
+    return set(ref(db(), `rooms/${this.code}/deployables/${id}`), record);
+  }
+
+  /** The barrier came down (its owner says so) */
+  removeDeployable(id: string): Promise<void> {
+    return remove(ref(db(), `rooms/${this.code}/deployables/${id}`));
+  }
+
+  /** Every barrier (a new map has different walls) */
+  clearDeployables(): Promise<void> {
+    return remove(this.deployablesRef);
+  }
+
   /** Keep the lobby list showing the map that's currently being played. */
   setLobbyMap(map: MapSpec): Promise<void> {
     return update(ref(db(), `lobby/${this.code}`), mapFields(map));
@@ -542,6 +565,12 @@ export class RoomConnection {
    * locked, not the whole record, which the killer rewrites many times a second (each of those
    * would make the transaction start over).
    */
+  /** Gun Game: a knife kill sends the victim down a level (their kills are their level). Never below 0. */
+  async demoteKill(victimId: string): Promise<void> {
+    await runTransaction(ref(db(), `rooms/${this.code}/players/${victimId}/kills`), (kills: number | null) =>
+      kills === null ? undefined : Math.max(0, kills - 1));
+  }
+
   async creditKill(killerId: string): Promise<number | null> {
     const result = await runTransaction(ref(db(), `rooms/${this.code}/players/${killerId}/kills`), (kills: number | null) =>
       kills === null ? undefined : kills + 1);

@@ -144,7 +144,7 @@ Every mode is one of four **base types**, which decide teams, flags and how poin
 | Badge | Mode | Base | What's different |
 | --- | --- | --- | --- |
 | FFA / TDM / CTF / S&D | Free-for-all, Team Deathmatch, Capture the Flag, Search & Destroy | – | The plain base modes |
-| GG | Gun Game | FFA | Every kill hands you the next gun on a 12-step ladder; first through it wins. No pickups |
+| GG | Gun Game | FFA | Every kill hands you the next gun on a 12-step ladder; first through it wins. A knife kill sends the victim down a level. No pickups |
 | SNP | Sniper Only | FFA | Snipers only, 20 kills |
 | SNT | Sniper TDM | TDM | Snipers only, 40 team kills |
 | SNF | Sniper Flags | CTF | Snipers only |
@@ -188,7 +188,8 @@ names map to the matching prebuilt mode).
   teammate hidden behind cover is drawn over the walls as just a flat 2D silhouette of their character (same pose
   and animation, gun included) in team colour (`src/game/xray.ts`; enemies are never shown through walls),
   bullets and grenades pass through them, and you spawn on your own half (red owns +z, blue −z).
-  The pause menu (Esc) has a **Switch team** button.
+  The pause menu (Esc) has a **Switch team** button, which only ever moves you to the smaller side: a switch
+  that would leave the other team two players up is refused, so teams stay even.
 - **Capture the Flag:** each base is a glowing pad near the back wall with the team's flag on it.
   Walk over the enemy flag to take it, then walk onto your own base to score — only while your own flag is home.
   **While you carry the flag your guns and grenades are stowed: the flag is your only weapon.** Click (or ●)
@@ -201,7 +202,10 @@ names map to the matching prebuilt mode).
   A carrier who dies (or switches team, or leaves) drops the flag where they stood. Touch your own dropped flag
   to send it home; otherwise it returns by itself after 20 s. The score bar shows where both flags are.
 - **Rounds:** the score bar shows the round clock, which turns red in the last 30 s. When the time runs out,
-  the best score wins; a tie is a draw. A score limit ends the round early. Then:
+  the best score wins. Level at the buzzer (and anyone has scored), it's **overtime**: two more minutes, the
+  clock gold with "OT" in front, and the next point wins — a team's next kill, capture or round, or in
+  free-for-all the kill that puts someone clear at the top. Still level after that, it's a draw. A score limit
+  ends the round early. Then:
   1. **Results** (6 s): the winner, why the round ended, and the top three.
   2. **MVP** (10 s): a replay of the MVP's highlight, seen through their eyes, with their card and the next
      map. It's skipped when nobody got a kill or a capture.
@@ -615,10 +619,10 @@ stocked separately from abilities) and go into a second slot when you stand on o
 
 | | Gun | Fire | Damage body / head | Magazine + spare | Notes |
 | --- | --- | --- | --- | --- | --- |
-| ▸ | Rifle | Automatic, 10/s | 20 / 50 | 30 + 90 | Falls off from 25 m to 60% at 65 m; ammo boxes refill it |
+| ▸ | Rifle | Automatic, 10/s | 20 / 50 | 30 + 90 | Falls off from 20 m to 60% at 65 m, stops at 100 m; ammo boxes refill it |
 | 💥 | Shotgun | Pump, 9 pellets | 12 / 18 per pellet | 6 + 12 | Falls off from 7 m to 25% at 28 m; ~100+ up close |
 | 🎯 | Sniper | Bolt action | 75 / 150 | 5 + 10 | Scope zooms to an 18° view; wild from the hip; falls off from 80 m to 80% at 160 m (a headshot still kills) |
-| 🔫 | Deagle | Semi-auto | 40 / 90 | 7 + 21 | Heavy recoil; falls off from 15 m to 50% at 45 m |
+| 🔫 | Deagle | Semi-auto | 50 / 100 | 7 + 21 | Two body shots or one headshot; heavy recoil; falls off from 15 m to 50% at 45 m |
 
 **Knife.** Everyone always has one: **V** (rebindable as "Knife"; 🔪 on touch screens) slashes at the nearest
 enemy within 2.2 m in front of you for a flat **50 damage**, head or body (it still counts in headshots-only
@@ -666,10 +670,23 @@ Hold right-click (or turn on **Toggle aim** in Settings) to raise the rifle's ir
 - The view zooms in from a 75° to a 50° field of view, and the gun slides to the centre so the front post sits in
   the rear notch. The crosshair shrinks to a dot.
 - Shots are about 3× tighter, and recoil and weapon bob are smaller.
+- **Recoil** kicks the view up and, on the rifle, sideways along a pattern (a slow sway right, then left,
+  through a burst), so a long burst can be learned and pulled against. Once you stop firing the view eases
+  back to where it was — less whatever you'd already pulled down yourself.
+- **Spread** is even across the whole cone (a random point on the disc the cone cuts), the same for you and
+  the bots.
+- **Sprinting carries the gun low**: it takes 0.15 s to bring it up before it fires, and holding the trigger
+  drops the sprint. No shooting in the first 0.2 s of a slide.
 - You walk at 3.8 m/s and can't sprint or slide while aiming. Reloading lowers the sights.
 - Mouse look slows by the same ratio as the zoom, so a hand movement covers the same part of the screen.
   **Aim sensitivity** in Settings scales it further.
 - On a Mac, Ctrl+click still fires rather than aiming (Ctrl is crouch).
+
+## Jumping
+
+A jump is forgiving two ways: pressed just before you land (within 0.12 s) it's kept and goes off on
+touchdown, and just after you've walked off an edge (within 0.1 s) it still works. A held key keeps hopping.
+Landing dips the camera a little, more from a higher fall (`src/game/movement.ts`, `player.ts`).
 
 ## Crouch and slide
 
@@ -742,7 +759,9 @@ All numbers live in `src/game/abilities.ts`.
   decides who the blast hit (with a line-of-sight check) and the victims apply the damage, like rifle hits.
 - **Smoke and barriers** (`src/game/deployables.ts`) are sent as events too: smoke uses the grenade arc and
   bursts where it lands; a barrier carries its position, axis and server-time expiry, so every client drops it
-  at the same moment. Someone who joins after a barrier was placed won't see it (events live for 3 s).
+  at the same moment. A barrier is a record (`rooms/{code}/deployables/{id}`) rather than an event, so someone
+  who joins while it stands sees it too; its owner's client removes the record when it expires or breaks, and
+  the room owner clears them all when a new round starts.
 
 ## Match summary
 
@@ -875,7 +894,8 @@ rooms/{code}/game          round number, map seed, start time, winner + MVP + ne
   sees a hit marker on the crosshair right away: a quick white X for a body hit, a bigger red X with a burst ring
   (and a higher-pitched tick) for a headshot.
 - The victim applies the damage to itself, and on death publishes a `kill` event and credits the killer
-  (via a transaction). Respawn after 3 s at the spawn point furthest from enemies, with 1.5 s of spawn
+  (via a transaction). Respawn after 3 s at the spawn point furthest from enemies and out of their sight (a
+  spot an enemy can see counts 30 m nearer; free-for-all also uses the pickup spots), with 1.5 s of spawn
   protection (`inv` on the record; the victim ignores hits while it lasts, and clears it when it attacks).
 - The `game` node is only ever changed with transactions (scoring, ending a round, taking / dropping /
   capturing flags), so two players can't both grab the same flag or both start the next round.

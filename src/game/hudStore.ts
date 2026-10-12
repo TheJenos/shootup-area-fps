@@ -242,7 +242,8 @@ export interface HudState {
   /** Search & Destroy only */
   snd: SndView | null;
   /** Seconds left in the round; null before the round clock is known */
-  clock: { left: number; urgent: boolean } | null;
+  /** Seconds left on the round clock; `overtime`: the extra time after a tie, next point wins */
+  clock: { left: number; urgent: boolean; overtime?: boolean } | null;
   /** Set while the round-over screen is up */
   matchEnd: MatchEnd | null;
   /** Announcer banner (multi-kills, streaks); `n` restarts the animation, `ms` is how long it stays */

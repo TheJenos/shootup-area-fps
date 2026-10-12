@@ -1,5 +1,5 @@
-import { waitForValue } from './support/db';
-import { expect, rules, test } from './support/fixtures';
+import { db, waitForValue } from './support/db';
+import { expect, rules, test, uniqueName } from './support/fixtures';
 import type { Player } from './support/player';
 
 const withAbilities = (over = {}) => rules('ffa', { abilities: true, ...over });
@@ -42,12 +42,27 @@ test.describe('deployables', () => {
     await expect.poll(async () => (await bob.state()).hp).toBeLessThan(100);
   });
 
-  test('a barrier goes away after 20 seconds', async ({ duel }) => {
+  test('a barrier goes away after 20 seconds, and its record with it', async ({ duel }) => {
     test.slow();
-    const { alice, bob } = await duel(withAbilities());
+    const { code, alice, bob } = await duel(withAbilities());
     await use(bob, 'wall');
     await expect.poll(() => count(alice, 'walls')).toBe(1);
+    // It's a record, so whoever joins while it stands can see it
+    await expect.poll(async () => Object.keys((await db.get(`rooms/${code}/deployables`)) ?? {}).length).toBe(1);
     await expect.poll(() => count(alice, 'walls'), { timeout: 35_000 }).toBe(0);
+    // Its owner took the record down with it
+    await waitForValue(`rooms/${code}/deployables`, (v) => v === null, 10_000);
+  });
+
+  test('someone who joins while a barrier stands sees it', async ({ duel, players }) => {
+    test.slow();
+    const { code, alice, bob } = await duel(withAbilities());
+    await use(bob, 'wall');
+    await expect.poll(() => count(alice, 'walls')).toBe(1);
+    const carol = await players.open(uniqueName('Carol'));
+    await carol.gotoLobby();
+    await carol.joinByCode(code);
+    await expect.poll(() => count(carol, 'walls')).toBe(1);
   });
 
   test('a turret shoots enemies in range and can be destroyed', async ({ duel }) => {

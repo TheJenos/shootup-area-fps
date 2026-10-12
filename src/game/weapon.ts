@@ -13,6 +13,8 @@ const VIEW_FOV = 70;
 export const HIP_CANT = { yaw: 0, pitch: 0.082 };
 /** How quickly the gun moves between hip and sights (1/s) */
 const ADS_SPEED = 14;
+/** Seconds from the end of a sprint until the gun can fire (it's being brought back up) */
+const SPRINT_RAISE = 0.15;
 /** Lowering one gun and raising the other (s) */
 const SWITCH_TIME = 0.35;
 /** One swing of the flag, start to finish (s) */
@@ -80,6 +82,8 @@ export class Weapon {
   private switchTimer = 0;
   /** Semi-automatic guns fire once per trigger pull */
   private triggerLatched = false;
+  /** Seconds until the gun is back up after a sprint (no shooting meanwhile) */
+  private raiseLeft = 0;
   private kick = 0;
   private flashTimer = 0;
   private bobTime = 0;
@@ -337,7 +341,7 @@ export class Weapon {
   /** Returns true if a shot should be fired this frame (the trigger is held). */
   tryFire(): boolean {
     const def = GUNS[this.gun];
-    if (this.melee || this.knifing || this.reloading || this.switching || this.cooldown > 0) return false;
+    if (this.melee || this.knifing || this.reloading || this.switching || this.cooldown > 0 || this.raiseLeft > 0) return false;
     if (!def.auto && this.triggerLatched) return false;
     if (this.held.mag <= 0) {
       playEmpty();
@@ -386,6 +390,8 @@ export class Weapon {
   /** @param aiming aim down the sights (blends in over a moment) */
   update(dt: number, speed: number, sprinting: boolean, aiming = false): void {
     this.knifeCooldown = Math.max(0, this.knifeCooldown - dt);
+    // Sprinting carries the gun low: it takes a moment to bring it up before it can fire.
+    this.raiseLeft = sprinting ? SPRINT_RAISE : Math.max(0, this.raiseLeft - dt);
     if (this.melee) {
       this.updateFlag(dt, speed, sprinting);
       return;

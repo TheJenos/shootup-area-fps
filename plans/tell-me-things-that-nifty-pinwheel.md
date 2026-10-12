@@ -105,6 +105,19 @@ hygiene you can pick from.
 
 ## M3 — Gameplay balance, modes and feel
 
+**Status (11 Oct 2026): 3.1–3.9, 3.13 (half), 3.16 implemented; 3.10, 3.11, 3.12, 3.14, 3.15 open.** Notes:
+- 3.1 Deagle 50/100 @ 0.35 s. 3.2 rifle range 200 → 100 m, falloff from 20 m; **kill-heal kept at 0.5** (the e2e "kill-heal is half of full health" encodes it as intent; range was the safer lever).
+- 3.3 one `scatter()` (uniform over the cone's disc) in `bot/hitscan.ts`, used by the player's shots too.
+- 3.4 `LocalPlayer.kick()`: eases back after a 120 ms pause (~0.3 s), less whatever the hand pulled down; automatics follow `RECOIL_PATTERN` sideways.
+- 3.5 `Weapon.raiseLeft` (0.15 s after a sprint), holding the trigger drops the sprint, no fire in a slide's first 0.2 s.
+- 3.6 coyote 0.1 s, jump buffer 0.12 s, `Mover.landed` → camera dip; unit-tested (`movement.test.ts`, no physics body).
+- 3.7 FFA respawns use the pickup spots too; a spot an enemy can see (LOS ray, ≤ 70 m) counts 30 m nearer.
+- 3.8 `switchTeam` refuses a move that would leave the other side two up. **No forced moves on death** — intrusive.
+- 3.9 one 2-min overtime on a tie (`game.overtime` deadline), next point wins, gold "OT" clock; still tied → draw. Not S&D (round-based).
+- 3.13 knife kills demote the victim (`demoteKill` transaction; the gun follows the level down). **Knife-only finale deferred**: needs a stowed-gun viewmodel state.
+- 3.16 barriers are `rooms/{code}/deployables/{id}` records; late joiners see them; the owner removes on expiry/break, the leader clears at round start. Turrets/mines unchanged (they die with their owner anyway).
+- **Open**: 3.10 rematch vote, 3.11 warmup, 3.12 mapgen bomb sites (generator version bump + golden regen), 3.14 Domination, 3.15 limb hitboxes — each a session of its own.
+
 | # | Task | Where | Verify |
 |---|---|---|---|
 | 3.1 | **Deagle is a strict downgrade** of the always-carried rifle (0.64 s vs 0.40 s body TTK, worse range, worse spread). Options: body 50 (2-shot kill at close range), or tighter spread + no movement penalty as a "precision sidearm". Pick body 50 / head 100 with 0.35 s interval. | `src/game/gunStats.ts:46-68` | unit: TTK table test (new `gunStats.test.ts`) |

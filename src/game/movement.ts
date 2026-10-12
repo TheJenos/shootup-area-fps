@@ -25,6 +25,10 @@ const SLIDE_SPEED = 13;
 const SLIDE_TIME = 0.85;
 const SLIDE_FRICTION = 1.6;
 const SLIDE_COOLDOWN = 1.2;
+/** A jump still works this long after walking off an edge (s) */
+const COYOTE_TIME = 0.1;
+/** A jump pressed this long before landing goes off on touchdown (s) */
+const JUMP_BUFFER = 0.12;
 /** You must be moving at least this fast (sprinting) to slide */
 const SLIDE_FROM_SPEED = 7.5;
 /** Camera roll while sliding (radians) */
@@ -90,6 +94,11 @@ export class Mover {
   gravityScale = 1;
   /** Set for one step when a slide starts (for the sound) */
   slideStarted = false;
+  /** How fast we were falling when we touched down this step (m/s; 0 on every other step) */
+  landed = 0;
+  private coyote = 0;
+  private jumpBuffer = 0;
+  private jumpWasHeld = false;
   /** Aiming down sights: slower, no sprinting or sliding */
   aiming = false;
   /** Eye height above the feet, eased between stances */
@@ -175,6 +184,11 @@ export class Mover {
 
   get crouching(): boolean {
     return this.stance !== 'stand';
+  }
+
+  /** Seconds into the current slide (0 when not sliding) */
+  get slideAge(): number {
+    return this.stance === 'slide' ? SLIDE_TIME - this.slideLeft : 0;
   }
 
   get horizontalSpeed(): number {
@@ -284,20 +298,35 @@ export class Mover {
       this.velocity.z += (wish.z - this.velocity.z) * t;
     }
 
-    if (move && this.onGround && input.jump && (this.stance === 'slide' || this.canStand())) {
+    // Jumping is forgiving two ways: a press just before landing is kept for a moment (buffered), and
+    // just after walking off an edge still works (coyote time). A held key keeps hopping, as before.
+    this.coyote = this.onGround ? COYOTE_TIME : Math.max(0, this.coyote - dt);
+    const jumpHeld = !!(move && input.jump);
+    if (jumpHeld && !this.jumpWasHeld) this.jumpBuffer = JUMP_BUFFER;
+    else this.jumpBuffer = Math.max(0, this.jumpBuffer - dt);
+    this.jumpWasHeld = jumpHeld;
+    const canJump = (this.onGround || this.coyote > 0) && (this.stance === 'slide' || this.canStand());
+    if (move && canJump && (jumpHeld || this.jumpBuffer > 0)) {
       // Jumping out of a slide keeps its momentum.
       this.velocity.y = JUMP_SPEED;
       this.onGround = false;
       this.stance = 'stand';
+      this.coyote = 0;
+      this.jumpBuffer = 0;
     }
     this.velocity.y -= GRAVITY * this.gravityScale * dt;
+    const wasGround = this.onGround;
+    const falling = -this.velocity.y;
     this.collide(dt);
+    // Just touched down: how fast we were falling (for the camera's dip; the sound has its own tracker)
+    this.landed = this.onGround && !wasGround ? Math.max(0, falling) : 0;
 
     // A safety net under the map: never sink through the ground (the physics keeps us on it).
     const floor = this.terrainAt(this.position.x, this.position.z);
     if (this.position.y < floor - 0.3) {
       this.position.y = floor;
       this.velocity.y = 0;
+      if (!this.onGround && !wasGround) this.landed = Math.max(0, falling);
       this.onGround = true;
     }
 

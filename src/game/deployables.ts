@@ -240,7 +240,7 @@ export class WallField {
     }
   }
 
-  private remove(id: string): void {
+  remove(id: string): void {
     const w = this.walls.get(id);
     if (!w) return;
     this.scene.remove(w.mesh);

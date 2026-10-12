@@ -46,8 +46,9 @@ export interface GunDef {
 export const GUNS: Record<GunKind, GunDef> = {
   rifle: {
     name: 'Rifle', icon: '▸', color: 0xcfd6e2, auto: true, fireInterval: 0.1, mag: 30, reserve: 90, reloadTime: 1.4,
-    pellets: 1, bodyDamage: 20, headDamage: 50, falloff: { start: 25, end: 65, min: 0.6 }, spread: 0.002, movingSpread: 0.012, airSpread: 0.04, adsSpread: 0.3,
-    recoil: 0.012, adsFov: 50, scope: false, range: 200, description: 'Automatic; ammo boxes refill it',
+    // Falls off from 20 m and stops at 100 m: the rifle rules up close and mid-range, the sniper the long lanes.
+    pellets: 1, bodyDamage: 20, headDamage: 50, falloff: { start: 20, end: 65, min: 0.6 }, spread: 0.002, movingSpread: 0.012, airSpread: 0.04, adsSpread: 0.3,
+    recoil: 0.012, adsFov: 50, scope: false, range: 100, description: 'Automatic; ammo boxes refill it',
   },
   shotgun: {
     name: 'Shotgun', icon: '💥', color: 0xff7a45, auto: false, fireInterval: 0.85, mag: 6, reserve: 12, reloadTime: 2,
@@ -61,8 +62,10 @@ export const GUNS: Record<GunKind, GunDef> = {
     recoil: 0.09, adsFov: 18, scope: true, range: 300, description: 'One-shot headshots; aim to use the scope',
   },
   deagle: {
-    name: 'Deagle', icon: '🔫', color: 0xffd166, auto: false, fireInterval: 0.32, mag: 7, reserve: 21, reloadTime: 1.6,
-    pellets: 1, bodyDamage: 40, headDamage: 90, falloff: { start: 15, end: 45, min: 0.5 }, spread: 0.004, movingSpread: 0.014, airSpread: 0.04, adsSpread: 0.4,
+    // Two body shots or one headshot: a reason to pick it up over the rifle you always carry (which
+    // at 40 / 90 it never was: slower to kill, shorter-ranged, wider).
+    name: 'Deagle', icon: '🔫', color: 0xffd166, auto: false, fireInterval: 0.35, mag: 7, reserve: 21, reloadTime: 1.6,
+    pellets: 1, bodyDamage: 50, headDamage: 100, falloff: { start: 15, end: 45, min: 0.5 }, spread: 0.004, movingSpread: 0.014, airSpread: 0.04, adsSpread: 0.4,
     recoil: 0.045, adsFov: 55, scope: false, range: 150, description: 'Hard-hitting semi-auto pistol',
   },
 };

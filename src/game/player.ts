@@ -10,6 +10,13 @@ export { EYE_HEIGHT };
 /** Radians per pixel at sensitivity 1 */
 const MOUSE_SENSITIVITY = 0.0022;
 const MAX_PITCH = Math.PI / 2 - 0.01;
+/** Recoil starts settling back this long after the last shot (s), at this rate (1/s: ~0.3 s to settle) */
+const RECOIL_SETTLE_AFTER = 0.12;
+const RECOIL_SETTLE_RATE = 10;
+/** The camera dips on landing: this much per m/s of fall, up to this (m), easing back at this rate (1/s) */
+const LAND_DIP_PER_SPEED = 0.012;
+const LAND_DIP_MAX = 0.22;
+const LAND_DIP_RECOVER = 9;
 
 /** First-person controller: WASD + mouse look driving a Mover (movement.ts), and the camera. */
 export class LocalPlayer {
@@ -24,8 +31,16 @@ export class LocalPlayer {
   touchSprint = false;
   touchCrouch = false;
   touchJump = false;
+  /** The trigger is held: no sprinting meanwhile (the gun comes up to fire) */
+  firing = false;
 
   readonly mover = new Mover();
+  /** Recoil still on the view (what the shots kicked, minus what the hand has pulled back), and when it last kicked */
+  private recoilYaw = 0;
+  private recoilPitch = 0;
+  private lastKickAt = -Infinity;
+  /** The landing dip, eased back to 0 (m) */
+  private dip = 0;
   private readonly camera: THREE.PerspectiveCamera;
   private readonly input: MoveInput = { forward: 0, strafe: 0, analog: false, sprint: false, crouch: false, jump: false };
 
@@ -77,8 +92,23 @@ export class LocalPlayer {
   }
 
   look(dYaw: number, dPitch: number): void {
+    // Pulling against the recoil counts as settling it: that much won't come back by itself.
+    if (dPitch < 0 && this.recoilPitch > 0) this.recoilPitch = Math.max(0, this.recoilPitch + dPitch);
+    if (Math.sign(dYaw) === -Math.sign(this.recoilYaw) && dYaw !== 0) {
+      this.recoilYaw = Math.abs(dYaw) >= Math.abs(this.recoilYaw) ? 0 : this.recoilYaw + dYaw;
+    }
     this.yaw += dYaw;
     this.pitch = THREE.MathUtils.clamp(this.pitch + dPitch, -MAX_PITCH, MAX_PITCH);
+  }
+
+  /** A shot's kick on the view; it settles back on its own once the shooting stops (see update). */
+  kick(dYaw: number, dPitch: number): void {
+    const before = this.pitch;
+    this.yaw += dYaw;
+    this.pitch = THREE.MathUtils.clamp(this.pitch + dPitch, -MAX_PITCH, MAX_PITCH);
+    this.recoilYaw += dYaw;
+    this.recoilPitch += this.pitch - before;
+    this.lastKickAt = performance.now();
   }
 
   setEnabled(enabled: boolean): void {
@@ -103,7 +133,12 @@ export class LocalPlayer {
   }
 
   get sprintHeld(): boolean {
-    return !this.aiming && (this.touchSprint || this.keys.has(keyFor('sprint')));
+    return !this.aiming && !this.firing && (this.touchSprint || this.keys.has(keyFor('sprint')));
+  }
+
+  /** Seconds into the current slide (0 when not sliding) */
+  get slideAge(): number {
+    return this.mover.slideAge;
   }
 
   update(dt: number, canMove: boolean): void {
@@ -115,16 +150,35 @@ export class LocalPlayer {
     input.analog = !!stick;
     input.forward = stick ? stick.y : held('forward') - held('back');
     input.strafe = stick ? stick.x : held('right') - held('left');
-    input.sprint = this.touchSprint || !!held('sprint');
+    input.sprint = !this.firing && (this.touchSprint || !!held('sprint'));
     input.crouch = this.touchCrouch || !!held('crouch');
     input.jump = this.touchJump || !!held('jump');
     this.mover.step(dt, this.yaw, move ? input : null);
+    this.settleRecoil(dt);
+    if (this.mover.landed > 0) this.dip = Math.min(LAND_DIP_MAX, Math.max(this.dip, this.mover.landed * LAND_DIP_PER_SPEED));
+    this.dip *= Math.exp(-LAND_DIP_RECOVER * dt);
+    if (this.dip < 0.001) this.dip = 0;
     this.syncCamera();
+  }
+
+  /** Once the shooting has stopped, the view eases back to where it was before the kicks. */
+  private settleRecoil(dt: number): void {
+    if (!this.recoilYaw && !this.recoilPitch) return;
+    if (performance.now() - this.lastKickAt < RECOIL_SETTLE_AFTER * 1000) return;
+    const r = 1 - Math.exp(-RECOIL_SETTLE_RATE * dt);
+    const dy = this.recoilYaw * r;
+    const dp = this.recoilPitch * r;
+    this.yaw -= dy;
+    this.pitch = THREE.MathUtils.clamp(this.pitch - dp, -MAX_PITCH, MAX_PITCH);
+    this.recoilYaw -= dy;
+    this.recoilPitch -= dp;
+    if (Math.abs(this.recoilYaw) < 1e-4) this.recoilYaw = 0;
+    if (Math.abs(this.recoilPitch) < 1e-4) this.recoilPitch = 0;
   }
 
   private syncCamera(): void {
     const m = this.mover;
-    this.camera.position.set(m.position.x, m.position.y + m.eyeHeight, m.position.z);
+    this.camera.position.set(m.position.x, m.position.y + m.eyeHeight - this.dip, m.position.z);
     this.camera.rotation.set(this.pitch, this.yaw, m.tilt);
   }
 }

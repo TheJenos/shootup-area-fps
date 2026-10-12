@@ -527,7 +527,11 @@ function formatClock(seconds: number): string {
 
 export function RoundClock({ clock }: { clock: HudState['clock'] }) {
   if (!clock) return null;
-  return <span className={clock.urgent ? 'clock urgent' : 'clock'}>{formatClock(clock.left)}</span>;
+  return (
+    <span className={`clock${clock.urgent ? ' urgent' : ''}${clock.overtime ? ' overtime' : ''}`} title={clock.overtime ? 'Overtime: next point wins' : undefined}>
+      {clock.overtime && <small>OT </small>}{formatClock(clock.left)}
+    </span>
+  );
 }
 
 /** First screen after a round: who won, why, and the top three. */

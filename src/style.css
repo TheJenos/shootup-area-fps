@@ -1333,6 +1333,9 @@ kbd {
 #scorebar .you.leading { color: var(--accent); }
 #scorebar .you.leading strong { color: var(--accent); }
 #scorebar .clock.urgent { color: var(--danger); animation: pulse 0.6s ease-in-out infinite alternate; }
+/* Overtime: the clock turns gold, with "OT" in front */
+#scorebar .clock.overtime { color: var(--accent); }
+#scorebar .clock.overtime small { font-size: 11px; letter-spacing: 1px; vertical-align: 2px; }
 
 #round-over.draw h2 { color: var(--muted); }
 #round-over .podium { list-style: none; margin: 10px 0 6px; padding: 0; display: grid; gap: 6px; min-width: min(360px, 100%); }

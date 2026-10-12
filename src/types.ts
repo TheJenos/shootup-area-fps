@@ -173,13 +173,18 @@ export interface SmokeEvent {
 }
 
 /** A barrier was deployed at (x, y, z), spanning `axis`, until server ms `until`. */
-export interface WallEvent {
-  type: 'wall';
-  id: string;
+/**
+ * A deployed barrier, at rooms/{code}/deployables/{id}: a record rather than an event, so someone who
+ * joins while it stands sees it too. Its owner's client removes it when it expires or breaks.
+ */
+export interface DeployableRecord {
+  kind: 'wall';
+  owner: string;
   x: number;
   y: number;
   z: number;
   axis: 'x' | 'z';
+  /** When it comes down (server ms) */
   until: number;
   /** Owner's colour */
   c: string;
@@ -237,7 +242,7 @@ export interface ScanEvent {
 }
 
 export type OutgoingEvent =
-  | ShotEvent | KillEvent | GrenadeEvent | BlastEvent | SmokeEvent | WallEvent | MeleeEvent | ThrownEvent | TurretEvent | ScanEvent | MineEvent;
+  | ShotEvent | KillEvent | GrenadeEvent | BlastEvent | SmokeEvent | MeleeEvent | ThrownEvent | TurretEvent | ScanEvent | MineEvent;
 
 /** An event as stored in the database, stamped by the sender. */
 export type GameEvent = OutgoingEvent & { from: string; t: number };
@@ -343,6 +348,8 @@ export interface GameRecord {
   startedAt?: number;
   /** Set at the time or score limit; results, the MVP replay, then the next round follow */
   ended?: RoundEnd;
+  /** Tied when the clock ran out: the round goes on until this (server ms), and the next point wins */
+  overtime?: number;
   /** Team modes: kills (TDM), captures (CTF) or rounds won (S&D) */
   score?: Partial<Record<Team, number>>;
   flags?: Partial<Record<Team, FlagRecord>>;
