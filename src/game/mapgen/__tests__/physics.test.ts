@@ -15,9 +15,10 @@ describe('the physics heightfield', () => {
     world.step();
     let worst = 0;
     for (let i = 0; i < 300; i++) {
-      // Spread over the map without randomness: a fixed lattice of offsets.
-      const x = ((i * 37) % 100) / 100 * (g.half * 2 - 2) - g.half + 1;
-      const z = ((i * 61) % 100) / 100 * (g.half * 2 - 2) - g.half + 1;
+      // Spread over the map without randomness: a fixed lattice of offsets, off the grid's vertices
+      // (a ray straight down onto a vertex can slip between Rapier's triangles).
+      const x = ((i * 37) % 100) / 100 * (g.half * 2 - 2) - g.half + 1.137;
+      const z = ((i * 61) % 100) / 100 * (g.half * 2 - 2) - g.half + 1.263;
       const hit = world.castRay(new RAPIER.Ray({ x, y: 60, z }, { x: 0, y: -1, z: 0 }), 100, true);
       expect(hit).not.toBeNull();
       worst = Math.max(worst, Math.abs(60 - hit!.timeOfImpact - groundHeight(g, x, z)));

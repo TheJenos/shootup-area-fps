@@ -1,8 +1,11 @@
 /**
  * Generates many maps and checks them all (mapgen/validate.ts): reachability, slopes, symmetry,
- * plus how many rolls each map took, sightlines and timing per size. Also checks determinism,
+ * plus how many rolls each map took, route sizes and timing per size. Also checks determinism,
  * that the classic arena hasn't changed, that the generator never calls engine-dependent maths,
  * and (with --golden) that no map changed without a GENERATOR_VERSION bump.
+ *
+ * --dump SEED writes three pictures per size: the maze and the path cut through it, the path
+ * widened with open areas grown round it, and the finished map.
  *
  *   npm run check:maps -- [--count 200] [--size s,m,l] [--seed X] [--dump SEED] [--golden] [--update-golden]
  */
@@ -10,9 +13,11 @@ import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from 
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
 import { CLASSIC_SEED, GENERATOR_VERSION, generateMap, groundHeight, insideOutline, mapName, toSpec, type MapData, type MapSize } from '../src/game/mapgen/index';
-import { generateWithReport, rollStats } from '../src/game/mapgen/generate';
-import { graphStats } from '../src/game/mapgen/graph';
-import { overpassStats } from '../src/game/mapgen/dress';
+import { generateWithReport, rollStats, type Generated } from '../src/game/mapgen/generate';
+import { TAG, cellCentre } from '../src/game/mapgen/layout';
+import { joined } from '../src/game/mapgen/maze';
+import { SIZE_PARAMS } from '../src/game/mapgen/spec';
+import { tPoint } from '../src/game/mapgen/symmetry';
 import { Rng } from '../src/game/mapgen/rng';
 
 const args = process.argv.slice(2);
@@ -47,7 +52,80 @@ const sum = Math.round(classic.boxes.reduce((s, b) => s + b.x * 3 + b.z * 7 + b.
 if (classic.boxes.length !== CLASSIC_BOXES || sum !== CLASSIC_SUM) fail(`classic changed: ${classic.boxes.length} boxes, checksum ${sum}`);
 
 // ---------------------------------------------------------------- one map as a picture
-function dump(map: MapData, file: string, lines: { ax: number; az: number; bx: number; bz: number }[] = []): void {
+function canvas(half: number, S: number) {
+  const W = Math.round(half * 2 * S);
+  const png = new PNG({ width: W, height: W });
+  const put = (px: number, py: number, [r, g, b]: [number, number, number]) => {
+    if (px < 0 || py < 0 || px >= W || py >= W) return;
+    const i = (py * W + px) * 4;
+    png.data[i] = r; png.data[i + 1] = g; png.data[i + 2] = b; png.data[i + 3] = 255;
+  };
+  const toPx = (x: number, z: number) => [Math.round((x + half) * S), Math.round((half - z) * S)] as const;
+  const line = (ax: number, az: number, bx: number, bz: number, c: [number, number, number], thick = 1) => {
+    const n = Math.ceil(Math.hypot(bx - ax, bz - az) * S);
+    for (let i = 0; i <= n; i++) {
+      const [px, py] = toPx(ax + ((bx - ax) * i) / n, az + ((bz - az) * i) / n);
+      for (let a = -thick + 1; a < thick; a++) for (let b = -thick + 1; b < thick; b++) put(px + a, py + b, c);
+    }
+  };
+  return { W, png, put, toPx, line };
+}
+
+/** The layout's blocks: `stage` 1 = corridors only (the path through the maze), 2 = with the open areas */
+function dumpLayout(g: Generated, file: string, stage: 1 | 2): void {
+  const S = 4;
+  const { layout: l, map } = g;
+  const o = l.outline;
+  const { W, png, put, line } = canvas(o.half, S);
+  for (let py = 0; py < W; py++) {
+    for (let px = 0; px < W; px++) {
+      const i = Math.floor(px / (S * o.cell));
+      const k = o.n - 1 - Math.floor(py / (S * o.cell));
+      const t = l.tag[k * o.n + i]!;
+      const path = t === TAG.core || t === TAG.corridor || t === TAG.band;
+      const c: [number, number, number] = stage === 1
+        ? (path ? [255, 255, 255] : [235, 235, 235])
+        : t === TAG.outside ? [255, 255, 255] : t === TAG.blob || t === TAG.yard ? [120, 120, 120] : [235, 235, 235];
+      put(px, py, c);
+    }
+  }
+  const P = SIZE_PARAMS[map.spec.size];
+  const r = l.route;
+  if (stage === 1) {
+    // The maze's walls, in both halves.
+    const wall = (ax: number, az: number, bx: number, bz: number) => {
+      line(ax, az, bx, bz, [150, 150, 150]);
+      const [cx, cz] = tPoint(l.sym, ax, az);
+      const [dx, dz] = tPoint(l.sym, bx, bz);
+      line(cx, cz, dx, dz, [150, 150, 150]);
+    };
+    const size = 12;
+    for (let c = P.cols; c < P.cols * P.rows; c++) {
+      const [x, z] = cellCentre(P, c);
+      if (c % P.cols < P.cols - 1 && !joined(r.maze, c, c + 1)) wall(x + size / 2, z - size / 2, x + size / 2, z + size / 2);
+      if (c + P.cols < P.cols * P.rows && !joined(r.maze, c, c + P.cols)) wall(x - size / 2, z + size / 2, x + size / 2, z + size / 2);
+    }
+  }
+  // Outline of the open shape.
+  for (let py = 1; py < W - 1; py++) {
+    for (let px = 1; px < W - 1; px++) {
+      const at = (qx: number, qy: number) => {
+        const i = Math.floor(qx / (S * o.cell));
+        const k = o.n - 1 - Math.floor(qy / (S * o.cell));
+        const t = l.tag[k * o.n + i]!;
+        return stage === 1 ? t === TAG.core || t === TAG.corridor || t === TAG.band : t !== TAG.outside;
+      };
+      if (at(px, py) && (!at(px + 1, py) || !at(px - 1, py) || !at(px, py + 1) || !at(px, py - 1))) put(px, py, [0, 0, 0]);
+    }
+  }
+  for (const route of map.layout?.routes ?? []) {
+    const c: [number, number, number] = route.role === 'main' ? [220, 40, 40] : route.role === 'loop' ? [40, 140, 220] : [40, 170, 80];
+    for (let i = 1; i < route.points.length; i++) line(...route.points[i - 1]!, ...route.points[i]!, c, 2);
+  }
+  writeFileSync(file, PNG.sync.write(png));
+}
+
+function dump(map: MapData, file: string): void {
   const S = 6;
   const W = Math.round(map.half * 2 * S);
   const png = new PNG({ width: W, height: W });
@@ -77,13 +155,9 @@ function dump(map: MapData, file: string, lines: { ax: number; az: number; bx: n
     const c: [number, number, number] = out ? [40 + top * 4, 40 + top * 4, 52 + top * 4] : b.blocks === 'shots' ? [40, 110, 40] : b.ramp ? [220, 200, 80] : top > 2.2 ? [150, 40, 40] : top > 1.4 ? [210, 100, 60] : [230, 170, 120];
     rect(b.x, b.z, b.w, b.d, c);
   }
-  for (const l of map.graph?.lanes ?? []) for (const [x, z] of l.points) { const [px, py] = toPx(x, z); put(px, py, [255, 255, 255]); }
+  for (const r of map.layout?.routes ?? []) for (const [x, z] of r.points) { const [px, py] = toPx(x, z); put(px, py, [255, 255, 255]); }
   for (const s of map.spawns) rect(s.x, s.z, 1, 1, s.team === 'red' ? [255, 0, 0] : s.team === 'blue' ? [0, 80, 255] : [255, 0, 255]);
   for (const p of map.pickupSpots) rect(p.x, p.z, 0.8, 0.8, [0, 255, 255]);
-  for (const l of lines) {
-    const n = Math.ceil(Math.hypot(l.bx - l.ax, l.bz - l.az) * S);
-    for (let i = 0; i <= n; i++) { const [px, py] = toPx(l.ax + ((l.bx - l.ax) * i) / n, l.az + ((l.bz - l.az) * i) / n); put(px, py, [255, 0, 255]); }
-  }
   rect(map.flags.red[0], map.flags.red[2], 2, 2, [255, 255, 0]);
   rect(map.flags.blue[0], map.flags.blue[2], 2, 2, [255, 255, 0]);
   writeFileSync(file, PNG.sync.write(png));
@@ -95,10 +169,13 @@ if (dumpSeed) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   for (const size of SIZES) {
     const g = generateWithReport(toSpec(dumpSeed, size));
-    const file = join(dir, `${dumpSeed}-${size}.png`);
-    dump(g.map, file, g.sight.lines);
-    console.log(`${file}: ${g.map.name}, roll ${g.roll}, ${g.map.graph?.symmetry}, ${g.map.graph?.lanes.length} lanes, mid ${g.map.graph?.mid.kind}`);
-    console.log('  report', JSON.stringify(g.report), 'sight', JSON.stringify({ ...g.sight, lines: g.sight.lines.length }));
+    const file = join(dir, `${dumpSeed}-${size}`);
+    dumpLayout(g, `${file}-1-path.png`, 1);
+    dumpLayout(g, `${file}-2-open.png`, 2);
+    dump(g.map, `${file}-3-map.png`);
+    const L = g.map.layout!;
+    console.log(`${file}-*.png: ${g.map.name}, roll ${g.roll}, ${L.symmetry}, path ${L.pathCells} cells, ${L.loops} loops, ${g.layout.blobs.length} open areas`);
+    console.log('  report', JSON.stringify(g.report));
   }
   process.exit(0);
 }
@@ -114,18 +191,16 @@ const stat = (label: string, list: number[], digits = 1) =>
 
 const biomes = new Map<string, number>();
 for (const size of SIZES) {
-  const ms: number[] = []; const rolls: number[] = []; const laneOver: number[] = []; const flagSeen: number[] = []; const spawnSeen: number[] = [];
-  const f2f: number[] = []; const clutter: number[] = []; const boxes: number[] = []; const breakers: number[] = [];
-  const loops: number[] = []; const entrances: number[] = []; let overpassed = 0;
+  const ms: number[] = []; const rolls: number[] = []; const f2f: number[] = []; const clutter: number[] = []; const boxes: number[] = [];
+  const loops: number[] = []; const path: number[] = []; const blobs: number[] = [];
   let failed = 0;
   for (const seed of seeds) {
     const t0 = performance.now();
     const g = generateWithReport(toSpec(seed, size));
     ms.push(performance.now() - t0);
     rolls.push(g.roll);
-    laneOver.push(g.sight.laneOver); flagSeen.push(g.sight.flagSeen); spawnSeen.push(g.sight.spawnSeen); breakers.push(g.sight.breakers);
     f2f.push(g.report.metrics.flagToFlag); clutter.push(g.report.metrics.clutter * 100); boxes.push(g.map.boxes.length);
-    loops.push(g.map.graph!.loops); entrances.push(g.map.graph!.entrances); if (g.map.graph!.overpasses) overpassed++;
+    loops.push(g.map.layout!.loops); path.push(g.map.layout!.pathCells); blobs.push(g.layout.blobs.length);
     biomes.set(g.map.biome, (biomes.get(g.map.biome) ?? 0) + 1);
     if (g.map.name !== mapName(seed)) fail(`${seed} ${size}: mapName ${mapName(seed)} vs ${g.map.name}`);
     if (!g.report.ok) { failed++; fail(`${seed} ${size} (${g.map.name}): ${g.report.problems.slice(0, 4).join('; ')}`); }
@@ -133,13 +208,10 @@ for (const size of SIZES) {
   console.log(`\n[${size}] ${seeds.length} seeds, ${failed} failed`);
   console.log(`  ${stat('ms', ms, 0)}; ${stat('roll', rolls, 0)}; ${stat('boxes', boxes, 0)}`);
   console.log(`  ${stat('flag-to-flag m', f2f, 0)}; ${stat('clutter %', clutter)}`);
-  console.log(`  routes: ${stat('loops', loops, 0)}; ${stat('busiest junction', entrances, 0)}; overpass on ${Math.round((overpassed / seeds.length) * 100)}% of maps`);
-  console.log(`  sight: ${stat('lane over m', laneOver)}; ${stat('flag seen', flagSeen, 0)}; ${stat('spawn seen', spawnSeen, 0)}; ${stat('breakers', breakers, 0)}`);
+  console.log(`  route: ${stat('path cells', path, 0)}; ${stat('loops', loops, 0)}; ${stat('open areas', blobs, 0)}`);
 }
 console.log('\nBiomes:', [...biomes].map(([k, v]) => `${k} ${v}`).join(', '));
 console.log('Rolls rejected:', JSON.stringify(rollStats));
-console.log('Lane graphs rejected:', JSON.stringify(graphStats));
-console.log('Overpasses refused:', JSON.stringify(overpassStats));
 
 // ---------------------------------------------------------------- determinism and golden hashes
 for (const seed of seeds.slice(0, 4)) {

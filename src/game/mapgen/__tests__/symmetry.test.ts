@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { propPiece } from '../kits';
+import { propPiece } from '../objects';
 import { tPiece, tPoint, tVertex, type Symmetry } from '../symmetry';
 import type { Piece } from '../types';
 

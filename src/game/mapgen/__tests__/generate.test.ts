@@ -1,14 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { CLASSIC_SEED, generateMap, isPlayableSpec, mapName, toSpec, GENERATOR_VERSION } from '../index';
-import { generateWithReport, metaFor, shapeOf } from '../generate';
-import { designFootprint, gridHalf, type Outline } from '../outline';
-import { buildGraph } from '../graph';
-import { Rng } from '../rng';
+import { generateWithReport } from '../generate';
+import { mapHalf } from '../layout';
 import { SIZE_PARAMS, type MapSize } from '../spec';
-import { MAX_SLOPE, Terrain } from '../terrain';
+import { MAX_SLOPE } from '../ground';
 import { tVertex } from '../symmetry';
 import { validateMap } from '../validate';
-import { BIOMES } from '../biomes';
 
 const SIZES: MapSize[] = ['s', 'm', 'l'];
 
@@ -39,7 +36,7 @@ describe('generated maps', () => {
       expect(a.report.problems).toEqual([]);
       const b = generateWithReport(toSpec(seed, size));
       expect(b.map.hash).toBe(a.map.hash);
-      expect(a.map.half).toBe(gridHalf(SIZE_PARAMS[size]));
+      expect(a.map.half).toBe(mapHalf(SIZE_PARAMS[size]));
     }
   });
 
@@ -74,41 +71,21 @@ describe('generated maps', () => {
   });
 });
 
-describe('terrain', () => {
+describe('ground', () => {
   it('keeps every slope walkable, every height above 0, and both halves the same', () => {
     for (const [seed, size] of [['TERR01', 's'], ['TERR02', 'm'], ['TERR03', 'l']] as const) {
-      const meta = metaFor(seed);
-      let graph = null;
-      let outline: Outline | null = null;
-      for (let i = 0; i < 30 && !graph; i++) {
-        const sym = i % 2 ? 'mirror' : 'rotate';
-        const shape = shapeOf(designFootprint(new Rng(seed).fork(`s${i}`), sym, SIZE_PARAMS[size]));
-        outline = shape.outline;
-        graph = buildGraph(new Rng(seed).fork(`g${i}`), sym, SIZE_PARAMS[size], meta.biome.graph, shape);
-      }
-      expect(graph).not.toBeNull();
-      const t = new Terrain(graph!, new Rng(seed), BIOMES[meta.biome.id].terrain, outline!);
-      const { n, side, heights } = t;
-      for (let iz = 0; iz <= n; iz++) {
-        for (let ix = 0; ix <= n; ix++) {
-          const h = heights[iz * side + ix]!;
+      const m = generateMap(toSpec(seed, size));
+      const g = m.ground!;
+      const side = g.n + 1;
+      for (let iz = 0; iz <= g.n; iz++) {
+        for (let ix = 0; ix <= g.n; ix++) {
+          const h = g.heights[iz * side + ix]!;
           expect(h).toBeGreaterThanOrEqual(0);
-          if (ix < n) expect(Math.abs(heights[iz * side + ix + 1]! - h)).toBeLessThanOrEqual(MAX_SLOPE + 0.011);
-          if (iz < n) expect(Math.abs(heights[(iz + 1) * side + ix]! - h)).toBeLessThanOrEqual(MAX_SLOPE + 0.011);
-          expect(heights[tVertex(graph!.sym, n, ix, iz)]).toBe(h);
+          if (ix < g.n) expect(Math.abs(g.heights[iz * side + ix + 1]! - h)).toBeLessThanOrEqual(MAX_SLOPE + 0.011);
+          if (iz < g.n) expect(Math.abs(g.heights[(iz + 1) * side + ix]! - h)).toBeLessThanOrEqual(MAX_SLOPE + 0.011);
+          expect(g.heights[tVertex(m.layout!.symmetry, g.n, ix, iz)]).toBe(h);
         }
       }
-      // The pinned heights (plateaus, lane floors) are kept, bar a few where two lanes' floors meet
-      // (near the bases) and disagree by more than the slope allows: the slope limit wins there.
-      let kept = 0;
-      let pinned = 0;
-      for (let v = 0; v < t.pin.length; v++) {
-        const p = t.pin[v]!;
-        if (Number.isNaN(p)) continue;
-        pinned++;
-        if (Math.abs(heights[v]! - p) < 0.02) kept++;
-      }
-      expect(kept / pinned).toBeGreaterThan(0.95);
     }
   });
 });

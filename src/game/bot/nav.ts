@@ -27,6 +27,8 @@ export interface Waypoint {
 export class BotNav {
   private readonly spotCell: Int32Array;
   private readonly fields = new Map<number, Float32Array>();
+  /** Stand-ins for targets that can't be reached: target cell → the nearest spot that can */
+  private readonly standIns = new Map<number, number>();
 
   constructor(readonly grid: NavGrid) {
     const { n, offsets, heights } = grid;
@@ -107,11 +109,44 @@ export class BotNav {
     return false;
   }
 
+  /** The spot nearest (x, z) that `from` can walk to (-1 if none) */
+  private reachableNear(x: number, z: number, from: number): number {
+    const key = this.grid.cellOf(x, z);
+    const known = this.standIns.get(key);
+    if (known !== undefined && this.field(known)[from] !== Infinity) return known;
+    const { n, offsets } = this.grid;
+    const toFrom = this.field(from);
+    const ci = key % n;
+    const ck = (key / n) | 0;
+    let best = -1;
+    let bestD = Infinity;
+    for (let r = 0; r < n && best < 0; r++) {
+      for (let dk = -r; dk <= r; dk++) for (let di = -r; di <= r; di++) {
+        if (Math.max(Math.abs(di), Math.abs(dk)) !== r) continue;
+        const i = ci + di;
+        const k = ck + dk;
+        if (i < 0 || k < 0 || i >= n || k >= n) continue;
+        const c = k * n + i;
+        for (let s = offsets[c]!; s < offsets[c + 1]!; s++) {
+          if (toFrom[s] === Infinity) continue;
+          const d = di * di + dk * dk;
+          if (d < bestD) { bestD = d; best = s; }
+        }
+      }
+    }
+    if (best >= 0) this.standIns.set(key, best);
+    return best;
+  }
+
   /** A point a few metres along the way from (x, y, z) to the target, or null if there's no way. */
   waypoint(x: number, y: number, z: number, tx: number, ty: number, tz: number): Waypoint | null {
-    const target = this.spotAt(tx, ty + 0.3, tz);
+    let target = this.spotAt(tx, ty + 0.3, tz);
     let cur = this.spotAt(x, y, z);
-    if (target < 0 || cur < 0) return null;
+    if (cur < 0) return null;
+    // A target inside a wall, or somewhere sealed off (a spot picked on the straight line between
+    // bases, on a maze map): head for the nearest place that can be reached instead.
+    if (target < 0 || this.field(target)[cur] === Infinity) target = this.reachableNear(tx, tz, cur);
+    if (target < 0) return null;
     const field = this.field(target);
     if (field[cur] === Infinity) return null;
     const { n, offsets, heights } = this.grid;

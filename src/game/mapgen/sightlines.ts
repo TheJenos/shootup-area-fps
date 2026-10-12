@@ -1,7 +1,5 @@
 /**
- * Sightlines: what can see what, from head height. The generator measures them and breaks the bad
- * ones (dress.ts): no endless sniper lanes, no shooting at the flag from deep in the enemy half, no
- * spawn anyone in the other half can see.
+ * Sightlines: what can see what, from head height (the bots' senses use it).
  *
  * A ray is blocked by the ground or by anything solid standing on it (boxes that stop bullets,
  * starting near the ground; things overhead such as bridges and tree canopies are treated as
@@ -88,67 +86,4 @@ export class Occlusion {
     if (i < 0 || k < 0 || i >= this.n || k >= this.n) return true;
     return this.top[k * this.n + i]! > groundHeight(this.ground, x, z) + 0.5;
   }
-}
-
-export interface Sight {
-  ax: number;
-  az: number;
-  bx: number;
-  bz: number;
-  d: number;
-}
-
-/**
- * Sightlines longer than `budget` between points along a path (a whole lane, base to base),
- * the worst first.
- */
-export function longSightlines(o: Occlusion, points: readonly [number, number][], budget: number, limit = Infinity): Sight[] {
-  const out: Sight[] = [];
-  for (let i = 0; i < points.length; i++) {
-    const [ax, az] = points[i]!;
-    if (o.blocked(ax, az)) continue;
-    for (let j = i + 1; j < points.length; j++) {
-      const [bx, bz] = points[j]!;
-      const d = dist(ax, az, bx, bz);
-      if (d <= budget || o.blocked(bx, bz)) continue;
-      if (o.sees(ax, az, bx, bz)) out.push({ ax, az, bx, bz, d });
-    }
-  }
-  out.sort((a, b) => b.d - a.d || a.ax - b.ax || a.az - b.az);
-  return out.slice(0, limit);
-}
-
-/** Points that see (x, z) from further than `range` (eye height at both ends), the furthest first. */
-export function exposure(o: Occlusion, x: number, z: number, from: readonly [number, number][], range: number, limit = Infinity): Sight[] {
-  const out: Sight[] = [];
-  for (const [px, pz] of from) {
-    const d = dist(x, z, px, pz);
-    if (d <= range || o.blocked(px, pz)) continue;
-    if (o.sees(x, z, px, pz)) out.push({ ax: x, az: z, bx: px, bz: pz, d });
-  }
-  out.sort((a, b) => b.d - a.d || a.bx - b.bx || a.bz - b.bz);
-  return out.slice(0, limit);
-}
-
-/** Points along a polyline every `step` metres, and `offset` to either side */
-export function pathPoints(path: readonly [number, number][], step: number, offset: number): [number, number][] {
-  const out: [number, number][] = [];
-  let carry = 0;
-  for (let i = 1; i < path.length; i++) {
-    const [ax, az] = path[i - 1]!;
-    const [bx, bz] = path[i]!;
-    const l = dist(ax, az, bx, bz);
-    if (l === 0) continue;
-    const nx = -(bz - az) / l;
-    const nz = (bx - ax) / l;
-    let t = carry;
-    for (; t < l; t += step) {
-      const x = ax + ((bx - ax) * t) / l;
-      const z = az + ((bz - az) * t) / l;
-      out.push([x, z]);
-      if (offset > 0) out.push([x + nx * offset, z + nz * offset], [x - nx * offset, z - nz * offset]);
-    }
-    carry = t - l;
-  }
-  return out;
 }

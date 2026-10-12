@@ -3,10 +3,10 @@
  * preview, and every client builds exactly the same map from the room's map spec (seed, size and
  * generator version).
  *
- * A map's shape is designed first (outline.ts), then a lane graph fitted in it (two bases, two or
- * three lanes, connectors, chokes, overlooks), its terrain shaped from that design, then dressed by
- * its biome and walled in by buildings or cliffs. See generate.ts for
- * the pipeline. The CLASSIC seed is the original hand-made arena.
+ * A map starts as a maze: a winding path is cut through it from each base to the middle, widened
+ * into corridors with open areas grown round it, and the open spaces are filled with the biome's
+ * things; everything else is walled in by buildings or cliffs. See generate.ts for the pipeline.
+ * The CLASSIC seed is the original hand-made arena.
  */
 
 import { CLASSIC_SEED, classicMap } from './classic';
@@ -16,20 +16,20 @@ import { isMapSize, specKey, type MapSpec } from './spec';
 import type { MapData } from './types';
 
 export type {
-  BoxBlocks, Ground, GroundKind, GroundPatch, LaneGraph, MapBox, MapData, MapProp, MapTheme, PickupSpot, PropRot, Spawn, StepSurface,
+  BoxBlocks, Ground, GroundKind, GroundPatch, MapBox, MapData, MapProp, MapTheme, MazeLayout, PickupSpot, PropRot, Spawn, StepSurface,
 } from './types';
 export { PAINT } from './types';
 export { groundHeight, groundGradient, groundRange, rapierHeights } from './heightField';
 export { MAP_SIZES, SIZE_LABEL, isMapSize, specKey, type MapSize, type MapSpec } from './spec';
 export { THEMES } from './themes';
-export { insideOutline, outsideRects, type Outline } from './outline';
+export { insideOutline, outsideRects, type Outline } from './layout';
 export { CLASSIC_SEED };
 
 /**
  * Bump whenever any seed's map changes: rooms remember the version they were made with, and
  * clients on another version can't join them (they'd be playing on different maps).
  */
-export const GENERATOR_VERSION = 3;
+export const GENERATOR_VERSION = 4;
 export const SEED_MAX_LENGTH = 16;
 
 /** Seeds are case-insensitive letters and digits, so they're easy to read out and type. */

@@ -5,7 +5,7 @@
 
 import type { BoxSurface, FloorTexture, GroundKind } from '../textures';
 import type { RampDir } from '../rampMath';
-import type { Outline } from './outline';
+import type { Outline } from './layout';
 import type { MapSpec } from './spec';
 
 export type { GroundKind };
@@ -122,8 +122,6 @@ export interface Spawn {
   team: Team | null;
 }
 
-export type ZoneKind = 'base' | 'lane' | 'choke' | 'mid' | 'connector' | 'ridge' | 'edge';
-
 export interface PickupSpot {
   x: number;
   y: number;
@@ -132,22 +130,18 @@ export interface PickupSpot {
 }
 
 /**
- * The map's design: how the two bases connect. Kept with the map for the preview, a minimap and
- * debugging. Points are in red's half and the other team's copy (under the map's symmetry).
+ * The map's design: the maze route between the bases, kept with the map for the preview and
+ * debugging. Points are corridor centre lines in both halves.
  */
-export interface LaneGraph {
+export interface MazeLayout {
   /** rotate: (x, z) → (-x, -z), mirror: (x, z) → (x, -z) */
   symmetry: 'rotate' | 'mirror';
-  lanes: { role: 'main' | 'flank'; width: number; points: [number, number][] }[];
-  connectors: { width: number; points: [number, number][] }[];
-  chokes: [number, number][];
-  overlooks: [number, number][];
-  mid: { kind: 'plaza' | 'hill' | 'sunken'; radius: number };
-  /** Independent loops through the routes, and the most routes meeting at one junction (routes.ts) */
+  /** The main path from flag to flag through the middle plaza, and the pockets and loops off it */
+  routes: { role: 'main' | 'pocket' | 'loop'; points: [number, number][] }[];
+  /** Flank loops per half */
   loops: number;
-  entrances: number;
-  /** Footbridges where one route crosses over another */
-  overpasses: number;
+  /** Maze cells on each half's main path */
+  pathCells: number;
 }
 
 export interface MapData {
@@ -169,9 +163,9 @@ export interface MapData {
   flags: { red: [number, number, number]; blue: [number, number, number] };
   spawns: Spawn[];
   pickupSpots: PickupSpot[];
-  graph: LaneGraph | null;
+  layout: MazeLayout | null;
   /**
-   * The map's shape (outline.ts); the buildings or cliffs round it are in `boxes`. null = the whole
+   * The map's shape (layout.ts); the buildings or cliffs round it are in `boxes`. null = the whole
    * square, walled by the game (the classic map).
    */
   outline: Outline | null;

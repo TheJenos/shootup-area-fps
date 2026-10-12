@@ -2,18 +2,17 @@
  * Checks a finished map: run inside the generator (a map that fails is rebuilt from the next roll),
  * by scripts/check-maps.ts over many seeds, and by the unit tests.
  *
- * Hard rules: every spawn, both flags, every pickup spot and every door and platform top can be
- * walked to; a flag carrier can get home; no slope is steeper than you can walk; the two halves
- * are exact copies. A generated map also keeps to its size's guidelines: the walk from flag to flag
- * fits its time, and cover doesn't clutter the floor. Softer numbers (sightlines) are reported for tuning.
+ * Hard rules: every spawn, both flags, every pickup spot and every hut door can be walked to; a
+ * flag carrier can get home; no slope is steeper than you can walk; the two halves are exact
+ * copies. A generated map also keeps to its size's guidelines: the walk from flag to flag fits its
+ * time, it has a loop to flank by, a full set of spawns, and cover doesn't clutter the floor.
  */
 
 import { groundGradient, groundHeight } from './heightField';
-import { MAX_SLOPE } from './terrain';
+import { MAX_SLOPE } from './ground';
 import { NavGrid } from './navgrid';
-import { MAX_ENTRANCES, MIN_LOOPS } from './routes';
 import { SIZE_PARAMS } from './spec';
-import { insideOutline } from './outline';
+import { insideOutline } from './layout';
 import { tVertex } from './symmetry';
 import type { MapData } from './types';
 
@@ -37,11 +36,11 @@ export interface ValidationReport {
   };
 }
 
-/** `targets`: extra spots that must be reachable ([x, y, z]: doors, platform tops, bridge decks). */
+/** `targets`: extra spots that must be reachable ([x, y, z]: outside hut doors). */
 export function validateMap(data: MapData, targets: readonly [number, number, number][] = []): ValidationReport {
   const problems: string[] = [];
   const g = data.ground;
-  const sym = data.graph?.symmetry ?? 'mirror';
+  const sym = data.layout?.symmetry ?? 'mirror';
 
   // Ground: walkable slopes, never below 0, exactly symmetric.
   let steepest = 0;
@@ -119,13 +118,13 @@ export function validateMap(data: MapData, targets: readonly [number, number, nu
   const clutter = solid / area;
 
   // The guidelines a generated map is held to.
-  if (data.graph) {
-    const budget = SIZE_PARAMS[data.spec.size].crossTime;
-    if (flagToFlag !== Infinity && flagToFlag / WALK_SPEED > budget) problems.push(`flag to flag ${Math.round(flagToFlag / WALK_SPEED)} s over ${budget} s`);
+  if (data.layout) {
+    const P = SIZE_PARAMS[data.spec.size];
+    if (flagToFlag !== Infinity && flagToFlag / WALK_SPEED > P.crossTime) problems.push(`flag to flag ${Math.round(flagToFlag / WALK_SPEED)} s over ${P.crossTime} s`);
     if (clutter > MAX_CLUTTER) problems.push(`clutter ${Math.round(clutter * 100)}% over ${MAX_CLUTTER * 100}%`);
-    // Loops to move round each other in, and no junction with so many ways in it's a guess.
-    if (data.graph.loops < MIN_LOOPS) problems.push(`${data.graph.loops} loops, under ${MIN_LOOPS}`);
-    if (data.graph.entrances > MAX_ENTRANCES) problems.push(`a junction with ${data.graph.entrances} ways in`);
+    // A flank to go round by, and enough spots to spawn on.
+    if (data.layout.loops < 1) problems.push('no loops');
+    if (data.spawns.filter((s) => s.team === 'red').length < P.spawnsPerTeam) problems.push('too few spawns');
   }
 
   return {

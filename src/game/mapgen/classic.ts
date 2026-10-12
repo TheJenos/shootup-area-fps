@@ -66,7 +66,7 @@ export function classicMap(): MapData {
     flags: { red: [0, 0, 32], blue: [0, 0, -32] },
     spawns,
     pickupSpots: [],
-    graph: null,
+    layout: null,
     outline: null,
     edge: { height: 0 },
     path: 'concrete',
