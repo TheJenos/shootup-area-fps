@@ -22,6 +22,8 @@ export interface Stage {
   sizes: MapSize[];
   /** Per team (TDM, CTF) or in total (FFA) */
   players: number;
+  /** Players in FFA matches, when not `players` */
+  ffaPlayers?: number;
   /** Dummies per arena (FFA only): they wander and never shoot */
   dummies: number;
   seconds: number;
@@ -45,9 +47,11 @@ export const STAGES: Stage[] = [
   { name: 'ctf', modes: ['ctf', 'ctf', 'ctf', 'tdm', 'ffa'], sizes: ['s', 'm', 'l'], players: 3, dummies: 0, seconds: 180, guns: ['rifle', 'rifle', 'rifle', 'sniper'], snapshotShare: 0.25, scriptedShare: 0.35 },
   // S&D: no respawns, so a death costs the round, and the bomb (not kills) decides it.
   { name: 'snd', modes: ['snd', 'snd', 'snd', 'ctf', 'tdm', 'ffa'], sizes: ['s', 'm', 'l'], players: 3, dummies: 0, seconds: 300, guns: ['rifle', 'rifle', 'rifle', 'deagle', 'sniper'], snapshotShare: 0.25, scriptedShare: 0.35 },
-  // An even share of play for every mode (S&D matches last twice as long, so they come up half as often): with
-  // FFA at one match in eight of the time, its held-out K/D slid from 0.85 to 0.56 in 10M steps.
-  { name: 'mix', modes: ['ffa', 'ffa', 'tdm', 'tdm', 'ctf', 'ctf', 'snd'], sizes: ['s', 'm', 'l'], players: 3, dummies: 0, seconds: 150, guns: ['rifle', 'rifle', 'rifle', 'deagle', 'shotgun', 'sniper'], snapshotShare: 0.25, scriptedShare: 0.3 },
+  // An even share of experience for every mode. What counts is learner-seconds: a team match has twice the
+  // players (and so twice the learners) of a 3-player FFA, and S&D matches last twice as long. Counting
+  // matches instead left FFA with 13% of the experience, and the policy lost FFA head-to-head 1-13 to the one
+  // before it; with five players and three matches in eight, FFA gets about a quarter.
+  { name: 'mix', modes: ['ffa', 'ffa', 'ffa', 'tdm', 'tdm', 'ctf', 'ctf', 'snd'], sizes: ['s', 'm', 'l'], players: 3, ffaPlayers: 5, dummies: 0, seconds: 150, guns: ['rifle', 'rifle', 'rifle', 'deagle', 'shotgun', 'sniper'], snapshotShare: 0.25, scriptedShare: 0.3 },
 ];
 
 export const stageByName = (name: string): Stage => {
@@ -144,7 +148,7 @@ export class Rollout {
       seed: `W${this.workerId}X${(this.seedCounter++).toString(36)}${Math.floor(rand() * 1e6).toString(36)}`.toUpperCase().slice(0, 16),
       size: pick(stage.sizes, rand),
       mode,
-      players: mode === 'ffa' ? stage.players : Math.max(1, Math.round(stage.players * (0.67 + rand() * 0.66))),
+      players: mode === 'ffa' ? stage.ffaPlayers ?? stage.players : Math.max(1, Math.round(stage.players * (0.67 + rand() * 0.66))),
       dummies: mode === 'ffa' ? stage.dummies : 0,
       gun: pick(stage.guns, rand),
       // An S&D round alone can take 2½ minutes (freeze, attack clock, fuse): shorter matches end before

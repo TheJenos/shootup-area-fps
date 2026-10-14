@@ -19,6 +19,7 @@ import { rollPersonality, type Personality } from '../brain';
 import { callOut, hear } from '../team';
 import { Steering, moveInputOf } from '../brain';
 import { MapSenses, castWorld } from '../senses';
+import { pickRespawn } from '../../spawnPlan';
 import { aimAngles, hitPlayer, lookDir, scatter, spreadOf, type Ray } from '../hitscan';
 import { BOT_FOV, JUMP_HOLD, JUMP_UP, RIFLE_RESERVE, adsRecoil, inFieldOfView, ledgeAhead, roughHp } from '../limits';
 
@@ -550,15 +551,21 @@ export class Arena {
   private spawn(a: SimAgent): void {
     const enemies = this.agents.filter((b) => b.alive && b !== a && this.isEnemy(a, b)).map((b) => b.mover.position);
     const standing = this.agents.filter((b) => b.alive && b !== a).map((b) => b.mover.position);
-    const all = this.map.spawns.filter((s) => (a.team ? s.team === a.team : true));
+    // Free-for-all: the pickup spots too, and anywhere safe at random, as in the game (spawnPlan.ts pickRespawn).
+    const all: { x: number; y: number; z: number }[] = a.team
+      ? this.map.spawns.filter((s) => s.team === a.team)
+      : [...this.map.spawns, ...this.map.pickupSpots];
     // Never onto someone: bodies are solid, as in the game.
     const free = all.filter((s) => standing.every((o) => Math.hypot(o.x - s.x, o.z - s.z) > 1.2));
     const points = free.length ? free : all;
-    const scored = points.map((s) => ({
-      s, d: enemies.length ? Math.min(...enemies.map((e) => Math.hypot(e.x - s.x, e.z - s.z))) : this.rand() * 100,
-    }));
-    scored.sort((x, y) => y.d - x.d);
-    const pick = scored[Math.floor(this.rand() * Math.min(3, scored.length))]?.s ?? { x: 0, y: 0, z: 0 };
+    const safety = (s: { x: number; z: number }) => (enemies.length ? Math.min(...enemies.map((e) => Math.hypot(e.x - s.x, e.z - s.z))) : Infinity);
+    let pick: { x: number; y: number; z: number };
+    if (!a.team) pick = points[pickRespawn(points.length, (k) => safety(points[k]!), this.rand)] ?? { x: 0, y: 0, z: 0 };
+    else {
+      const scored = points.map((s) => ({ s, d: enemies.length ? safety(s) : this.rand() * 100 }));
+      scored.sort((x, y) => y.d - x.d);
+      pick = scored[Math.floor(this.rand() * Math.min(3, scored.length))]?.s ?? { x: 0, y: 0, z: 0 };
+    }
     a.mover.teleport(new THREE.Vector3(pick.x + (this.rand() - 0.5), pick.y, pick.z + (this.rand() - 0.5)));
     a.yaw = Math.atan2(pick.x, pick.z);
     a.pitch = 0;

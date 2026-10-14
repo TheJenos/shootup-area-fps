@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { generateMap, GENERATOR_VERSION } from '../mapgen';
-import { roundSpawn, spawnSalt, spreadOrder, type SpawnSpot } from '../spawnPlan';
+import { RESPAWN_SAFE, pickRespawn, roundSpawn, spawnSalt, spreadOrder, type SpawnSpot } from '../spawnPlan';
 
 const ids = (n: number) => Array.from({ length: n }, (_, i) => `p${String(i).padStart(2, '0')}`);
 const spotOf = (points: readonly SpawnSpot[], plan: ReturnType<typeof roundSpawn>) => ({ x: points[plan!.index]!.x + plan!.dx, z: points[plan!.index]!.z + plan!.dz });
@@ -53,5 +53,26 @@ describe('round spawns', () => {
         expect(minGap(spots)).toBeGreaterThan(across * 0.25);
       }
     }
+  });
+
+  it('respawns free-for-all players at random among the safe spots, not the same farthest few', () => {
+    let seed = 3;
+    const rand = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
+    // Ten spots: the first four too close to an enemy, the rest safe at different distances.
+    const safety = [5, 8, 12, 19, 25, 30, 40, 55, 70, 90];
+    const used = new Set<number>();
+    for (let n = 0; n < 200; n++) {
+      const i = pickRespawn(safety.length, (k) => safety[k]!, rand);
+      expect(safety[i]!).toBeGreaterThanOrEqual(RESPAWN_SAFE);
+      used.add(i);
+    }
+    // Every safe spot comes up, not just the farthest.
+    expect(used.size).toBe(6);
+  });
+
+  it('with nowhere safe, respawns at one of the three safest spots', () => {
+    const safety = [2, 15, 4, 18, 9, 17];
+    for (let n = 0; n < 50; n++) expect([1, 3, 5]).toContain(pickRespawn(safety.length, (k) => safety[k]!));
+    expect(pickRespawn(0, () => 0)).toBe(-1);
   });
 });

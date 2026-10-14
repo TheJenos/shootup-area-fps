@@ -24,6 +24,10 @@ const JUMP_LOOK = 3;
  */
 const LINE_STEP = 0.25;
 const LINE_SIDE = 0.2;
+/** How far off the grid a body can be and still find its way back onto it (m) */
+const START_REACH = 1.5;
+/** A body this far above a spot may be mid-hop off it (a jump rises about 1.25 m) */
+const HOP_HEIGHT = 1.4;
 
 /** Something standing on the map that isn't part of it (a deployed barrier): its footprint and height */
 export interface NavBlock {
@@ -64,6 +68,14 @@ export class BotNav {
   private blockKey = '';
   /** Highest ledge a path may jump up (m); STEP_UP means no jumping (the training simulator's default) */
   private climb = STEP_UP;
+  /**
+   * Every move a search can make into each spot, worked out once (for the current climb): for spot s, the
+   * spots `from[start[s]..start[s+1]]` that can walk (or jump) onto it, and what each move costs. A search
+   * is then a tight loop over these, instead of re-deriving cells, heights and climbs for every spot every
+   * time (16.7 ms a search on a large maze map, a third of the training simulator's time).
+   */
+  private edges: { start: Int32Array; from: Int32Array; cost: Float32Array } | null = null;
+  private edgesClimb = -1;
 
   constructor(readonly grid: NavGrid) {
     const { n, offsets, heights } = grid;
@@ -144,40 +156,41 @@ export class BotNav {
     return field;
   }
 
-  private search(target: number): Float32Array {
+  /** The moves into every spot (see `edges`), for the current climb. In the order the search used to try them. */
+  private moves(): { start: Int32Array; from: Int32Array; cost: Float32Array } {
+    if (this.edges && this.edgesClimb === this.climb) return this.edges;
     const { n, offsets, heights } = this.grid;
     const total = heights.length;
-    const distance = new Float32Array(total).fill(Infinity);
-    if (target < 0) return distance;
-    const queue = new Int32Array(total);
-    let head = 0;
-    let tail = 0;
-    distance[target] = 0;
-    queue[tail++] = target;
-    while (head < tail) {
-      const s = queue[head++]!;
+    const start = new Int32Array(total + 1);
+    let from = new Int32Array(total * 8);
+    let cost = new Float32Array(total * 8);
+    let e = 0;
+    const push = (u: number, c: number) => {
+      if (e === from.length) {
+        const f2 = new Int32Array(from.length * 2); f2.set(from); from = f2;
+        const c2 = new Float32Array(cost.length * 2); c2.set(cost); cost = c2;
+      }
+      from[e] = u;
+      cost[e++] = c;
+    };
+    for (let s = 0; s < total; s++) {
+      start[s] = e;
       const c = this.spotCell[s]!;
       const i = c % n;
       const k = (c / n) | 0;
       const h = heights[s]!;
-      const here = distance[s]!;
       for (const [di, dk] of NEIGHBOURS) {
         const ni = i + di;
         const nk = k + dk;
         if (ni < 0 || nk < 0 || ni >= n || nk >= n) continue;
         const nc = nk * n + ni;
+        const diagonal = !!(di && dk);
         for (let u = offsets[nc]!; u < offsets[nc + 1]!; u++) {
           const hu = heights[u]!;
-          if (this.blocked[u]) continue;
           // Walking from u to s: at most a step up (or, where allowed, a jump).
-          const diagonal = !!(di && dk);
           if (!this.canClimb(hu, h, diagonal)) continue;
           if (diagonal && (!this.near(k * n + ni, hu) || !this.near(nk * n + i, hu))) continue;
-          const step = here + (diagonal ? 1.5 : 1) * CELL + (h - hu > STEP_UP ? JUMP_COST : 0);
-          if (step < distance[u]!) {
-            if (distance[u] === Infinity) queue[tail++] = u;
-            distance[u] = step;
-          }
+          push(u, (diagonal ? 1.5 : 1) * CELL + (h - hu > STEP_UP ? JUMP_COST : 0));
         }
       }
       if (this.climb <= STEP_UP) continue;
@@ -189,12 +202,38 @@ export class BotNav {
         const nc = nk * n + ni;
         for (let u = offsets[nc]!; u < offsets[nc + 1]!; u++) {
           const rise = h - heights[u]!;
-          if (this.blocked[u] || rise <= STEP_UP || rise > this.climb) continue;
-          const step = here + 2 * CELL + JUMP_COST;
-          if (step < distance[u]!) {
-            if (distance[u] === Infinity) queue[tail++] = u;
-            distance[u] = step;
-          }
+          if (rise <= STEP_UP || rise > this.climb) continue;
+          push(u, 2 * CELL + JUMP_COST);
+        }
+      }
+    }
+    start[total] = e;
+    this.edges = { start, from: from.slice(0, e), cost: cost.slice(0, e) };
+    this.edgesClimb = this.climb;
+    return this.edges;
+  }
+
+  private search(target: number): Float32Array {
+    const total = this.grid.heights.length;
+    const distance = new Float32Array(total).fill(Infinity);
+    if (target < 0) return distance;
+    const { start, from, cost } = this.moves();
+    const blocked = this.blocked;
+    const queue = new Int32Array(total);
+    let head = 0;
+    let tail = 0;
+    distance[target] = 0;
+    queue[tail++] = target;
+    while (head < tail) {
+      const s = queue[head++]!;
+      const here = distance[s]!;
+      for (let e = start[s]!, end = start[s + 1]!; e < end; e++) {
+        const u = from[e]!;
+        if (blocked[u]) continue;
+        const step = here + cost[e]!;
+        if (step < distance[u]!) {
+          if (distance[u] === Infinity) queue[tail++] = u;
+          distance[u] = step;
         }
       }
     }
@@ -241,6 +280,40 @@ export class BotNav {
     return false;
   }
 
+  /**
+   * Where a bot at (x, y, z) is on the grid, for finding its way. The grid keeps a body's width from walls,
+   * but a body can stand closer (pressed against a wall's edge): then its own cell has no spot at its
+   * height, and it would get no way at all and walk straight at its goal, into the wall (hopping at it).
+   * So the nearest spot at its height (or below it, if it's mid-hop) within START_REACH, walked to first.
+   */
+  private startSpot(x: number, y: number, z: number): number {
+    const own = this.spotAt(x, y, z);
+    if (own >= 0 && this.under(this.grid.heights[own]!, y)) return own;
+    const { n, offsets, heights, half } = this.grid;
+    const ci = Math.floor((x + half) / CELL);
+    const ck = Math.floor((z + half) / CELL);
+    const reach = Math.ceil(START_REACH / CELL);
+    let best = -1;
+    let bestD = Infinity;
+    for (let dk = -reach; dk <= reach; dk++) for (let di = -reach; di <= reach; di++) {
+      const i = ci + di;
+      const k = ck + dk;
+      if (i < 0 || k < 0 || i >= n || k >= n) continue;
+      const c = k * n + i;
+      const d = Math.hypot(-half + (i + 0.5) * CELL - x, -half + (k + 0.5) * CELL - z);
+      if (d > START_REACH || d >= bestD) continue;
+      for (let s = offsets[c]!; s < offsets[c + 1]!; s++) {
+        if (this.under(heights[s]!, y)) { best = s; bestD = d; break; }
+      }
+    }
+    return best >= 0 ? best : own;
+  }
+
+  /** Whether a spot at height h could be what a body at height y stands on (or just hopped up from) */
+  private under(h: number, y: number): boolean {
+    return h <= y + STEP_UP + 0.1 && h >= y - HOP_HEIGHT;
+  }
+
   /** The spot nearest (x, z) that `from` can walk to (-1 if none) */
   private reachableNear(x: number, z: number, from: number): number {
     const key = this.grid.cellOf(x, z);
@@ -273,8 +346,9 @@ export class BotNav {
   /** A point a few metres along the way from (x, y, z) to the target, or null if there's no way. */
   waypoint(x: number, y: number, z: number, tx: number, ty: number, tz: number): Waypoint | null {
     let target = this.spotAt(tx, ty + 0.3, tz);
-    let cur = this.spotAt(x, y, z);
+    let cur = this.startSpot(x, y, z);
     if (cur < 0) return null;
+    const start = cur;
     // A target inside a wall, or somewhere sealed off (a spot picked on the straight line between
     // bases, on a maze map): head for the nearest place that can be reached instead.
     if (target < 0 || this.field(target)[cur] === Infinity) target = this.reachableNear(tx, tz, cur);
@@ -319,11 +393,12 @@ export class BotNav {
       cur = best;
       path.push(cur);
     }
-    // Where to walk: the furthest point along the way that's a clear straight walk (the next spot, if none is).
-    let walk = cur;
+    // Where to walk: the furthest point along the way that's a clear straight walk (if none is, the next
+    // spot, or back onto the grid first when off it).
+    const offGrid = start !== this.spotAt(x, y, z);
+    let walk = offGrid || !path.length ? start : path[0]!;
     for (let i = path.length - 1; i >= 0; i--) {
-      walk = path[i]!;
-      if (i === 0 || this.clearWalk(x, z, y, walk)) break;
+      if (this.clearWalk(x, z, y, path[i]!)) { walk = path[i]!; break; }
     }
     const c = this.spotCell[cur]!;
     const wc = this.spotCell[walk]!;
@@ -334,7 +409,7 @@ export class BotNav {
       z: -half + (((c / n) | 0) + 0.5) * CELL,
       walkX: -half + ((wc % n) + 0.5) * CELL,
       walkZ: -half + (((wc / n) | 0) + 0.5) * CELL,
-      dist: field[this.spotAt(x, y, z)]!,
+      dist: field[start]!,
       ...(jump ? { jump } : {}),
     };
   }

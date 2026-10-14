@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { Mover } from '../movement';
+import { pickRespawn } from '../spawnPlan';
 import { GUNS, shotDamage } from '../gunStats';
 import {
   FLAG_BASES, FLAG_RADIUS, KNIFE_COOLDOWN, KNIFE_DAMAGE, KNIFE_RANGE, MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_RANGE, MODES, TEAM_INFO, gunGameGun, otherTeam,
@@ -930,13 +931,21 @@ export class BotHost {
     const { api } = this;
     const others = this.others(bot).filter((b) => b.alive);
     const enemies = others.filter((b) => this.isEnemyOf(bot, b.id));
-    const all = api.spawns().filter((s) => (bot.team ? s.team === bot.team : true)).map((s) => s.pos);
+    // Free-for-all: the pickup spots too (all over the map), as for players (game.ts pickSpawn).
+    const spots = (api.map()?.pickupSpots ?? []).map((p) => new THREE.Vector3(p.x, p.y, p.z));
+    const all = bot.team ? api.spawns().filter((s) => s.team === bot.team).map((s) => s.pos) : [...api.spawns().map((s) => s.pos), ...spots];
     // Never onto someone (bodies are solid).
     const free = all.filter((p) => others.every((o) => Math.hypot(o.x - p.x, o.z - p.z) > SPAWN_CLEARANCE));
     const points = free.length ? free : all;
-    const scored = points.map((p) => ({ p, d: enemies.length ? Math.min(...enemies.map((e) => Math.hypot(e.x - p.x, e.z - p.z))) : Math.random() * 100 }));
-    scored.sort((a, b) => b.d - a.d);
-    const pick = at ?? scored[Math.floor(Math.random() * Math.min(3, scored.length))]?.p ?? new THREE.Vector3();
+    const safety = (p: THREE.Vector3) => (enemies.length ? Math.min(...enemies.map((e) => Math.hypot(e.x - p.x, e.z - p.z))) : Infinity);
+    let pick: THREE.Vector3;
+    if (at) pick = at;
+    else if (!bot.team) pick = points[pickRespawn(points.length, (k) => safety(points[k]!))] ?? new THREE.Vector3();
+    else {
+      const scored = points.map((p) => ({ p, d: enemies.length ? safety(p) : Math.random() * 100 }));
+      scored.sort((a, b) => b.d - a.d);
+      pick = scored[Math.floor(Math.random() * Math.min(3, scored.length))]?.p ?? new THREE.Vector3();
+    }
     bot.mover.teleport(at ? at.clone() : pick.clone().add(new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5)));
     bot.yaw = Math.atan2(pick.x, pick.z);
     bot.pitch = 0;

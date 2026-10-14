@@ -60,3 +60,21 @@ export function roundSpawn(
   const r = lap ? CROWD_STEP * lap : 0;
   return { index: order[rank % order.length]!, dx: Math.cos(angle) * r, dz: Math.sin(angle) * r };
 }
+
+/** A free-for-all respawn counts as safe this far from the nearest enemy (m) */
+export const RESPAWN_SAFE = 20;
+
+/**
+ * Where to come back in free-for-all: a random spot among those that are safe (`safety(i)`, roughly the
+ * distance to the nearest enemy, at least RESPAWN_SAFE), so players reappear all over the map. Picking the
+ * farthest spots every time sent everyone back to the same few corners. With none safe, one of the three
+ * safest. Returns an index into the candidates (-1 for none).
+ */
+export function pickRespawn(count: number, safety: (i: number) => number, rand: () => number = Math.random): number {
+  if (!count) return -1;
+  const scores = Array.from({ length: count }, (_, i) => safety(i));
+  const safe = scores.flatMap((s, i) => (s >= RESPAWN_SAFE ? [i] : []));
+  if (safe.length) return safe[Math.floor(rand() * safe.length)]!;
+  const best = scores.map((s, i) => [s, i] as const).sort((a, b) => b[0] - a[0]).slice(0, 3);
+  return best[Math.floor(rand() * best.length)]![1];
+}

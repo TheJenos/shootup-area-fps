@@ -224,6 +224,8 @@ interface Checkpoint {
 
 /** Evaluate every this many iterations, on held-out maps against the scripted bot */
 const EVAL_EVERY = 25;
+/** Play is handed out in about this many chunks per worker an iteration (see "1. Play") */
+const CHUNKS_PER_WORKER = 4;
 /** Evaluations averaged to judge the best policy */
 const SCORE_WINDOW = 3;
 /** Matches per mode in an evaluation (3 swung by ±0.3 K/D from one to the next) */
@@ -357,9 +359,21 @@ async function main(): Promise<void> {
 
     // 1. Play.
     view?.broadcast('status', { phase: 'playing', iteration: ckpt.iteration + 1, steps: ckpt.steps, stage: ckpt.stage, workers, batch: batchSize });
-    const results = await Promise.all(pool.map((w) => ask<Extract<FromWorker, { type: 'rollout' }>>(w, {
-      type: 'rollout', steps: Math.ceil(batchSize / workers), stage: ckpt.stage, weights, snapshots: fresh, pool: snapshotIds,
-    })));
+    // In chunks, each worker taking the next as soon as it's done: on a machine with fast and slow cores
+    // (an M4's 4 performance + 6 efficiency), equal shares had the fast workers finish early and wait for the
+    // slow ones every iteration. (New snapshots go with each worker's first chunk only.)
+    const chunk = Math.max(512, Math.ceil(batchSize / (workers * CHUNKS_PER_WORKER)));
+    let left = batchSize;
+    const results: Extract<FromWorker, { type: 'rollout' }>[] = [];
+    await Promise.all(pool.map(async (w) => {
+      for (let first = true; left > 0; first = false) {
+        const steps = Math.min(chunk, left);
+        left -= steps;
+        results.push(await ask<Extract<FromWorker, { type: 'rollout' }>>(w, {
+          type: 'rollout', steps, stage: ckpt.stage, weights, snapshots: first ? fresh : [], pool: snapshotIds,
+        }));
+      }
+    }));
     const rolled = Date.now();
     const batch = concatBatches(results.map((r) => r.batch));
     const stats = mergeStats(results.map((r) => r.stats));

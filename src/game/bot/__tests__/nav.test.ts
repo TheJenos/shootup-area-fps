@@ -61,4 +61,16 @@ describe('bot paths', () => {
       expect(Math.hypot(dx, dz)).toBeGreaterThan(0.3);
     }
   });
+
+  it('finds its way from right against a wall edge (closer than the grid keeps), and while hopping there', () => {
+    // The same wall; the bot pressed against its east end, on the south side, heading north round it.
+    const nav = navOn([{ x: -2, z: 0, w: 8, d: 1, h: 3 }]);
+    for (const y of [0, 1.1]) {
+      const w = nav.waypoint(1.8, y, 0.8, 1.8, 0, -3);
+      expect(w).not.toBeNull();
+      // Away from the wall's face first (south or east), not straight north into it.
+      expect(w!.walkZ > 0.8 || w!.walkX > 1.8).toBe(true);
+      expect(w!.dist).toBeLessThan(10);
+    }
+  });
 });

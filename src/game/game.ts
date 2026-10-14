@@ -43,7 +43,7 @@ import {
   MELEE_RANGE, MODES, MVP_TIME, RESULTS_TIME, TEAMS, TEAM_INFO, gunGameGun, otherTeam, teamSpawns,
 } from './modes';
 import { MomentTracker } from './moments';
-import { roundSpawn, spawnSalt } from './spawnPlan';
+import { pickRespawn, roundSpawn, spawnSalt } from './spawnPlan';
 import { ReplayDirector, ReplayRecorder } from './replay';
 import { RoomConnection, isBotId, randomId } from '../net/network';
 import { BotHost } from './bot/botHost';
@@ -3184,10 +3184,15 @@ export class Game {
     const free = all.filter((p) => standing.every((o) => Math.hypot(o.x - p.x, o.z - p.z) > SPAWN_CLEARANCE));
     const points = free.length ? free : all;
     // Far from enemies, and out of their sight: a spot an enemy can see counts as much nearer than it is.
-    const scored = points.map((p) => ({
-      p,
-      d: enemies.length ? Math.min(...enemies.map((e) => e.distanceTo(p))) - (this.enemySees(p, enemies) ? SPAWN_SEEN_PENALTY : 0) : Math.random() * 100,
-    }));
+    const safety = (p: THREE.Vector3) => (enemies.length
+      ? Math.min(...enemies.map((e) => e.distanceTo(p))) - (this.enemySees(p, enemies) ? SPAWN_SEEN_PENALTY : 0)
+      : Infinity);
+    if (!this.team) {
+      // Free-for-all: anywhere safe, at random (see pickRespawn).
+      const i = pickRespawn(points.length, (k) => safety(points[k]!));
+      return (points[i] ?? new THREE.Vector3()).clone();
+    }
+    const scored = points.map((p) => ({ p, d: enemies.length ? safety(p) : Math.random() * 100 }));
     scored.sort((a, b) => b.d - a.d);
     const choice = scored[Math.floor(Math.random() * Math.min(3, scored.length))];
     return (choice?.p ?? new THREE.Vector3()).clone();
