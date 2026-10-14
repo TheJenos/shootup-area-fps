@@ -275,9 +275,13 @@ export class PpoTrainer {
 
   /**
    * Train on a batch: a few epochs of shuffled minibatches. `gradients` computes a minibatch's
-   * gradients for the current weights (by default right here, on this thread).
+   * gradients for the current weights (by default right here, on this thread). `valueOnly`: leave the
+   * policy as it is and only fit the value network (warming up a new value network for a trained policy,
+   * whose advantages would otherwise be noise and could undo what it knows).
    */
-  async update(batch: Batch, lr = this.cfg.lr, rand: () => number = Math.random, gradients?: GradientFn): Promise<UpdateStats> {
+  async update(
+    batch: Batch, lr = this.cfg.lr, rand: () => number = Math.random, gradients?: GradientFn, valueOnly = false,
+  ): Promise<UpdateStats> {
     const { cfg, policy } = this;
     const n = batch.n;
     const adv = PpoTrainer.normalizedAdvantages(batch);
@@ -293,9 +297,11 @@ export class PpoTrainer {
       let klRows = 0;
       for (let start = 0; start + mb <= n; start += mb) {
         const g = await compute(order.subarray(start, start + mb), mb);
-        this.adamPolicy.step(policy.net.params, g.policy, lr, cfg.maxGradNorm);
-        this.adamStd.step(policy.logStd, g.logStd, lr);
-        for (let d = 0; d < policy.logStd.length; d++) policy.logStd[d] = clampAimLogStd(policy.logStd[d]!);
+        if (!valueOnly) {
+          this.adamPolicy.step(policy.net.params, g.policy, lr, cfg.maxGradNorm);
+          this.adamStd.step(policy.logStd, g.logStd, lr);
+          for (let d = 0; d < policy.logStd.length; d++) policy.logStd[d] = clampAimLogStd(policy.logStd[d]!);
+        }
         this.adamValue.step(this.value.params, g.value, lr, cfg.maxGradNorm);
         stats.policyLoss += g.policyLoss / g.rows;
         stats.valueLoss += g.valueLoss / g.rows;
@@ -307,7 +313,7 @@ export class PpoTrainer {
       }
       stats.epochs = epoch + 1;
       stats.approxKl = klRows ? kl / klRows : 0;
-      if (stats.approxKl > cfg.targetKl) break;
+      if (stats.approxKl > cfg.targetKl && !valueOnly) break;
     }
     if (counted) {
       stats.policyLoss /= counted;

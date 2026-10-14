@@ -3,16 +3,17 @@
  * cell wherever the route passes, then open areas (blobs) grow out round parts of the path and the
  * base, and everything else is solid (buildings or cliffs, edge.ts).
  *
- * The shape is a grid of BLOCK-sized blocks. A maze cell is CELL blocks: a corridor CORRIDOR blocks
- * wide down its middle and a block of wall on each side, so two corridors side by side are always
- * two blocks apart unless the route joins them. Blobs keep it that way: every open block carries
+ * The shape is a grid of BLOCK-sized blocks. A maze cell is CELL blocks. Corridors run CORRIDOR blocks
+ * wide along the route's centre lines, smoothed so every bend is a curve, which leaves two blocks of
+ * wall between corridors side by side unless the route joins them. Blobs keep it that way: every open block carries
  * how far along the route it is, and a blob never opens a block next to one much further along or
  * further back, so it can't join two parts of the path into a shortcut (the loops are the only ones).
  *
  * Red's half is laid out, then copied under the map's symmetry.
  */
 
-import { len, type Rect } from './dmath';
+import { len, segDistance, type Rect } from './dmath';
+import { around, joined } from './maze';
 import { KIND, type Route } from './route';
 import type { Rng } from './rng';
 import type { SizeParams } from './spec';
@@ -51,6 +52,8 @@ export interface Layout {
   step: Float32Array;
   /** Red's flag */
   base: { x: number; z: number };
+  /** The route's smoothed centre lines in red's half: [x, z, steps along the route] */
+  lines: RouteLine[];
   /** Blobs in red's half: their blocks */
   blobs: { cells: number[]; x: number; z: number }[];
   route: Route;
@@ -88,76 +91,109 @@ export function valueNoise(rng: Rng, size = 32): (x: number, z: number) => numbe
   };
 }
 
+export interface RouteLine {
+  role: 'main' | 'lane' | 'pocket' | 'loop';
+  points: [number, number, number][];
+}
+
+/** Corner cutting (Chaikin): each pass replaces every corner with two points a quarter of the way along its sides */
+function smooth(points: [number, number, number][], passes = 3): [number, number, number][] {
+  let pts = points;
+  for (let p = 0; p < passes; p++) {
+    if (pts.length < 3) return pts;
+    const out: [number, number, number][] = [pts[0]!];
+    for (let j = 1; j < pts.length; j++) {
+      const a = pts[j - 1]!;
+      const b = pts[j]!;
+      const mix = (t: number): [number, number, number] => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+      if (j > 1) out.push(mix(0.25));
+      if (j < pts.length - 1) out.push(mix(0.75));
+    }
+    out.push(pts[pts.length - 1]!);
+    pts = out;
+  }
+  return pts;
+}
+
+/** The route's centre lines through the cell centres, smoothed: the main path and each lane into the band, each pocket from where it leaves the path, each loop */
+export function routeLines(P: SizeParams, route: Route): RouteLine[] {
+  const at = (c: number): [number, number, number] => [...cellCentre(P, c), route.label[c]!];
+  const main = route.main.map(at);
+  const cross = route.main[route.main.length - 1]!;
+  main.push([cellCentre(P, cross)[0], 0, route.label[cross]!]);
+  const lines: RouteLine[] = [{ role: 'main', points: smooth(main) }];
+  // Each lane from where it leaves the main path, down into the band.
+  for (const lane of route.lanes) {
+    const from = route.main.find((c) => around(route.maze, lane[0]!).includes(c) && joined(route.maze, c, lane[0]!));
+    const end = lane[lane.length - 1]!;
+    const pts = [...(from !== undefined ? [at(from)] : []), ...lane.map(at), [cellCentre(P, end)[0], 0, route.label[end]!] as [number, number, number]];
+    lines.push({ role: 'lane', points: smooth(pts) });
+  }
+  for (const p of route.pockets) {
+    const from = around(route.maze, p[0]!).find((c) => route.kind[c] !== KIND.none && route.kind[c] !== KIND.pocket && joined(route.maze, c, p[0]!));
+    lines.push({ role: 'pocket', points: smooth([...(from !== undefined ? [at(from)] : []), ...p.map(at)]) });
+  }
+  for (const l of route.loops) lines.push({ role: 'loop', points: smooth(l.cells.map(at)) });
+  return lines;
+}
+
 export function buildLayout(rng: Rng, sym: Symmetry, P: SizeParams, route: Route): Layout {
   const half = mapHalf(P);
   const n = (half * 2) / BLOCK;
   const mid = n / 2;
   const tag = new Uint8Array(n * n);
   const step = new Float32Array(n * n).fill(-1);
-  const { cols, maze, kind, label } = route;
+  const { label } = route;
   const at = (i: number, k: number) => k * n + i;
-  /** Block (i, k) of cell c at offset (ox, oz) */
-  const blockOf = (c: number, ox: number, oz: number) => at(RING + (c % cols) * CELL + ox, mid + Math.floor(c / cols) * CELL + oz);
   const open = (b: number, t: Tag, s: number) => {
     if (tag[b] === TAG.core || (tag[b] === TAG.corridor && t !== TAG.core)) return;
     tag[b] = t;
     step[b] = step[b]! < 0 ? s : Math.min(step[b]!, s);
   };
 
-  // Corridors through every used cell, and through the walls the route passes.
-  const lo = (CELL - CORRIDOR) / 2;
-  const hi = lo + CORRIDOR - 1;
-  for (let c = cols; c < cols * route.rows; c++) {
-    if (kind[c] === KIND.none) continue;
-    const s = label[c]!;
-    for (let oz = lo; oz <= hi; oz++) for (let ox = lo; ox <= hi; ox++) open(blockOf(c, ox, oz), TAG.corridor, s);
-    for (const [e, dx] of [[c + 1, 1], [c + cols, 0]] as const) {
-      if (e >= cols * route.rows || (dx && (c % cols) === cols - 1) || kind[e] === KIND.none) continue;
-      const joinedTo = dx ? (maze.open[c]! & 1) !== 0 : (maze.open[c]! & 2) !== 0;
-      if (!joinedTo) continue;
-      const se = Math.min(s, label[e]!) + 0.5;
-      for (let a = lo; a <= hi; a++) {
-        if (dx) { open(blockOf(c, CELL - 1, a), TAG.corridor, se); open(blockOf(e, 0, a), TAG.corridor, se); }
-        else { open(blockOf(c, a, CELL - 1), TAG.corridor, se); open(blockOf(e, a, 0), TAG.corridor, se); }
+  // Corridors along the route's smoothed centre lines: CORRIDOR blocks wide, the middle strip (core)
+  // half that, so every bend is a curve rather than a corner.
+  const lines = routeLines(P, route);
+  const halfWidth = (CORRIDOR * BLOCK) / 2;
+  const coreHalf = halfWidth / 2;
+  const [a, b_] = route.band;
+  const [bandA] = cellCentre(P, a);
+  const [bandB] = cellCentre(P, b_);
+  // Up to the last block short of row 1's wall.
+  const bandR = (CELL - 1) * BLOCK - 1;
+  // Each segment stamps the blocks within reach of it: the nearest line decides a block's step.
+  const nearest = new Float64Array(n * n).fill(Infinity);
+  const nearStep = new Float32Array(n * n);
+  for (const l of lines) {
+    const pts = l.points;
+    for (let j = 1; j < pts.length; j++) {
+      const [ax, az, as] = pts[j - 1]!;
+      const [cx, cz, cs] = pts[j]!;
+      const i0 = Math.max(0, Math.floor((Math.min(ax, cx) - halfWidth + half) / BLOCK));
+      const i1 = Math.min(n - 1, Math.floor((Math.max(ax, cx) + halfWidth + half) / BLOCK));
+      const k0 = Math.max(mid, Math.floor((Math.min(az, cz) - halfWidth + half) / BLOCK));
+      const k1 = Math.min(n - 1, Math.floor((Math.max(az, cz) + halfWidth + half) / BLOCK));
+      for (let k = k0; k <= k1; k++) {
+        const bz = -half + (k + 0.5) * BLOCK;
+        for (let i = i0; i <= i1; i++) {
+          const hit = segDistance(-half + (i + 0.5) * BLOCK, bz, ax, az, cx, cz);
+          const b = at(i, k);
+          if (hit.d < nearest[b]!) { nearest[b] = hit.d; nearStep[b] = as + (cs - as) * hit.t; }
+        }
       }
     }
   }
-  // The core: the middle two blocks of each corridor, through the passages too.
-  const coreLo = CELL / 2 - 1;
-  const coreHi = CELL / 2;
-  for (let c = cols; c < cols * route.rows; c++) {
-    if (kind[c] === KIND.none) continue;
-    const s = label[c]!;
-    for (let oz = coreLo; oz <= coreHi; oz++) for (let ox = coreLo; ox <= coreHi; ox++) open(blockOf(c, ox, oz), TAG.core, s);
-    for (const e of [c + 1, c - 1, c + cols, c - cols]) {
-      if (e < 0 || e >= cols * route.rows || kind[e] === KIND.none) continue;
-      if (Math.abs(e - c) === 1 && Math.floor(e / cols) !== Math.floor(c / cols)) continue;
-      const a = Math.min(c, e);
-      const joinedTo = Math.abs(e - c) === 1 ? (maze.open[a]! & 1) !== 0 : (maze.open[a]! & 2) !== 0;
-      if (!joinedTo) continue;
-      const dx = e - c === 1 ? 1 : e - c === -1 ? -1 : 0;
-      const dz = e - c === cols ? 1 : e - c === -cols ? -1 : 0;
-      // From the centre to this cell's edge on that side.
-      for (let t = 1; t <= CELL / 2; t++) for (let o = coreLo; o <= coreHi; o++) {
-        const ox = dx ? (dx > 0 ? coreHi + t : coreLo - t) : o;
-        const oz = dz ? (dz > 0 ? coreHi + t : coreLo - t) : o;
-        if (ox < 0 || oz < 0 || ox >= CELL || oz >= CELL) continue;
-        open(blockOf(c, ox, oz), TAG.core, s);
-      }
+  for (let k = mid; k < n; k++) {
+    const bz = -half + (k + 0.5) * BLOCK;
+    for (let i = 0; i < n; i++) {
+      const b = at(i, k);
+      if (nearest[b]! <= coreHalf) open(b, TAG.core, nearStep[b]!);
+      else if (nearest[b]! <= halfWidth) open(b, TAG.corridor, nearStep[b]!);
+      // The band: a rounded plaza across the middle line, from the crossing to its copy's.
+      if (bz > bandR) continue;
+      const toBand = segDistance(-half + (i + 0.5) * BLOCK, bz, bandA, 0, bandB, 0);
+      if (toBand.d <= bandR) open(b, TAG.band, label[Math.round(a + (b_ - a) * toBand.t)]!);
     }
-  }
-
-  // The band: the middle plaza, from the middle line up to the corridor's far side in row 0, and
-  // the passage up into the crossing cell.
-  const [a, b] = route.band;
-  for (let i = RING + a * CELL + lo; i <= RING + b * CELL + hi; i++) {
-    const s = label[Math.min(b, Math.max(a, Math.floor((i - RING) / CELL)))]!;
-    for (let k = mid; k <= mid + hi; k++) open(at(i, k), TAG.band, s);
-  }
-  const cross = route.main[route.main.length - 1]!;
-  for (let o = lo; o <= hi; o++) {
-    open(blockOf(cross - cols, o, CELL - 1), TAG.corridor, label[cross]!);
-    open(blockOf(cross, o, 0), TAG.corridor, label[cross]!);
   }
 
   /** Whether block (i, k) may open with route step s: in red's half, off the ring, nothing much further along beside it */
@@ -210,14 +246,21 @@ export function buildLayout(rng: Rng, sym: Symmetry, P: SizeParams, route: Route
   const [fx, fz] = cellCentre(P, baseCell);
   grow(fx, fz, P.baseR, label[baseCell]!, TAG.yard);
 
-  // Blobs: round bends of the path, pocket ends and loops, never two in the same place.
-  const main = route.main;
-  const bends = main.filter((c, i) => i > 0 && i < main.length - 1 && c - main[i - 1]! !== main[i + 1]! - c);
-  const seeds = [
-    ...rng.shuffle([...bends, main[1]!]),
-    ...rng.shuffle(route.pockets.map((p) => p[p.length - 1]!)),
-    ...rng.shuffle(route.loops.flatMap((l) => l.cells)),
+  // Blobs: along every route, not just the main path. Each route offers its bends first, then the
+  // rest of its cells; the routes take turns, so every lane, loop and pocket opens up somewhere.
+  const bendsOf = (cells: readonly number[]) => cells.filter((c, i) => i > 0 && i < cells.length - 1 && c - cells[i - 1]! !== cells[i + 1]! - c);
+  const offers = (cells: readonly number[]) => {
+    const bends = bendsOf(cells);
+    return [...rng.shuffle([...bends]), ...rng.shuffle(cells.filter((c) => !bends.includes(c)))];
+  };
+  const queues = [
+    offers(route.main.slice(1)),
+    ...route.lanes.map((lane) => offers(lane)),
+    ...route.loops.map((l) => offers(l.cells)),
+    ...route.pockets.map((p) => [p[p.length - 1]!]),
   ];
+  const seeds: number[] = [];
+  for (let round = 0; queues.some((q) => round < q.length); round++) for (const q of queues) if (round < q.length) seeds.push(q[round]!);
   const blobs: Layout['blobs'] = [];
   const want = rng.int(P.blobs[0], P.blobs[1]);
   const taken: [number, number][] = [[fx, fz]];
@@ -245,7 +288,7 @@ export function buildLayout(rng: Rng, sym: Symmetry, P: SizeParams, route: Route
     }
   }
 
-  return { sym, outline: { cell: BLOCK, n, half, inside }, tag, step, base: { x: fx, z: fz }, blobs, route };
+  return { sym, outline: { cell: BLOCK, n, half, inside }, tag, step, base: { x: fx, z: fz }, lines, blobs, route };
 }
 
 /** The tag of the block under (x, z) */

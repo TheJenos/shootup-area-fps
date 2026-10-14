@@ -42,11 +42,14 @@ export class Gear {
   ignore: string | null = null;
   /** No ability before this (s): one at a time, like a person pressing keys */
   nextAbility = 0;
+  /** Spare rifle rounds, as a player has them (Infinity in modes that give everyone endless ammo) */
+  rifleReserve = GUNS.rifle.reserve;
 
-  /** Back to just the rifle, nothing in the slots, no buffs. */
+  /** Back to just the rifle (its spare rounds topped up), nothing in the slots, no buffs. */
   reset(): void {
     this.inventory.clear();
     this.special = null;
+    if (Number.isFinite(this.rifleReserve)) this.rifleReserve = GUNS.rifle.reserve;
     this.shieldHp = 0;
     this.shieldUntil = this.speedUntil = this.lifestealUntil = this.cloakUntil = this.blindUntil = 0;
     this.fireTick = 0;
@@ -56,7 +59,10 @@ export class Gear {
 
   /** Whether picking `type` up would do anything for us */
   wants(type: PickupType, rules: PickupRules): boolean {
-    if (type === 'ammo') return rules.ammo && !!this.special && this.special.reserve < maxReserve(this.special.kind);
+    if (type === 'ammo') {
+      // Running low on rifle rounds (under two magazines), or the picked-up gun has room for more.
+      return rules.ammo && (this.rifleReserve < GUNS.rifle.mag * 2 || (!!this.special && this.special.reserve < maxReserve(this.special.kind)));
+    }
     if (isPickupGun(type)) {
       if (!rules.standard || !rules.guns) return false;
       // A gun we don't have yet, or more rounds for the one we have.
@@ -68,7 +74,8 @@ export class Gear {
   /** Take a claimed pickup. Returns what's left over to put back on the floor (an ability with no room). */
   take(type: PickupType, uses: number | undefined): AbilityType | null {
     if (type === 'ammo') {
-      // An ammo box: one more magazine for the picked-up gun (the rifle never runs dry for bots).
+      // An ammo box, as a player gets it: the rifle's spares back to full, and one more magazine for the picked-up gun.
+      if (Number.isFinite(this.rifleReserve)) this.rifleReserve = Math.max(this.rifleReserve, GUNS.rifle.reserve);
       if (this.special) this.special.reserve = Math.min(this.special.reserve + GUNS[this.special.kind].mag, maxReserve(this.special.kind));
       return null;
     }

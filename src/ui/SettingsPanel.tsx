@@ -342,6 +342,14 @@ export function SettingsPanel({ onClose, profile }: Props) {
           <label className="setting check">
             <input
               type="checkbox"
+              checked={current.spatialAudio}
+              onChange={(e) => settings.update({ spatialAudio: e.target.checked })}
+            />
+            <span>3D audio for headphones (hear what's behind, above and below you)</span>
+          </label>
+          <label className="setting check">
+            <input
+              type="checkbox"
               checked={current.screenShake}
               onChange={(e) => settings.update({ screenShake: e.target.checked })}
             />

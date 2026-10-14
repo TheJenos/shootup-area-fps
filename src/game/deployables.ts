@@ -82,6 +82,18 @@ export class SmokeField {
     return false;
   }
 
+  /** Whether the line from `a` to `b` passes through a cloud (its middle within the cloud's radius of the line) */
+  blocksLine(a: THREE.Vector3, b: THREE.Vector3): boolean {
+    if (!this.smokes.size) return false;
+    const line = new THREE.Line3(a, b);
+    const closest = new THREE.Vector3();
+    for (const s of this.smokes.values()) {
+      line.closestPointToPoint(s.group.position, true, closest);
+      if (closest.distanceTo(s.group.position) < SMOKE_RADIUS * 0.85) return true;
+    }
+    return false;
+  }
+
   update(): void {
     const now = performance.now();
     for (const [id, s] of this.smokes) {
@@ -207,6 +219,11 @@ export class WallField {
   /** Every standing barrier, for blasts to find */
   list(): { id: string; owner: string; box: THREE.Box3 }[] {
     return [...this.walls].map(([id, w]) => ({ id, owner: w.owner, box: w.box }));
+  }
+
+  /** The standing barriers' meshes (for line-of-sight checks) */
+  meshes(): THREE.Mesh[] {
+    return [...this.walls.values()].map((w) => w.mesh);
   }
 
   /** Take `amount` off a barrier; at 0 it breaks (and is removed). Null if there's no such barrier. */

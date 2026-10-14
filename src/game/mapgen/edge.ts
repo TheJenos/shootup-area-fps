@@ -1,7 +1,7 @@
 /**
  * What stands outside the map's shape: buildings (town and refinery maps) or cliffs (quarries and
- * highlands) over every outside block near the play area, including the walls between corridors,
- * detailed on the faces the players see.
+ * highlands) over every outside block next to the play area, including the walls between corridors,
+ * and filling every pocket the play area walls in, detailed on the faces the players see.
  */
 
 import { groundRange } from './heightField';
@@ -23,6 +23,30 @@ export interface EdgeStyle {
 
 /** How deep the walls round the play area are (blocks): further out is hidden behind them, and left bare */
 const REACH = 1;
+
+/** Outside blocks the grid's edge can't reach through other outside blocks: pockets walled in by the play area */
+function enclosed(o: Outline): Uint8Array {
+  const { n } = o;
+  const out = new Uint8Array(n * n);
+  for (let c = 0; c < n * n; c++) if (!o.inside[c]) out[c] = 1;
+  const queue: number[] = [];
+  for (let i = 0; i < n; i++) {
+    for (const c of [i, (n - 1) * n + i, i * n, i * n + n - 1]) if (out[c] === 1) { out[c] = 0; queue.push(c); }
+  }
+  for (let h = 0; h < queue.length; h++) {
+    const c = queue[h]!;
+    const i = c % n;
+    const k = (c - i) / n;
+    for (const [di, dk] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      const bi = i + di;
+      const bk = k + dk;
+      if (bi < 0 || bk < 0 || bi >= n || bk >= n) continue;
+      const d = bk * n + bi;
+      if (out[d] === 1) { out[d] = 0; queue.push(d); }
+    }
+  }
+  return out;
+}
 
 /** Blocks from each block to the nearest inside one (Chebyshev), capped at REACH + 1 */
 function nearInside(o: Outline): Uint8Array {
@@ -88,22 +112,30 @@ function faceDetails(f: Face, ground: Ground, top: number, style: EdgeStyle, rng
  * sometimes with a smaller, taller part on top, and detailed on the faces the players see. Built in
  * red's half and copied, with blue's half in blue's color.
  */
-export function edgeMasses(o: Outline, ground: Ground, sym: Symmetry, style: EdgeStyle, rng: Rng): MapBox[] {
+export function edgeMasses(o: Outline, ground: Ground, sym: Symmetry | 'none', style: EdgeStyle, rng: Rng): MapBox[] {
   const { n, cell, half } = o;
+  const mid = n / 2;
   const taken = new Uint8Array(n * n);
   const near = nearInside(o);
-  const free = (i: number, k: number) => i < n && k < n && !o.inside[k * n + i] && !taken[k * n + i] && near[k * n + i]! <= REACH;
+  // Pockets walled in by the play area are filled solid, in big pieces; elsewhere just the band round it.
+  const pocket = enclosed(o);
+  // An asymmetric map ('none') is walled in over both halves as it stands, nothing copied; a mass never
+  // reaches across the middle line, so each half's wear their own team's colour.
+  const both = sym === 'none';
+  const sameHalf = (k: number, k2: number) => !both || (k < mid) === (k2 < mid);
+  const free = (i: number, k: number) => i < n && k < n && !o.inside[k * n + i] && !taken[k * n + i] && (near[k * n + i]! <= REACH || pocket[k * n + i] === 1);
   const boxes: MapBox[] = [];
-  for (let k = n / 2; k < n; k++) {
+  for (let k = both ? 0 : mid; k < n; k++) {
     for (let i = 0; i < n; i++) {
       if (!free(i, k)) continue;
       // Grow along x, then along z while the whole row is free.
       let w = 1;
-      const maxW = rng.int(3, 7);
+      const big = pocket[k * n + i] === 1;
+      const maxW = big ? 16 : rng.int(3, 7);
       while (w < maxW && free(i + w, k)) w++;
       let d = 1;
-      const maxD = rng.int(3, 7);
-      while (d < maxD && k + d < n && Array.from({ length: w }, (_, a) => free(i + a, k + d)).every(Boolean)) d++;
+      const maxD = big ? 16 : rng.int(3, 7);
+      while (d < maxD && k + d < n && sameHalf(k, k + d) && Array.from({ length: w }, (_, a) => free(i + a, k + d)).every(Boolean)) d++;
       for (let b = 0; b < d; b++) for (let a = 0; a < w; a++) taken[(k + b) * n + i + a] = 1;
       const minX = -half + i * cell;
       const minZ = -half + k * cell;
@@ -142,6 +174,10 @@ export function edgeMasses(o: Outline, ground: Ground, sym: Symmetry, style: Edg
         const det = faceDetails(f, ground, top, style, rng);
         part.push(...det.boxes);
         accents.push(...det.accents);
+      }
+      if (sym === 'none') {
+        boxes.push(...part, ...(k >= mid ? accents : accents.map((b) => ({ ...b, color: TEAM_ACCENT.blue }))));
+        continue;
       }
       boxes.push(...part, ...accents, ...tPiece(sym, { boxes: part }).boxes);
       boxes.push(...tPiece(sym, { boxes: accents }).boxes.map((b) => ({ ...b, color: TEAM_ACCENT.blue })));

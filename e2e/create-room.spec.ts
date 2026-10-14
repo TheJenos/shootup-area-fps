@@ -110,6 +110,21 @@ test.describe('create room', () => {
     await expect.poll(async () => (await db.get(`rooms/${code}/game`)).mapHash).toBe(state.mapHash);
   });
 
+  test('only Capture the Flag plays on a symmetric map; every other mode on an asymmetric one', async ({ players, rooms }) => {
+    for (const [mode, asym] of [[/^FFA/, true], [/^TDM/, true], [/^CTF/, null]] as const) {
+      const p = await players.open(uniqueName('Shaper'));
+      await p.gotoLobby();
+      const code = rooms.track(await p.createRoom({ mode, seed: 'E2EASYM', size: 'Small' }));
+      // Stored with the room and its round, so every client builds the same map
+      expect((await db.get(`lobby/${code}`)).asym ?? null).toBe(asym);
+      expect((await db.get(`rooms/${code}/game`)).asym ?? null).toBe(asym);
+      const symmetry = await p.page.evaluate(() => (window as any).game.map.layout.symmetry);
+      if (asym) expect(symmetry).toBe('none');
+      else expect(symmetry).not.toBe('none');
+      await p.close();
+    }
+  });
+
   test('a blank room name becomes "<name>\'s room", and a blank seed a random map', async ({ players, rooms }) => {
     const p = await players.open(uniqueName('Blank'));
     await p.gotoLobby();

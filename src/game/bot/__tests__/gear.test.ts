@@ -12,6 +12,8 @@ vi.mock('../../textures', () => ({ boxTexture: () => null, hazardTexture: () => 
 
 import { loadPhysics, type PhysicsWorld } from '../../physics';
 import { generateMap, groundHeight, toSpec, type MapData } from '../../mapgen';
+import { NavGrid } from '../../mapgen/navgrid';
+import { BotNav } from '../nav';
 import { baseRules } from '../../rules';
 import { Policy } from '../policy';
 import { Gear } from '../gear';
@@ -79,6 +81,8 @@ function room(seed = 'GEARTEST') {
   const api: BotHostApi = {
     selfId: 'HUMAN',
     notify: () => {},
+    sightBlocked: () => false,
+    barriers: () => [],
     net: {
       addBot: async (id: string, state: PlayerState) => { players[id] = state; },
       sendStateAs: async (id: string, s: Partial<PlayerState>) => { log.states.push(s); Object.assign(players[id] ?? {}, s); },
@@ -154,7 +158,21 @@ describe('bots in a room', () => {
   it('walk over to a gun lying nearby, take it and use it', async () => {
     const r = room();
     const p = r.bot.mover.position;
-    r.putPickup('shotgun', p.x + 3, p.z);
+    // 3 m away, somewhere a player could stand and walk to (not inside the cover round the base): the
+    // game only ever puts pickups on open floor.
+    const map = generateMap(toSpec('GEARTEST', 's'));
+    const nav = new BotNav(new NavGrid(map.ground, map.half, map.boxes));
+    const spot = ([[3, 0], [-3, 0], [0, 3], [0, -3], [2, 2], [-2, 2], [2, -2], [-2, -2]] as const)
+      .map(([dx, dz]) => ({ x: p.x + dx, z: p.z + dz }))
+      // Walkable both ways (not on top of a crate it could only jump onto, nor inside one)
+      .find((s) => {
+        const y = groundHeight(map.ground, s.x, s.z);
+        const there = nav.waypoint(p.x, p.y, p.z, s.x, y, s.z);
+        const back = nav.waypoint(s.x, y, s.z, p.x, p.y, p.z);
+        return !!there && !!back && there.dist > 2 && there.dist <= 3.6 && back.dist <= 3.6;
+      });
+    expect(spot, 'open floor 3 m from the bot').toBeTruthy();
+    r.putPickup('shotgun', spot!.x, spot!.z);
     for (let i = 0; i < 20 && r.bot.gun !== 'shotgun'; i++) {
       r.run(0.5);
       await Promise.resolve();

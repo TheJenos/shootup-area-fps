@@ -272,6 +272,8 @@ export interface LobbyRecord {
   size?: MapSize;
   /** Map generator version (GENERATOR_VERSION); missing on rooms made before versions existed (1) */
   gen?: number;
+  /** The map's halves are designed separately (every mode but CTF; see MapSpec.asym); missing: symmetric */
+  asym?: boolean;
   host: string;
   /** The room owner's player id; missing on rooms made before owners existed */
   hostId?: string;
@@ -342,6 +344,8 @@ export interface GameRecord {
   /** Map size and generator version, fixed for the room (see LobbyRecord) */
   size?: MapSize;
   gen?: number;
+  /** This round's map is asymmetric (it follows the mode: see MapSpec.asym) */
+  asym?: boolean;
   /** Fingerprint of this round's map as the first client built it, to catch clients that differ */
   mapHash?: number;
   /** When this round started (server ms), for the time limit */

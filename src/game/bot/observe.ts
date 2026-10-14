@@ -151,7 +151,7 @@ export interface ObsInput {
   memory: BotMemory;
   senses: Senses;
   /** Filled in: walking distance to the attack objective (Infinity if there's no path) */
-  info?: { attackDist: number };
+  info?: { attackDist: number; walk?: Walk | null };
   /**
    * The objective layer's goal (objective.ts). With one, the first nav slot is the way to it and the second
    * the nearest enemy, in every mode; without, the slots follow the mode (the flags in CTF).
@@ -159,7 +159,15 @@ export interface ObsInput {
   goal?: { x: number; y: number; z: number } | null;
   /** The mode the policy is told it's playing (with a goal, CTF is shown as TDM: only the fighting is its job) */
   asMode?: GameMode;
+  /**
+   * What else stops the bot seeing someone the map doesn't hide: where it's facing (game and trainer
+   * alike: see limits.ts), and in the game smoke, barriers and cloaks too.
+   */
+  sight?: (b: BodyView, eyeY: number) => boolean;
 }
+
+/** Which way to walk now (right, forward in the bot's frame, unit length): the clear straight way along the path */
+export type Walk = readonly [number, number];
 
 /** Enemies (not teammates, not ourselves) */
 const isEnemy = (self: SelfView, b: BodyView) => !self.team || b.team !== self.team;
@@ -168,7 +176,10 @@ const isEnemy = (self: SelfView, b: BodyView) => !self.team || b.team !== self.t
 export function observe(input: ObsInput, out: Float32Array = new Float32Array(OBS_SIZE)): Float32Array {
   const { self, others, ctf, now, memory, senses, info, goal } = input;
   const mode = input.asMode ?? input.mode;
-  if (info) info.attackDist = Infinity;
+  if (info) {
+    info.attackDist = Infinity;
+    info.walk = null;
+  }
   out.fill(0);
   let o = 0;
   const sin = Math.sin(self.yaw);
@@ -205,8 +216,9 @@ export function observe(input: ObsInput, out: Float32Array = new Float32Array(OB
       continue;
     }
     if (!isEnemy(self, b)) continue;
-    const sees = senses.sees(self.x, eyeY, self.z, b.x, b.y + CHEST_Y[b.stance], b.z)
-      || senses.sees(self.x, eyeY, self.z, b.x, b.y + HEAD_Y[b.stance], b.z);
+    const sees = (senses.sees(self.x, eyeY, self.z, b.x, b.y + CHEST_Y[b.stance], b.z)
+      || senses.sees(self.x, eyeY, self.z, b.x, b.y + HEAD_Y[b.stance], b.z))
+      && (input.sight?.(b, eyeY) ?? true);
     if (sees) memory.seen.set(b.id, { x: b.x, y: b.y, z: b.z, stance: b.stance, t: now, seenAt: now });
     const m = memory.seen.get(b.id);
     if (!sees && (!m || now - m.t > MEMORY_TIME)) continue;
@@ -222,7 +234,13 @@ export function observe(input: ObsInput, out: Float32Array = new Float32Array(OB
     let w: Waypoint | null = straight ? null : senses.nav.waypoint(self.x, self.y, self.z, target.x, target.y, target.z);
     const pathed = !!w;
     if (attack && info && w) info.attackDist = w.dist;
-    w ??= { x: target.x, y: target.y, z: target.z, dist: Math.hypot(target.x - self.x, target.z - self.z) };
+    if (attack && info) {
+      // Where the feet go (see Waypoint.walkX): not part of the observation.
+      const [wr, wf] = w ? local(w.walkX - self.x, w.walkZ - self.z) : [0, 0];
+      const wl = Math.hypot(wr, wf);
+      info.walk = w && wl > 1e-6 ? [wr / wl, wf / wl] : null;
+    }
+    w ??= { x: target.x, y: target.y, z: target.z, dist: Math.hypot(target.x - self.x, target.z - self.z), walkX: target.x, walkZ: target.z };
     const [r, f] = local(w.x - self.x, w.z - self.z);
     const l = Math.hypot(r, f) || 1;
     out[o++] = r / l;

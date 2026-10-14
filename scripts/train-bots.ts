@@ -4,7 +4,14 @@
  * applies them, keeps checkpoints and moves through the curriculum (aim → duel → tdm → ctf → snd → mix).
  *
  *   npm run train:bots -- [--workers 9] [--steps 50M] [--batch 32768] [--stage auto|aim|duel|tdm|ctf|snd|mix]
- *                         [--fresh] [--dir bots] [--arenas 2] [--lr 3e-4] [--view-port 7777 | 0] [--allow-sleep]
+ *                         [--fresh] [--from <policy.json>] [--value-warmup 15] [--dir bots] [--arenas 2] [--lr 3e-4]
+ *                         [--view-port 7777 | 0] [--allow-sleep]
+ *
+ * --from starts a new run from an already trained policy (e.g. public/bots/policy.json, what the game ships):
+ * its weights and input normalisation, a new value network, at stage mix unless --stage says otherwise.
+ * For the first --value-warmup iterations only the value network learns (a new one makes the policy's
+ * updates noise, which would undo what it knows). Use it when the maps or rules change: it adapts what's
+ * there instead of relearning it from scratch. It refuses to replace a run already in --dir.
  *
  * While it runs, http://localhost:7777 shows it live: one of the matches being played, seen from above,
  * and the learning curves (--view-port 0 turns that off).
@@ -200,6 +207,8 @@ const count = (s: string) => Number(s.replace(/k$/i, 'e3').replace(/m$/i, 'e6'))
 
 interface Checkpoint {
   trainer: TrainerJson;
+  /** Until this iteration only the value network learns (a run started --from a trained policy) */
+  valueWarmupUntil?: number;
   steps: number;
   iteration: number;
   stage: string;
@@ -271,7 +280,21 @@ async function main(): Promise<void> {
 
   let trainer: PpoTrainer;
   let ckpt: Checkpoint;
-  if (!flag('fresh') && existsSync(latest)) {
+  const from = opt('from', '');
+  if (from) {
+    if (existsSync(latest)) {
+      console.error(`${latest} already holds a run: move it away (or use another --dir) before starting one --from a policy.`);
+      process.exit(1);
+    }
+    const json = JSON.parse(readFileSync(from, 'utf8')) as { trainer?: { policy: PolicyJson }; policy?: PolicyJson } & Partial<PolicyJson>;
+    trainer = new PpoTrainer(Policy.fromJSON(json.trainer?.policy ?? json.policy ?? (json as PolicyJson)));
+    const warmup = Number(opt('value-warmup', '15'));
+    ckpt = {
+      trainer: trainer.toJSON(), steps: 0, iteration: 0, stage: stageArg === 'auto' ? 'mix' : stageArg, stageSteps: 0, snapshots: [],
+      valueWarmupUntil: warmup,
+    };
+    console.log(`Starting from ${from}: value network only for the first ${warmup} iterations`);
+  } else if (!flag('fresh') && existsSync(latest)) {
     const saved = JSON.parse(readFileSync(latest, 'utf8')) as Checkpoint;
     trainer = PpoTrainer.fromJSON(saved.trainer);
     ckpt = saved;
@@ -349,6 +372,7 @@ async function main(): Promise<void> {
     await Promise.all(pool.map((w) => { w.postMessage({ type: 'batch', batch: shared, adv: advShared } satisfies ToWorker); return Promise.resolve(); }));
     const progress = ckpt.steps / totalSteps;
     const lr = baseLr * (1 - 0.7 * progress);
+    const valueOnly = ckpt.iteration < (ckpt.valueWarmupUntil ?? 0);
     const update = await trainer.update(shared, lr, Math.random, async (rows, minibatch) => {
       const per = Math.ceil(rows.length / pool.length);
       const parts = await Promise.all(pool.map((w, i) => {
@@ -359,7 +383,8 @@ async function main(): Promise<void> {
         });
       }));
       return sumGradients(parts.filter((p) => p !== null).map((p) => p.grads));
-    });
+    }, valueOnly);
+    if (valueOnly) console.log(`  (warming up the value network: the policy is left as it is, ${(ckpt.valueWarmupUntil ?? 0) - ckpt.iteration - 1} more)`);
     // Obs normaliser: fold in what the learners saw (the batch was normalised with the old one).
     policy.norm.merge(stats.obsCount, stats.obsMean, stats.obsM2);
 

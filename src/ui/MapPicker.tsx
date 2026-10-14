@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import {
-  CLASSIC_SEED, GENERATOR_VERSION, MAP_SIZES, SEED_MAX_LENGTH, SIZE_LABEL, isMapSize, mapName, normalizeSeed, randomSeed,
+  CLASSIC_SEED, GENERATOR_VERSION, MAP_SIZES, SEED_MAX_LENGTH, SIZE_LABEL, isMapSize, mapName, normalizeSeed, randomSeed, specForMode,
   type MapSize, type MapSpec,
 } from '../game/mapgen';
 import type { GameMode } from '../types';
@@ -56,7 +56,8 @@ interface Props {
 export function MapPicker({ choice, mode, hint }: Props) {
   const { seed, setSeed, size, setSize } = choice;
   const classic = seed === CLASSIC_SEED;
-  const { map, pending } = useMapData(seed ? { seed, size, gen: GENERATOR_VERSION } : null);
+  // The preview is the map the room will play: asymmetric unless the mode is Capture the Flag.
+  const { map, pending } = useMapData(seed ? specForMode({ seed, size, gen: GENERATOR_VERSION }, mode) : null);
   return (
     <div className="map-picker stacked">
       {map ? <MapPreview map={map} mode={mode} /> : <div className="map-preview empty">{seed ? <><span className="spinner" aria-hidden="true" />Building map…</> : 'Random map'}</div>}

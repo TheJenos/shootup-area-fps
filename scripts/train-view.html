@@ -100,7 +100,7 @@
       <canvas id="eval-chart" style="height:150px"></canvas>
     </div>
     <div class="charts" id="charts"></div>
-    <h2 style="margin-top:16px">Where the reward comes from <small>per episode, latest iteration</small></h2>
+    <h2 style="margin-top:16px">Where the reward comes from <small>what the policy learns from, per episode, latest iteration</small></h2>
     <div id="parts" class="parts"><div class="empty">waiting for an iteration…</div></div>
     <div id="log"></div>
   </section>
@@ -271,7 +271,12 @@ function updateHeader() {
   setStage(r.stage);
 }
 
-const PART_NAMES = { kill: 'kills', teamKill: 'team kills', damage: 'damage dealt', flag: 'flags', win: 'winning', progress: 'toward objective', aim: 'aiming', hurt: 'damage taken', death: 'deaths', miss: 'missed shots', time: 'time' };
+const PART_NAMES = {
+  kill: 'kills', teamKill: 'team kills', damage: 'damage dealt', flag: 'flags', win: 'winning', progress: 'toward objective', aim: 'aiming',
+  hurt: 'damage taken', death: 'deaths', miss: 'missed shots', time: 'time', bomb: 'bomb', round: 'rounds',
+  // Rewards that came while the objective layer walked or pushed: not experience, so the policy doesn't learn from them.
+  'objective layer': 'objective layer (not learned)',
+};
 function drawParts() {
   const r = rows[rows.length - 1];
   if (!r || !r.parts) return;

@@ -63,6 +63,8 @@ export interface Settings {
   /** 0..1 */
   sfxVolume: number;
   musicVolume: number;
+  /** World sounds through HRTF (front / behind / above, for headphones); off: plain left-right panning */
+  spatialAudio: boolean;
   /** KeyboardEvent.code for each action */
   bindings: Bindings;
 }
@@ -116,7 +118,7 @@ const DEFAULTS: Settings = {
   sensitivity: 1, invertY: false, fullscreen: true, aimToggle: false, aimSensitivity: 1,
   fov: FOV_DEFAULT, crosshairColor: '#ffffff', crosshairSize: 1,
   // Phones start low; they can turn it up.
-  quality: COARSE ? 'low' : 'high', screenShake: !MOTION_QUERY?.matches, sfxVolume: 1, musicVolume: 0.7,
+  quality: COARSE ? 'low' : 'high', screenShake: !MOTION_QUERY?.matches, sfxVolume: 1, musicVolume: 0.7, spatialAudio: true,
   reduceMotion: 'system', hudScale: 1, showFps: false, killcam: true, minimap: true,
   bindings: DEFAULT_BINDINGS,
 };
@@ -165,6 +167,7 @@ function load(): Settings {
       minimap: typeof saved.minimap === 'boolean' ? saved.minimap : DEFAULTS.minimap,
       sfxVolume: num(saved.sfxVolume, 0, 1, DEFAULTS.sfxVolume),
       musicVolume: num(saved.musicVolume, 0, 1, DEFAULTS.musicVolume),
+      spatialAudio: typeof saved.spatialAudio === 'boolean' ? saved.spatialAudio : DEFAULTS.spatialAudio,
       // Start from the defaults so actions added later still get a key.
       bindings: { ...DEFAULT_BINDINGS, ...pickStrings(saved.bindings) },
     };

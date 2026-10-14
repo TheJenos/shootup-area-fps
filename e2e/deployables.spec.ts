@@ -1,4 +1,4 @@
-import { db, waitForValue } from './support/db';
+import { db, serverNow, waitForValue } from './support/db';
 import { expect, rules, test, uniqueName } from './support/fixtures';
 import type { Player } from './support/player';
 
@@ -56,8 +56,10 @@ test.describe('deployables', () => {
 
   test('someone who joins while a barrier stands sees it', async ({ duel, players }) => {
     test.slow();
-    const { code, alice, bob } = await duel(withAbilities());
-    await use(bob, 'wall');
+    const { code, alice, bobId } = await duel(withAbilities());
+    // A barrier of Bob's that stands for a good while: a joiner takes longer than a barrier's 20 s to load
+    // on a busy test machine, so the record is written straight in, as placing one writes it.
+    await db.put(`rooms/${code}/deployables/LATEJOIN1`, { kind: 'wall', owner: bobId, x: 12, y: 0, z: 4, axis: 'x', until: serverNow() + 120_000, c: '#3d8bff' });
     await expect.poll(() => count(alice, 'walls')).toBe(1);
     const carol = await players.open(uniqueName('Carol'));
     await carol.gotoLobby();

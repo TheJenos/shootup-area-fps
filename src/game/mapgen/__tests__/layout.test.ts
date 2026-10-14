@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { generateMap, toSpec } from '../index';
+import { GENERATOR_VERSION, generateMap, toSpec } from '../index';
 import { generateWithReport } from '../generate';
 import { TEAM_ACCENT } from '../edge';
 import { TAG, insideOutline, tBlock } from '../layout';
 import type { MapSize } from '../spec';
+import type { Symmetry } from '../symmetry';
 
 const SIZES: MapSize[] = ['s', 'm', 'l'];
 const SEEDS = ['SHAPE1', 'SHAPE2', 'SHAPE3', 'SHAPE4', 'SHAPE5', 'SHAPE6'];
@@ -27,7 +28,7 @@ describe('map shapes', () => {
     for (const seed of SEEDS) {
       const m = generateMap(toSpec(seed, size));
       const o = m.outline!;
-      const sym = m.layout!.symmetry;
+      const sym = m.layout!.symmetry as Symmetry;
       for (let k = 0; k < o.n; k++) for (let i = 0; i < o.n; i++) expect(o.inside[k * o.n + i]).toBe(o.inside[tBlock(sym, o.n, i, k)]);
       const inside = (x: number, z: number) => insideOutline(o, m.half, x, z);
       for (const [x, , z] of [m.flags.red, m.flags.blue]) expect(inside(x, z)).toBe(true);
@@ -86,6 +87,38 @@ describe('map shapes', () => {
       };
       const placed = [...m.boxes.filter((b) => b.blocks !== 'shots'), ...m.props].filter((b) => inBlob(b.x, b.z));
       expect(placed.length).toBeGreaterThan(4);
+    }
+  });
+});
+
+describe('the wall round the map', () => {
+  /** Outside blocks next to the play area (any of the 8 around) that no wall stands over: holes to see out of */
+  const holes = (m: ReturnType<typeof generateMap>) => {
+    const o = m.outline!;
+    const { n, cell, half } = o;
+    const walls = m.boxes.filter((b) => b.h >= 2 && b.visible !== false);
+    const out: string[] = [];
+    for (let k = 0; k < n; k++) for (let i = 0; i < n; i++) {
+      if (o.inside[k * n + i]) continue;
+      let near = false;
+      for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) {
+        const bi = i + a;
+        const bk = k + b;
+        if (bi >= 0 && bk >= 0 && bi < n && bk < n && o.inside[bk * n + bi]) near = true;
+      }
+      if (!near) continue;
+      const x = -half + (i + 0.5) * cell;
+      const z = -half + (k + 0.5) * cell;
+      if (!walls.some((b) => Math.abs(b.x - x) < b.w / 2 && Math.abs(b.z - z) < b.d / 2)) out.push(`${x},${z}`);
+    }
+    return out;
+  };
+
+  it.each(SIZES)('stands all the way round, symmetric or not, the middle line included (%s)', (size) => {
+    for (const seed of [...SEEDS, 'GC8B', 'GOG9', 'G16S6', 'GICA', 'GUK8', 'G10O7', 'GD']) {
+      for (const asym of [false, true]) {
+        expect(holes(generateMap(toSpec(seed, size, GENERATOR_VERSION, asym))), `${seed} ${size} ${asym ? 'asym' : 'sym'}`).toEqual([]);
+      }
     }
   });
 });

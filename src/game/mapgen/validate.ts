@@ -61,7 +61,8 @@ export function validateMap(data: MapData, targets: readonly [number, number, nu
       for (let ix = 0; ix <= g.n; ix++) {
         const h = g.heights[iz * side + ix]!;
         if (h < 0) problems.push('ground below 0');
-        if (h !== g.heights[tVertex(sym, g.n, ix, iz)]) {
+        // (An asymmetric map's halves are different by design.)
+        if (sym !== 'none' && h !== g.heights[tVertex(sym, g.n, ix, iz)]) {
           problems.push(`ground not symmetric at ${ix},${iz}`);
           iz = g.n + 1;
           break;

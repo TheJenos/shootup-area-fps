@@ -105,14 +105,15 @@ function startingBots(rules: ModeRules): { bots?: BotRoster } {
 }
 
 /** A map spec as stored on a room */
-const mapFields = (map: MapSpec) => ({ seed: map.seed, size: map.size, gen: map.gen });
+// (null clears an old flag when a room moves to a symmetric map: a CTF restart, say)
+const mapFields = (map: MapSpec) => ({ seed: map.seed, size: map.size, gen: map.gen, asym: map.asym ? true : null });
 
 /**
  * The map spec stored on a room. Rooms from before sizes are medium; rooms from before generator
  * versions were made by version 1.
  */
-export const roomMap = (r: { seed?: unknown; size?: unknown; gen?: unknown }): MapSpec =>
-  toSpec(typeof r.seed === 'string' ? r.seed : '', r.size, typeof r.gen === 'number' ? r.gen : 1);
+export const roomMap = (r: { seed?: unknown; size?: unknown; gen?: unknown; asym?: unknown }): MapSpec =>
+  toSpec(typeof r.seed === 'string' ? r.seed : '', r.size, typeof r.gen === 'number' ? r.gen : 1, r.asym === true);
 
 /** Mode rules and map of an existing room, or null if there's no such room. */
 export async function getRoomSetup(code: string): Promise<{ mode: GameMode; rules: ModeRules; map: MapSpec } | null> {

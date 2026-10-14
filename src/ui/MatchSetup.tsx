@@ -3,6 +3,7 @@ import type { Game } from '../game/game';
 import type { HudState } from '../game/hudStore';
 import type { ModeRules } from '../game/rules';
 import { MapPicker, useMapChoice } from './MapPicker';
+import { specForMode } from '../game/mapgen';
 import { ModePicker } from './ModePicker';
 import { friendlyError } from './errors';
 
@@ -38,7 +39,7 @@ export function MatchSetup({ game, hud, onClose }: Props) {
     setBusy(true);
     setError('');
     try {
-      await game.restartMatch(rules, mapChoice.spec());
+      await game.restartMatch(rules, specForMode(mapChoice.spec(), rules.base));
       onClose();
     } catch (err) {
       console.error(err);

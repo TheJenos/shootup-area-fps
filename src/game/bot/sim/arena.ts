@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { Mover } from '../../movement';
 import { PhysicsWorld, groups } from '../../physics';
-import { generateMap, groundHeight, outsideRects, toSpec, type MapData, type MapSize } from '../../mapgen';
+import { GENERATOR_VERSION, asymFor, generateMap, groundHeight, outsideRects, toSpec, type MapData, type MapSize } from '../../mapgen';
 import { GUNS, shotDamage } from '../../gunStats';
 import { FLAG_RADIUS, FLAG_RETURN_TIME, MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_RANGE, otherTeam } from '../../modes';
 import type { Ramp } from '../../ramps';
@@ -13,13 +13,14 @@ import {
 import type { Team } from '../../mapgen/types';
 import { DECISION_DT, MAX_TURN, type BotAction } from '../policy';
 import { goalFor, newPatrol, travelAction, Unstuck, type Patrol, type Point, type SndGoalView } from '../objective';
-import { BotMemory, MEMORY_TIME, OBS_LAYOUT, observe, type BodyView, type CtfView, type FlagState } from '../observe';
+import { BotMemory, MEMORY_TIME, observe, type BodyView, type CtfView, type FlagState, type Walk } from '../observe';
 import { AimController } from '../aim';
 import { rollPersonality, type Personality } from '../brain';
 import { callOut, hear } from '../team';
 import { Steering, moveInputOf } from '../brain';
 import { MapSenses, castWorld } from '../senses';
 import { aimAngles, hitPlayer, lookDir, scatter, spreadOf, type Ray } from '../hitscan';
+import { BOT_FOV, JUMP_HOLD, JUMP_UP, RIFLE_RESERVE, adsRecoil, inFieldOfView, ledgeAhead, roughHp } from '../limits';
 
 /*
  * The game without a screen, for training bots: a generated map, Rapier collision, the player's
@@ -39,8 +40,6 @@ const PERIMETER_HEIGHT = 6;
 const BOUNDARY_THICKNESS = 4;
 const BOUNDARY_HEIGHT = 200;
 const CYLINDER_FIT = [[0.46, 0.19], [0.19, 0.46], [0.3535, 0.3535]] as const;
-/** The largest aim error (yaw + pitch, radians) */
-const WORST_AIM = Math.PI * 1.5;
 
 /** Reward weights */
 export const REWARD = {
@@ -67,8 +66,6 @@ export const REWARD = {
   round: 1.5,
   /** Getting closer to the objective, per metre (as a potential: walking back costs it again) */
   progress: 0.03,
-  /** Turning toward a visible enemy, per radian of aim error closed (a potential too) */
-  aim: 0.25,
   /** Per decision */
   time: 0.002,
   /** A shot that hits nobody */
@@ -106,6 +103,8 @@ export interface SimAgent {
   respawnAt: number;
   gun: GunKind;
   ammo: number;
+  /** Spare rounds for its gun, as a player's (endless when the episode hands everyone one gun) */
+  reserve: number;
   reloadLeft: number;
   cooldown: number;
   burst: number;
@@ -123,16 +122,22 @@ export interface SimAgent {
   reward: number;
   /** All the reward this episode, by where it came from (for reports and the training view) */
   readonly rewardParts: Record<string, number>;
+  /** The same since its last decision (the rollout credits them to whoever made that decision) */
+  pendingParts: Record<string, number>;
   /** Walking distance to the objective at the last decision (for the progress reward) */
   objective: number;
-  /** Aim error to the nearest visible enemy at the last decision, or null (for the aim reward) */
-  aimError: number | null;
+  /** Which way to walk along its route, as of its last observe() (for the feet; see Waypoint.walkX) */
+  walk: Walk | null;
   /** Where it's patrolling (FFA / TDM objective) */
   readonly patrol: Patrol;
   /** Getting out of tight spots while walking a route */
   readonly unstuck: Unstuck;
   /** Its character (how far it goes to help, when it backs off, how hurt shakes its aim) */
   readonly personality: Personality;
+  /** Where it's headed at the last decision (the objective layer's goal), for jumping ledges on the way */
+  goal: Point | null;
+  /** Jump is held until this (episode time): a ledge on its way */
+  jumpUntil: number;
   /** The aim model, for agents that aim like a person (learners and their snapshots); null: steered */
   aim: AimController | null;
 }
@@ -210,13 +215,16 @@ export class Arena {
   /** Places worth patrolling, with whose half they're in */
   private readonly patrolPoints: (Point & { team: Team | null })[];
   private readonly maxHp: number;
-  private readonly obsInfo = { attackDist: Infinity };
+  private readonly obsInfo: { attackDist: number; walk?: Walk | null } = { attackDist: Infinity };
 
   constructor(readonly config: ArenaConfig, private readonly rand: () => number = Math.random) {
     this.mode = config.mode;
-    this.map = generateMap(toSpec(config.seed, config.size));
+    // The map the mode gets in the game: asymmetric unless it's Capture the Flag.
+    this.map = generateMap(toSpec(config.seed, config.size, GENERATOR_VERSION, asymFor(config.mode)));
     this.physics = buildPhysics(this.map);
     this.senses = new MapSenses(this.map, this.physics);
+    // As in the game: paths may go up ledges a jump gets onto (agents jump at them: see step).
+    this.senses.nav.allowJumps(JUMP_UP);
     this.maxHp = config.health ?? 100;
     this.limit = config.limit ?? (config.mode === 'ctf' || config.mode === 'snd' ? 3 : config.mode === 'tdm' ? 30 : 15);
     this.patrolPoints = [
@@ -238,9 +246,9 @@ export class Arena {
       const gun = config.gun ?? 'rifle';
       this.agents.push({
         id: `a${i}`, index: i, team, dummy: i >= total - dummies, mover, yaw: 0, pitch: 0, hp: this.maxHp, alive: true, respawnAt: 0,
-        gun, ammo: GUNS[gun].mag, reloadLeft: 0, cooldown: 0, burst: 0, meleeCooldown: 0, kills: 0, deaths: 0, captures: 0, channel: 0,
+        gun, ammo: GUNS[gun].mag, reserve: config.gun ? Infinity : RIFLE_RESERVE, reloadLeft: 0, cooldown: 0, burst: 0, meleeCooldown: 0, kills: 0, deaths: 0, captures: 0, channel: 0,
         memory: new BotMemory(), steering: new Steering(), action: { move: 0, sprint: false, jump: false, crouch: false, fire: false, aimYaw: 0, aimPitch: 0 },
-        reward: 0, rewardParts: {}, objective: Infinity, aimError: null, patrol: newPatrol(), unstuck: new Unstuck(), personality: rollPersonality(rand), aim: null,
+        reward: 0, rewardParts: {}, pendingParts: {}, objective: Infinity, walk: null, patrol: newPatrol(), unstuck: new Unstuck(), personality: rollPersonality(rand), aim: null, goal: null, jumpUntil: 0,
       });
     }
     for (const a of this.agents) this.spawn(a);
@@ -262,7 +270,8 @@ export class Arena {
 
   private bodyView(a: SimAgent): BodyView {
     const p = a.mover.position;
-    return { id: a.id, x: p.x, y: p.y, z: p.z, stance: a.mover.stance, alive: a.alive, hp: a.hp, maxHp: this.maxHp, team: a.team, carrying: this.carrying(a) };
+    // (Health roughly, as the game shows a bot: see limits.ts)
+    return { id: a.id, x: p.x, y: p.y, z: p.z, stance: a.mover.stance, alive: a.alive, hp: roughHp(a.hp, this.maxHp), maxHp: this.maxHp, team: a.team, carrying: this.carrying(a) };
   }
 
   private ctfView(a: SimAgent): CtfView | null {
@@ -293,7 +302,11 @@ export class Arena {
       others, mode: this.mode, ctf, now: this.time, memory: a.memory, senses: this.senses, info: this.obsInfo,
       // As in the game (botHost.ts): the policy has never had S&D inputs, so its fights look like TDM to it.
       goal, asMode: this.mode === 'snd' || (goal && this.mode === 'ctf') ? 'tdm' : undefined,
+      // As in the game: only what's in front of it (anyone right beside it is felt).
+      sight: (b) => inFieldOfView(p.x, p.z, a.yaw, b.x, b.z, BOT_FOV),
     }, out);
+    a.goal = goal;
+    a.walk = this.obsInfo.walk ?? null;
     // Whoever it just saw, its teammates hear about.
     if (a.team) callOut(a.memory, this.agents.filter((b) => b !== a && b.team === a.team && b.alive).map((b) => b.memory), this.time);
     return out;
@@ -325,7 +338,12 @@ export class Arena {
   /** The objective layer walking `a` to its goal (getting unstuck if it has to), from its observation `obs` */
   travel(a: SimAgent, obs: Float32Array): BotAction {
     const p = a.mover.position;
-    return a.unstuck.act(travelAction(obs), p.x, p.z, this.time);
+    // Held at spawn (S&D's freeze): standing still isn't being stuck (escaping it spun bots on the spot).
+    if (this.snd && phaseOf(this.snd, this.time * 1000) === 'freeze') {
+      a.unstuck.reset();
+      return travelAction(obs, a.walk);
+    }
+    return a.unstuck.act(travelAction(obs, a.walk), p.x, p.z, this.time);
   }
 
   /** Walking distance to the agent's objective, as of its last observe() */
@@ -338,6 +356,7 @@ export class Arena {
   private give(a: SimAgent, part: string, amount: number): void {
     a.reward += amount;
     a.rewardParts[part] = (a.rewardParts[part] ?? 0) + amount;
+    a.pendingParts[part] = (a.pendingParts[part] ?? 0) + amount;
   }
 
   /** Act on every agent's decision for one DECISION_DT. Rewards land in each agent's `reward`. */
@@ -347,6 +366,7 @@ export class Arena {
       a.action = act;
       a.steering.set(act.aimYaw * MAX_TURN.yaw, act.aimPitch * MAX_TURN.pitch);
       this.give(a, 'time', -REWARD.time);
+      if (a.alive && ledgeAhead(this.senses.nav, a.mover.position, a.mover.velocity, a.mover.onGround, a.goal, a.yaw)) a.jumpUntil = this.time + JUMP_HOLD;
     }
     for (let s = 0; s < SUBSTEPS && !this.done; s++) this.tick();
     if (this.time >= this.config.seconds) this.done = true;
@@ -369,7 +389,10 @@ export class Arena {
         a.yaw = wrap(a.yaw + dYaw);
         a.pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, a.pitch + dPitch));
       }
-      a.mover.step(dt, a.yaw, frozen || a.channel > 0 ? null : moveInputOf(a.action, _move));
+      const input = moveInputOf(a.action, _move);
+      // A ledge on its way that only a jump gets up: jump, as the game's bots do.
+      if (this.time < a.jumpUntil) input.jump = true;
+      a.mover.step(dt, a.yaw, frozen || a.channel > 0 ? null : input);
       if (a.mover.position.y < -5) this.kill(a, null, false);
     }
     // Step the world as the game does every frame: Rapier queues every collider move until a step,
@@ -381,7 +404,11 @@ export class Arena {
       a.meleeCooldown = Math.max(0, a.meleeCooldown - dt);
       if (a.reloadLeft > 0) {
         a.reloadLeft -= dt;
-        if (a.reloadLeft <= 0) a.ammo = GUNS[a.gun].mag;
+        if (a.reloadLeft <= 0) {
+          const take = Math.min(GUNS[a.gun].mag - a.ammo, a.reserve);
+          a.ammo += take;
+          if (Number.isFinite(a.reserve)) a.reserve -= take;
+        }
       }
       // With the aim model, the trigger is only pulled with the crosshair on someone (a carrier swings).
       const shoot = a.action.fire && (!a.aim || this.carrying(a) || (a.aim.engaged && a.aim.onTarget));
@@ -406,7 +433,8 @@ export class Arena {
     if (a.cooldown > 0 || a.reloadLeft > 0) return;
     const def = GUNS[a.gun];
     if (a.ammo <= 0) {
-      a.reloadLeft = def.reloadTime;
+      // Out of spare rounds as well: nothing to shoot until it respawns.
+      if (a.reserve > 0) a.reloadLeft = def.reloadTime;
       return;
     }
     a.ammo--;
@@ -445,9 +473,10 @@ export class Arena {
     }
     if (!damage.size) this.give(a, 'miss', -REWARD.miss);
     for (const [b, dmg] of damage) this.hurt(b, a, dmg, head);
-    // Recoil, as the player gets it (bots don't aim down sights).
-    a.pitch = Math.min(MAX_PITCH, a.pitch + def.recoil);
-    a.yaw += (this.rand() - 0.5) * def.recoil * 0.5;
+    // Recoil, as the player gets it (less with the sights up).
+    const recoil = adsRecoil(def.recoil, a.aim?.ads ?? 0);
+    a.pitch = Math.min(MAX_PITCH, a.pitch + recoil);
+    a.yaw += (this.rand() - 0.5) * recoil * 0.5;
   }
 
   /** The flag as a club: the nearest enemy within reach, roughly where we're looking. */
@@ -537,11 +566,13 @@ export class Arena {
     a.alive = true;
     a.mover.setSolid(true);
     a.ammo = GUNS[a.gun].mag;
+    a.reserve = this.config.gun ? Infinity : RIFLE_RESERVE;
     a.reloadLeft = 0;
     a.cooldown = 0;
+    a.goal = null;
+    a.jumpUntil = 0;
     a.burst = 0;
     a.objective = Infinity;
-    a.aimError = null;
     a.steering.reset();
     a.aim?.reset();
     a.mover.aiming = false;
@@ -698,19 +729,17 @@ export class Arena {
   }
 
   /**
-   * Shaping rewards for the decision just observed (`obs`, raw): progress toward the objective and
-   * aim closing in on the nearest visible enemy. Both are potentials, so they add up to nothing
-   * over a round trip and can't be farmed.
+   * Shaping rewards for the decision just observed: progress toward the objective, as a potential, so it
+   * adds up to nothing over a round trip and can't be farmed.
+   *
+   * (There used to be an aim reward too: closing the aim error on a visible enemy. The aim model aims now,
+   * not the policy, so it judged the policy on something it doesn't do; and since an enemy coming into
+   * view is a decision of the objective layer's (walking, not experience) while one leaving it is the
+   * policy's, the policy only ever got its negative half: every kill cost it. It was the policy's biggest
+   * reward, at -36% of all it got.)
    */
-  shape(a: SimAgent, obs: Float32Array): void {
+  shape(a: SimAgent, _obs: Float32Array): void {
     this.progress(a, this.obsInfo.attackDist);
-    // Nobody in sight counts as the worst aim there is: otherwise looking away while they're hidden and
-    // back when they show up again would pay every time (it did, before this). (Also paying for facing an
-    // enemy known but out of sight was tried: no better on held-out play, 0.58 against 0.63 over 8M steps.)
-    const e = OBS_LAYOUT.enemies;
-    const err = a.alive && obs[e]! > 0.5 ? Math.abs(obs[e + 5]! * Math.PI) + Math.abs(obs[e + 6]! * (Math.PI / 2)) : WORST_AIM;
-    if (a.aimError !== null) this.give(a, 'aim', REWARD.aim * (a.aimError - err));
-    a.aimError = a.alive ? err : null;
   }
 
   /**

@@ -134,10 +134,10 @@ export interface PickupSpot {
  * debugging. Points are corridor centre lines in both halves.
  */
 export interface MazeLayout {
-  /** rotate: (x, z) → (-x, -z), mirror: (x, z) → (x, -z) */
-  symmetry: 'rotate' | 'mirror';
-  /** The main path from flag to flag through the middle plaza, and the pockets and loops off it */
-  routes: { role: 'main' | 'pocket' | 'loop'; points: [number, number][] }[];
+  /** rotate: (x, z) → (-x, -z), mirror: (x, z) → (x, -z); none: each half designed on its own */
+  symmetry: 'rotate' | 'mirror' | 'none';
+  /** The main path from flag to flag through the middle plaza, the other lanes, and the pockets and loops off them */
+  routes: { role: 'main' | 'lane' | 'pocket' | 'loop'; points: [number, number][] }[];
   /** Flank loops per half */
   loops: number;
   /** Maze cells on each half's main path */

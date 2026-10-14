@@ -44,7 +44,16 @@ class AimTask {
 describe('PPO', () => {
   it('learns to aim, move and fire on a toy task', async () => {
     const rand = lcg(9);
-    const trainer = new PpoTrainer(undefined, undefined, { ...DEFAULT_PPO, minibatch: 256, lr: 1e-3, entCoef: 0.001 });
+    // The networks' starting weights come from Math.random: seed it too, or one run in several started
+    // somewhere that learned too slowly for the check below.
+    const random = Math.random;
+    Math.random = lcg(17);
+    let trainer: PpoTrainer;
+    try {
+      trainer = new PpoTrainer(undefined, undefined, { ...DEFAULT_PPO, minibatch: 256, lr: 1e-3, entCoef: 0.001 });
+    } finally {
+      Math.random = random;
+    }
     const task = new AimTask(rand);
     const raw = new Float32Array(OBS_SIZE);
     const evaluate = () => {
@@ -114,4 +123,28 @@ describe('PPO', () => {
     json.logStd = [0.03, 0.5];
     for (const v of Policy.fromJSON(json).logStd) expect(v).toBeCloseTo(AIM_LOG_STD.max, 5);
   });
+
+  it('can warm up the value network alone, leaving a trained policy as it is', async () => {
+    const rand = lcg(6);
+    const trainer = new PpoTrainer(undefined, undefined, { ...DEFAULT_PPO, minibatch: 256 });
+    const policyBefore = Float32Array.from(trainer.policy.net.params);
+    const stdBefore = Float32Array.from(trainer.policy.logStd);
+    const valueBefore = Float32Array.from(trainer.value.params);
+    const raw = new Float32Array(OBS_SIZE);
+    const traj = new Trajectory();
+    for (let i = 0; i < 512; i++) {
+      raw.fill(0);
+      raw[0] = rand() - 0.5;
+      const obs = trainer.policy.normalize(raw);
+      const s = trainer.policy.sample(obs, {}, rand);
+      traj.push(obs, s.action, s.aimRaw, s.logp, trainer.valueOf(obs));
+      traj.reward(raw[0]!);
+    }
+    const b = emptyBatch(traj.length);
+    traj.flush(b, 0, 0, trainer.cfg);
+    await trainer.update(b, undefined, rand, undefined, true);
+    expect([...trainer.policy.net.params]).toEqual([...policyBefore]);
+    expect([...trainer.policy.logStd]).toEqual([...stdBefore]);
+    expect([...trainer.value.params]).not.toEqual([...valueBefore]);
+  }, 60_000);
 });

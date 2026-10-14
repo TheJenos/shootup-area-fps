@@ -46,7 +46,7 @@ export function evaluateMatch(
       const play = (p: Policy) => {
         if (shouldTravel(obs)) return arena.travel(a, obs);
         const fight = p.sample(p.normalize(obs)).action;
-        return (mode === 'ctf' || mode === 'snd') && shouldPush(obs) ? pushAction(fight, obs) : fight;
+        return (mode === 'ctf' || mode === 'snd') && shouldPush(obs) ? pushAction(fight, obs, a.walk) : fight;
       };
       if (mine(i)) return play(policy);
       return opponent ? play(opponent) : scriptedAction(obs);

@@ -3,7 +3,7 @@ import { isConfigured } from '../net/firebase';
 import { createRoom, getRoomSetup, randomId } from '../net/network';
 import { sessionPlayerId } from '../game/session';
 import { NAME_PATTERN, loadName, saveName } from './playerName';
-import { isPlayableSpec } from '../game/mapgen';
+import { isPlayableSpec, specForMode } from '../game/mapgen';
 import { MapPicker, useMapChoice } from './MapPicker';
 import { initAudio } from '../game/audio';
 import { enterFullscreen } from '../game/fullscreen';
@@ -130,7 +130,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
   const create = () => run('create', async (playerName) => {
     const playerId = randomId();
     const title = roomName.trim().slice(0, 24) || `${playerName}'s room`;
-    const map = mapChoice.spec();
+    const map = specForMode(mapChoice.spec(), rules.base);
     const roomCode = await createRoom(title, rules, map, playerName, playerId);
     onEnter({ roomCode, playerId, name: playerName, map, profileId });
   });
@@ -139,7 +139,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
   const quickPlay = () => run('create', async (playerName) => {
     const playerId = randomId();
     const practice: ModeRules = { ...PRESETS[0]!.rules, bots: QUICK_PLAY_BOTS, botSkill: 'normal' };
-    const map = mapChoice.spec();
+    const map = specForMode(mapChoice.spec(), practice.base);
     const roomCode = await createRoom(`${playerName}'s practice`, practice, map, playerName, playerId);
     onEnter({ roomCode, playerId, name: playerName, map, profileId });
   });

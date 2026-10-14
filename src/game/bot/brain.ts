@@ -1,5 +1,5 @@
 import { DECISION_DT, MAX_TURN, MOVE_TABLE, type BotAction, type Policy } from './policy';
-import { BotMemory, OBS_LAYOUT } from './observe';
+import { BotMemory, OBS_LAYOUT, type Walk } from './observe';
 import { pushAction, shouldPush, shouldTravel, travelAction, Unstuck } from './objective';
 import { AIM_SKILLS, AimController, BOT_SKILLS, type AimSkill, type BotSkill } from './aim';
 import type { MoveInput } from '../movement';
@@ -115,16 +115,19 @@ export class BotBrain {
    * Aiming at an enemy in view is the aim model's (see BotHost / Arena), so the policy's turn only
    * applies when nobody's in view.
    */
-  decide(obs: Float32Array, ctf = false, at?: { x: number; z: number }): BotAction {
+  /** @param way which way to walk along the route (the observation's info.walk), for the feet */
+  decide(obs: Float32Array, ctf = false, at?: { x: number; z: number }, way: Walk | null = null): BotAction {
     this.time += DECISION_DT;
     if (shouldTravel(obs)) {
-      const walk = at ? this.unstuck.act(travelAction(obs), at.x, at.z, this.time) : travelAction(obs);
+      // (No position: it can't move just now, e.g. S&D's freeze. Then not moving isn't being stuck.)
+      if (!at) this.unstuck.reset();
+      const walk = at ? this.unstuck.act(travelAction(obs, way), at.x, at.z, this.time) : travelAction(obs, way);
       this.steering.set(walk.aimYaw * MAX_TURN.yaw + this.glance(obs), walk.aimPitch * MAX_TURN.pitch);
       this.action = walk;
       return walk;
     }
     const sampled = this.policy.sample(this.policy.normalize(obs), { temperature: this.skill.temperature }, this.rand).action;
-    const action = ctf && shouldPush(obs) ? pushAction(sampled, obs) : sampled;
+    const action = ctf && shouldPush(obs) ? pushAction(sampled, obs, way) : sampled;
     this.steering.set(action.aimYaw * MAX_TURN.yaw, action.aimPitch * MAX_TURN.pitch);
     this.action = action;
     return action;

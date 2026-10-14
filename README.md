@@ -251,31 +251,32 @@ so it stays the same at every size. The pause menu and the Tab summary show the 
 
 Generation is pure, seeded code in `src/game/mapgen/` (no three.js), run in a Web Worker so the page never
 stalls (`client.ts`; it falls back to the page if workers are blocked). Every client builds the same map from
-the room's map spec: seed, size and generator version. The pipeline (`generate.ts`):
+the room's map spec: seed, size, generator version, and whether it's asymmetric. The pipeline (`generate.ts`):
 
 1. **Meta**: the seed picks a biome, a theme and a name (cheap, so the room list names maps without building them).
-2. **Lane graph** (`graph.ts`): two bases, two or three **lanes** from each base to the middle line, swinging
-   side to side so no stretch runs straight for long, with a **chokepoint** on each, **connectors** between
-   neighbouring lanes, **overlooks** beside some lanes and a **middle** (plaza, hill or sunken). Only red's half
-   is designed; blue's is its copy under the map's **symmetry**: a half turn (most maps: both teams get the
-   same left and right) or a mirror. Lanes meet the middle line at fixed points, so every route has a twin of
-   the same length on the other side.
-3. **Terrain** (`terrain.ts`): the land is shaped from the design. Lanes are valleys, the bases sit on plateaus
-   walled in by ridges, the ridges between lanes stand taller than eye height so each lane is hidden from the
-   others, lanes get crests you can't see over from the dip either side, and a rim rises along the walls.
-   Pinned heights (plateaus, lane floors, the pad under every structure) are kept exactly and no slope is
-   steeper than you can walk (~40° at most, under the 55° you can climb).
-4. **Dressing** (`dress.ts`, kits in `kits.ts`, biomes in `biomes.ts`): structures on flat pads first (the
-   middle's landmark, overlook platforms with a ramp and a parapet, footbridges over chokes, buildings and big
-   models on the ridges, houses with a ramp up to a walkable roof, a raised post at each base), then cover
-   along every lane at a steady rhythm (alternating sides, never in the lane's middle strip), landing cover past
-   each choke, cover round the middle and the bases, and rocks, trees or buildings on the ridges.
-5. **Sightlines** (`sightlines.ts`): long sightlines along each lane (base to base), at the flags from the
-   enemy half and at the spawns are measured, and the worst get a tall piece of cover across them.
-6. **Checks** (`validate.ts`, `navgrid.ts`): on a layered walk grid sized to the player (`playerDims.ts`), every
-   spawn, both flags, every pickup spot, door, platform top and bridge must be reachable, and a carrier must be
-   able to get home; slopes must be walkable and the halves exact copies. A map that fails is rebuilt from the
-   next roll of the seed.
+2. **Maze** (`maze.ts`): a perfect maze of cells over red's half, carved by a randomised walk that prefers long
+   runs across the map.
+3. **Route** (`route.ts`): a winding **main path** from red's base to the middle, then **lanes**: more ways
+   from the base to the middle (one on small maps, one or two on medium, two on large). Each lane leaves the
+   main path beside the base, takes its own way through the maze (never onto the main path or another lane),
+   is about as long, and reaches the middle in a column of its own; where the maze offers no such way, a few
+   walls between unused cells are knocked through first. Then dead-end **pockets** and flank **loops**, and
+   the middle **plaza** (the band) that every route opens into.
+4. **Layout** (`layout.ts`): every route cell becomes a corridor, open areas grow round bends, pockets and the
+   base, and everything else is solid.
+5. **Ground** (`ground.ts`), **fill** (`fill.ts`, `objects.ts`, biomes in `biomes.ts`) and **edge**
+   (`edge.ts`): the land is shaped (held flat at the middle line), the flag, spawns, pickup spots, a
+   centrepiece, cover, huts and the biome's things go in, and buildings or cliffs wall everything in.
+6. **Symmetry**: red's half is copied into blue's under a half turn or a mirror, so both teams get exactly the
+   same map. **Only Capture the Flag plays on a symmetric map** (each team attacks the other's base). Every
+   other mode's map is **asymmetric** (`asym` in the spec, stored with the room's seed): red's half of one whole
+   design is joined to blue's half of another, built from separate random streams. Both are laid out on the
+   same grid with the ground flat at the middle line and plazas spanning the middle columns, so they meet;
+   the middle's centrepiece is red's design's.
+7. **Checks** (`validate.ts`, `navgrid.ts`): on a layered walk grid sized to the player (`playerDims.ts`), every
+   spawn, both flags, every pickup spot and hut door must be reachable, and a carrier must be able to get
+   home; slopes must be walkable, and (symmetric maps) the halves exact copies. A map that fails is rebuilt
+   from the next roll of the seed.
 
 | Biome | Themes | What's in it |
 | --- | --- | --- |
@@ -303,7 +304,8 @@ the room's map spec: seed, size and generator version. The pipeline (`generate.t
   size. A client on another version can't join (the room list marks the room "Older version" or "Newer
   version"), since it would build a different map. The first client to build a round's map records its
   fingerprint in the round record, and anyone who builds a different one is told. Bump the version whenever
-  any seed's map changes; CI fails if a map changes without it (golden hashes in `mapgen/golden.json`).
+  any seed's map changes; CI fails if a map changes without it (golden hashes in `mapgen/golden.json`, for
+  each seed's symmetric and asymmetric map).
 - **Determinism**: the generator uses its own seeded RNG (`rng.ts`), Fisher-Yates shuffles, and only maths that
   every browser engine computes identically (no `Math.sin`, `Math.hypot`...; `npm run check:maps` fails if any
   creep in).
@@ -791,7 +793,8 @@ player record (`bot: true`, id `b_…`), so everyone else sees, hears and shoots
 game is client-authoritative, the owner is each bot's client: it decides what a bot's shots hit, applies the
 damage others' shots do to it, reports its deaths and takes, returns and captures flags for it. Bots leave with
 the owner (`onDisconnect`), and whoever owns the room next brings the same list back. Bots never own a room, never
-run the leader's chores and never touch the leaderboard. See `game/bot/botHost.ts`.
+run the leader's chores and have no leaderboard rows of their own (kills on them count a quarter: see below). See
+`game/bot/botHost.ts`.
 
 **How they think.** Three parts.
 
@@ -825,6 +828,24 @@ Teams share what they know: whatever one bot sees, its teammates learn half a se
 personality: how aggressive it is (how far it goes to help, when it backs off) and how much being hurt shakes its
 aim.
 
+**What a bot can see** is held to what a player could (`game/bot/limits.ts`, the same in the game and in
+training): only what's in front of it, 120° across (160° on Expert), though anyone within 3 m is noticed
+whichever way it faces; and enemies' health only roughly, in quarters, as a name tag's bar reads. In the game,
+smoke and deployed barriers block its sight too, and a cloaked enemy is seen only within 6 m (`canSee` in
+`botHost.ts`; training has no abilities). Being shot, gunfire nearby and teammates' callouts still tell it
+where someone is.
+
+**Ammo and recoil** follow the players' rules: 90 spare rifle rounds (endless in the one-gun modes), topped up on
+respawn and by ammo boxes, which a bot fetches when it's down to two magazines; out of rounds it has only the
+knife. Aiming down the sights takes 45% off its recoil, as it does yours.
+
+**Getting about**: a live bot's paths also go up ledges up to 1.1 m that only a jump gets onto (a crate, a low
+wall), at a little extra cost, and it presses jump as it reaches one, whether the script or the network is
+steering. Deployed barriers are taken off the walk grid while they stand. A carrier being chased is followed on
+a 5 m grid, so a chase on a large map costs a path search every 5 m the carrier moves, not every 3.
+
+**On the leaderboard**, a kill on a bot counts a quarter, and only a round played against another person can be won.
+
 **Pickups and abilities** are the scripted layer's too (`game/bot/gear.ts`, `botHost.ts`). Bots fetch
 pickups within 14 m that are worth having (a gun when they have none, ammo for it, abilities while a slot is free;
 never a flag carrier, or while their flag is away), and drop everything where they die, like players. They use
@@ -839,9 +860,12 @@ turning, less eager trigger fingers.
 
 **Training** happens offline, in TypeScript, on the CPU:
 
-- `game/bot/sim/arena.ts` is the game without a screen: the real map generator, the real Rapier collision and the
-  player's own movement code (`game/movement.ts`, shared with `player.ts`), guns from `gunStats.ts`, and the
-  FFA / TDM / CTF rules. Abilities, grenades and pickups are left out.
+- `game/bot/sim/arena.ts` is the game without a screen: the real map generator (asymmetric maps for every mode
+  but CTF, as the game builds them), the real Rapier collision and the player's own movement code
+  (`game/movement.ts`, shared with `player.ts`), guns from `gunStats.ts`, and the FFA / TDM / CTF / S&D rules.
+  A bot there plays by the game's limits (`game/bot/limits.ts`): it sees only in front of it, reads health in
+  quarters, has 90 spare rifle rounds (back on respawn), less recoil with the sights up, and paths up and jumps
+  ledges. Abilities, grenades and pickups are left out.
 - `game/bot/ppo.ts` is PPO (clipped objective, GAE, Adam) over the dependency-free MLP in `game/bot/nn.ts`.
 - `scripts/train-bots.ts` runs it with worker threads: they play matches (self-play against the current policy,
   older snapshots of it and a scripted bot) and compute gradients in parallel; the main thread applies them. It

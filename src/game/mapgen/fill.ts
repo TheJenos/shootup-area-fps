@@ -32,6 +32,12 @@ const DIRS: [number, number][] = (() => {
 })();
 
 export interface Filled {
+  /**
+   * The same things by side, for a map put together from two designs (generate.ts): red's pieces,
+   * their copies in blue's half, the middle's centrepiece, and how many of `pickupSpots` and `targets`
+   * are red's (they come first).
+   */
+  sides: { red: Piece[]; blue: Piece[]; centre: Piece; redPickups: number; redTargets: number };
   boxes: MapBox[];
   props: MapProp[];
   patches: NonNullable<Piece['patches']>;
@@ -122,14 +128,7 @@ export function fill(rng: Rng, l: Layout, g: Ground, biome: Biome, theme: MapThe
   rects.push(...centrepiece.boxes.filter((bx) => bx.blocks !== 'shots').map(rectOfBox));
 
   // Cover along every corridor: the main path into the plaza, the pockets and the loops.
-  const lines: [number, number][][] = [
-    [...route.main.map(centre), [centre(route.main[route.main.length - 1]!)[0], 4]],
-    ...route.pockets.map((p) => {
-      const from = route.main.find((c) => [p[0]! - 1, p[0]! + 1, p[0]! - P.cols, p[0]! + P.cols].includes(c));
-      return [...(from !== undefined ? [centre(from)] : []), ...p.map(centre)];
-    }),
-    ...route.loops.map((lp) => lp.cells.map(centre)),
-  ];
+  const lines = l.lines.map((line) => line.points.map(([x, z]) => [x, z] as [number, number]));
   for (const line of lines) {
     let side = rng.chance(0.5) ? 1 : -1;
     let carry = P.coverGap / 2;
@@ -204,9 +203,11 @@ export function fill(rng: Rng, l: Layout, g: Ground, biome: Biome, theme: MapThe
 
   // Copy red's half.
   const sym = l.sym;
-  const pieces = [...red, ...red.map((p) => tPiece(sym, p)), centrepiece];
+  const blue = red.map((p) => tPiece(sym, p));
+  const pieces = [...red, ...blue, centrepiece];
   const [bx, bz] = tPoint(sym, fx, fz);
   return {
+    sides: { red, blue, centre: centrepiece, redPickups: pickups.length, redTargets: targets.length },
     boxes: pieces.flatMap((p) => p.boxes),
     props: pieces.flatMap((p) => p.props ?? []),
     patches: pieces.flatMap((p) => p.patches ?? []),

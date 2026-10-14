@@ -10,7 +10,7 @@ import { loadPropModels } from '../game/props';
 import { loadPhysics } from '../game/physics';
 import { ModePicker } from './ModePicker';
 import { PRESETS, type ModeRules } from '../game/rules';
-import { GENERATOR_VERSION, isPlayableSpec, type MapSpec } from '../game/mapgen';
+import { GENERATOR_VERSION, isPlayableSpec, specForMode, type MapSpec } from '../game/mapgen';
 import { MapPicker, useMapChoice } from './MapPicker';
 import { RoomBrowser, mapLabel, useRooms, versionMessage } from './RoomBrowser';
 import type { Session } from './App';
@@ -90,7 +90,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
       // Always try: the match we saw may have ended since (its last player left), and then we
       // start it again as it was. If someone else started one since we looked, we join theirs.
       const created = await createRoomWithCode(
-        roomCode, 'Discord match', existing?.rules ?? rules, existing?.map ?? mapChoice.spec(), discord.name, playerId,
+        roomCode, 'Discord match', existing?.rules ?? rules, existing?.map ?? specForMode(mapChoice.spec(), rules.base), discord.name, playerId,
       );
       const setup = await getRoomSetup(roomCode);
       if (!setup) throw new Error('Could not start the match. Try again.');

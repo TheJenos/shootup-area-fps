@@ -17,6 +17,9 @@
         "gen": {
           ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 1000"
         },
+        "asym": {
+          ".validate": "newData.isBoolean()"
+        },
         "mode": {
           ".validate": "newData.val() === 'ffa' || newData.val() === 'tdm' || newData.val() === 'ctf' || newData.val() === 'snd' || newData.val() === 'gungame' || newData.val() === 'sniper' || newData.val() === 'snipertdm'"
         },
@@ -127,6 +130,9 @@
           },
           "gen": {
             ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 1000"
+          },
+          "asym": {
+            ".validate": "newData.isBoolean()"
           },
           "mapHash": {
             ".validate": "newData.isNumber()"

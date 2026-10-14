@@ -93,6 +93,21 @@ interface Slot {
   episodeReward: number[];
   /** Whether each agent's last decision was the objective layer's (walking to its goal) rather than the policy's */
   traveling: boolean[];
+  /**
+   * Each agent's reward this episode by source, split by who it went to: the policy's decisions (what it
+   * learns from), or the objective layer's (walking and pushing: not experience, so not learned from)
+   */
+  credited: Record<string, number>[];
+  uncredited: Record<string, number>[];
+}
+
+/** The reward chart's name for everything that went to the objective layer's decisions */
+export const UNCREDITED_PART = 'objective layer';
+
+/** Move `from` (reward since the last decision, by source) into `to`, and empty it */
+function takeParts(from: Record<string, number>, to: Record<string, number>): void {
+  for (const [k, v] of Object.entries(from)) to[k] = (to[k] ?? 0) + v;
+  for (const k of Object.keys(from)) delete from[k];
 }
 
 const pick = <T>(list: readonly T[], rand: () => number): T => list[Math.floor(rand() * list.length)]!;
@@ -160,6 +175,8 @@ export class Rollout {
       arena, roles,
       trajectories: roles.map((r) => (r.kind === 'learner' ? new Trajectory() : null)),
       episodeReward: roles.map(() => 0),
+      credited: roles.map(() => ({})),
+      uncredited: roles.map(() => ({})),
       traveling: roles.map(() => false),
     };
   }
@@ -191,7 +208,9 @@ export class Rollout {
           arena.shape(a, this.raw);
           // Rewards since the last decision belong to it, if the policy made it (walking to the goal is the
           // objective layer's; the policy is only judged on what it chose).
-          if (traj && !slot.traveling[a.index]) traj.reward(a.reward);
+          const credited = !!traj && !slot.traveling[a.index];
+          if (credited) traj!.reward(a.reward);
+          takeParts(a.pendingParts, credited ? slot.credited[a.index]! : slot.uncredited[a.index]!);
           slot.episodeReward[a.index]! += a.reward;
           a.reward = 0;
           // Nobody to fight: the objective layer walks it to its goal. That ends the policy's stretch of
@@ -214,7 +233,7 @@ export class Rollout {
             }
             slot.traveling[a.index] = true;
             const fighter = role.kind === 'snapshot' ? role.policy : policy;
-            actions.push(pushAction(fighter.sample(fighter.normalize(this.raw), {}, this.rand).action, this.raw));
+            actions.push(pushAction(fighter.sample(fighter.normalize(this.raw), {}, this.rand).action, this.raw, a.walk));
             continue;
           }
           slot.traveling[a.index] = false;
@@ -294,7 +313,10 @@ export class Rollout {
         const bonus = scoreOf(a) === best ? REWARD.capture * 0.5 : -REWARD.capture * 0.3;
         a.reward += bonus;
         a.rewardParts.win = (a.rewardParts.win ?? 0) + bonus;
+        a.pendingParts.win = (a.pendingParts.win ?? 0) + bonus;
       }
+      // (The last stretch always goes to the trajectory.)
+      takeParts(a.pendingParts, slot.credited[a.index]!);
       const t = trajectories[a.index];
       slot.episodeReward[a.index]! += a.reward;
       if (!t) continue;
@@ -306,7 +328,10 @@ export class Rollout {
       stats.kills += a.kills;
       stats.deaths += a.deaths;
       stats.captures += a.captures;
-      for (const [k, v] of Object.entries(a.rewardParts)) stats.parts[k] = (stats.parts[k] ?? 0) + v;
+      // What the policy was credited with, by source; the objective layer's share as one line (not learned from).
+      for (const [k, v] of Object.entries(slot.credited[a.index]!)) stats.parts[k] = (stats.parts[k] ?? 0) + v;
+      const toObjective = Object.values(slot.uncredited[a.index]!).reduce((sum, v) => sum + v, 0);
+      stats.parts[UNCREDITED_PART] = (stats.parts[UNCREDITED_PART] ?? 0) + toObjective;
     }
     for (const k of arena.killLog) {
       const killer = roles[k.killer]?.kind;

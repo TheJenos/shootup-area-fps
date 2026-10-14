@@ -119,7 +119,7 @@ function dumpLayout(g: Generated, file: string, stage: 1 | 2): void {
     }
   }
   for (const route of map.layout?.routes ?? []) {
-    const c: [number, number, number] = route.role === 'main' ? [220, 40, 40] : route.role === 'loop' ? [40, 140, 220] : [40, 170, 80];
+    const c: [number, number, number] = route.role === 'main' || route.role === 'lane' ? [220, 40, 40] : route.role === 'loop' ? [40, 140, 220] : [40, 170, 80];
     for (let i = 1; i < route.points.length; i++) line(...route.points[i - 1]!, ...route.points[i]!, c, 2);
   }
   writeFileSync(file, PNG.sync.write(png));
@@ -222,7 +222,13 @@ for (const seed of seeds.slice(0, 4)) {
 }
 if (flag('golden') || flag('update-golden')) {
   const golden: Record<string, number> = {};
-  for (const seed of seeds.slice(0, GOLDEN_SEEDS)) for (const size of ['s', 'm', 'l'] as const) golden[`${size}:${seed}`] = generateWithReport(toSpec(seed, size)).map.hash;
+  for (const seed of seeds.slice(0, GOLDEN_SEEDS)) {
+    for (const size of ['s', 'm', 'l'] as const) {
+      golden[`${size}:${seed}`] = generateWithReport(toSpec(seed, size)).map.hash;
+      // The asymmetric map of the same seed (every mode but CTF plays on one)
+      golden[`a${size}:${seed}`] = generateWithReport(toSpec(seed, size, GENERATOR_VERSION, true)).map.hash;
+    }
+  }
   const file: Record<string, Record<string, number>> = existsSync(GOLDEN_FILE) ? JSON.parse(readFileSync(GOLDEN_FILE, 'utf8')) : {};
   if (flag('update-golden')) {
     file[String(GENERATOR_VERSION)] = golden;

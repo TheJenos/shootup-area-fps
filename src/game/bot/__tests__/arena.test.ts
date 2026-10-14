@@ -40,7 +40,8 @@ describe('hitscan', () => {
 describe('the training arena', () => {
   it('plays a CTF match with scripted bots without anyone falling out of the world', () => {
     const rand = lcg(42);
-    const arena = new Arena({ seed: 'ARENA1', size: 's', mode: 'ctf', players: 3, seconds: 60 }, rand);
+    const arena = new Arena({ seed: 'ARENA3', size: 's', mode: 'ctf', players: 3, seconds: 60 }, rand);
+    // (A map where the two sides meet inside a minute: with several ways to the middle they don't always.)
     const obs = arena.agents.map(() => new Float32Array(OBS_SIZE));
     let steps = 0;
     while (!arena.done) {

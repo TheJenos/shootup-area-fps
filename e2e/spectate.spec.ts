@@ -79,4 +79,22 @@ test.describe('spectating', () => {
     await carol.page.waitForTimeout(1_500);
     await expect(watching).toHaveText(alice.name);
   });
+
+  test('sounds: the watched player is heard first-person, from inside their head', async ({ duel }) => {
+    const { alice, bob, aliceId } = await duel();
+    await bob.openPauseMenu();
+    await bob.page.getByRole('button', { name: 'Spectate' }).click();
+    await expect.poll(async () => (await bob.state()).spectating).toBe(true);
+    await bob.play();
+    await expect(bob.page.locator('#spectate strong')).toHaveText(alice.name);
+    // Her steps, shots and reloads play as Bob's own would (centred), not placed beside his head.
+    await expect.poll(() => bob.page.evaluate((id) => (window as any).game.seenThrough(id), aliceId)).toBe(true);
+    // Everyone else is heard from where her head is.
+    const gap = await bob.page.evaluate((id) => {
+      const g = (window as any).game;
+      return g.remotes.get(id).eyePosition(g.camera.position.clone()).distanceTo(g.soundFrom);
+    }, aliceId);
+    expect(gap).toBeLessThan(0.3);
+    expect(await alice.page.evaluate((id) => (window as any).game.seenThrough(id), aliceId)).toBe(false);
+  });
 });

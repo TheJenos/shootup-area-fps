@@ -12,7 +12,7 @@
 import { CLASSIC_SEED, classicMap } from './classic';
 import { generate, metaFor } from './generate';
 import { mapHash } from './hash';
-import { isMapSize, specKey, type MapSpec } from './spec';
+import { asymFor, isMapSize, specKey, type MapSpec } from './spec';
 import type { MapData } from './types';
 
 export type {
@@ -20,7 +20,7 @@ export type {
 } from './types';
 export { PAINT } from './types';
 export { groundHeight, groundGradient, groundRange, rapierHeights } from './heightField';
-export { MAP_SIZES, SIZE_LABEL, isMapSize, specKey, type MapSize, type MapSpec } from './spec';
+export { MAP_SIZES, SIZE_LABEL, asymFor, isMapSize, specKey, type MapSize, type MapSpec } from './spec';
 export { THEMES } from './themes';
 export { insideOutline, outsideRects, type Outline } from './layout';
 export { CLASSIC_SEED };
@@ -29,7 +29,7 @@ export { CLASSIC_SEED };
  * Bump whenever any seed's map changes: rooms remember the version they were made with, and
  * clients on another version can't join them (they'd be playing on different maps).
  */
-export const GENERATOR_VERSION = 4;
+export const GENERATOR_VERSION = 5;
 export const SEED_MAX_LENGTH = 16;
 
 /** Seeds are case-insensitive letters and digits, so they're easy to read out and type. */
@@ -44,13 +44,22 @@ export function randomSeed(): string {
   return s;
 }
 
-/** A clean spec: normalized seed, a valid size, the version (CLASSIC ignores size and version). */
-export function toSpec(seed: string, size?: unknown, gen?: unknown): MapSpec {
+/** A clean spec: normalized seed, a valid size, the version, asymmetric or not (CLASSIC ignores all but the seed). */
+export function toSpec(seed: string, size?: unknown, gen?: unknown, asym?: unknown): MapSpec {
   const s = normalizeSeed(seed) || CLASSIC_SEED;
-  return { seed: s, size: isMapSize(size) ? size : 'm', gen: typeof gen === 'number' && gen >= 1 ? Math.floor(gen) : GENERATOR_VERSION };
+  return {
+    seed: s, size: isMapSize(size) ? size : 'm', gen: typeof gen === 'number' && gen >= 1 ? Math.floor(gen) : GENERATOR_VERSION,
+    ...(asym === true && s !== CLASSIC_SEED ? { asym: true } : {}),
+  };
 }
 
 export const isClassic = (spec: MapSpec): boolean => spec.seed === CLASSIC_SEED;
+
+/** `spec` as a room playing `base` has it: asymmetric unless it's Capture the Flag (see MapSpec.asym). */
+export function specForMode(spec: MapSpec, base: string): MapSpec {
+  const { asym: _old, ...rest } = spec;
+  return isClassic(spec) || !asymFor(base) ? rest : { ...rest, asym: true };
+}
 
 /** Whether this build can make the map (the classic one always; others only on the same version). */
 export const isPlayableSpec = (spec: MapSpec): boolean => isClassic(spec) || spec.gen === GENERATOR_VERSION;

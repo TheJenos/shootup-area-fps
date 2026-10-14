@@ -3,7 +3,7 @@ import { buildWorld, type World } from './world';
 import type { Ramp } from './ramps';
 import { loadPhysics, PhysicsWorld, setActivePhysics } from './physics';
 import { DebrisField, LOOSE_PROPS } from './debris';
-import { generateMap, isPlayableSpec, mapName, normalizeSeed, randomSeed, sameMap, CLASSIC_SEED, GENERATOR_VERSION, type MapData, type MapSpec } from './mapgen';
+import { asymFor, generateMap, specForMode, isPlayableSpec, mapName, normalizeSeed, randomSeed, sameMap, CLASSIC_SEED, GENERATOR_VERSION, type MapData, type MapSpec } from './mapgen';
 import { prefetchMap } from './mapgen/client';
 import { roomMap } from '../net/network';
 import { LocalPlayer } from './player';
@@ -128,6 +128,8 @@ const EMPTY_STATS: PlayerStats = { damage: 0, shots: 0, hits: 0, headshots: 0, s
 const EMPTY_MY_MATCH: MyMatch = { pickups: 0, abilitiesUsed: 0, dropped: 0 };
 /** Before trusting that a flag carrier has left, give the player list time to load */
 const REFEREE_GRACE_MS = 3_000;
+/** Walls between us and a sound are looked for this far above where it is (m): not the floor it's on */
+const SOUND_LIFT = 0.6;
 /** Other players' footsteps can't be heard further away than this (m) */
 const STEP_HEARING_RANGE = 35;
 /** How often we measure our ping (s). Each measurement is a write every other player receives. */
@@ -155,6 +157,8 @@ const OVERTIME_MS = 2 * 60_000;
 /** A spawn an enemy can see counts this much (m) nearer to them; beyond this range nobody is looking */
 const SPAWN_SEEN_PENALTY = 30;
 const SPAWN_SEEN_RANGE = 70;
+const _sightA = new THREE.Vector3();
+const _sightB = new THREE.Vector3();
 const _spawnEye = new THREE.Vector3();
 const _spawnTarget = new THREE.Vector3();
 
@@ -293,6 +297,8 @@ export class Game {
   private nextBeepAt = 0;
   /** Our ability slots as last sent (see `ab` on PlayerState) */
   private lastAb = '';
+  /** Of this round's kills, how many were bots (they count a quarter on the leaderboard) */
+  private botKills = 0;
   /** Barriers this client put up (ours and our bots'): their records are ours to take down */
   private readonly myWalls = new Set<string>();
   private lastWatchedKey = '';
@@ -331,6 +337,12 @@ export class Game {
   /** Where we put the enemy flag down with E: not picked back up until we step away */
   private flagLeftAt: { x: number; z: number } | null = null;
   private readonly losRay = new THREE.Raycaster();
+  /** For the spatial audio: is a wall between a sound and the camera? (and scratch vectors) */
+  private readonly soundRay = new THREE.Raycaster();
+  private readonly soundFrom = new THREE.Vector3();
+  private readonly soundTo = new THREE.Vector3();
+  private readonly soundUp = new THREE.Vector3();
+  private readonly soundQuat = new THREE.Quaternion();
   private claimingPickup: string | null = null;
   private fullToastFor: string | null = null;
   private spawnTimer = 1;
@@ -584,7 +596,7 @@ export class Game {
 
   /** The map the room's game record says this round is on */
   private roomSpec(g: GameState): MapSpec {
-    return roomMap({ seed: g.seed, size: g.size ?? this.mapSpec.size, gen: g.gen ?? this.mapSpec.gen });
+    return roomMap({ seed: g.seed, size: g.size ?? this.mapSpec.size, gen: g.gen ?? this.mapSpec.gen, asym: g.asym });
   }
 
   /** The physics engine has loaded: build the map in it and give us (and dead bodies) a body. */
@@ -1291,6 +1303,20 @@ export class Game {
       botRoster: () => this.botRoster,
       firesAt: (x, y, z) => this.fires.burning(new THREE.Vector3(x, y, z)).map((f) => ({ owner: f.owner, center: f.center })),
       notify: (text) => this.hud.toast(text),
+      barriers: () => this.walls.list(),
+      sightBlocked: (ax, ay, az, bx, by, bz) => {
+        const a = _sightA.set(ax, ay, az);
+        const b = _sightB.set(bx, by, bz);
+        // Smoke: any cloud whose middle comes near the line between them.
+        if (this.smoke.blocksLine(a, b)) return true;
+        // Barriers: the only solids the map's occlusion grid doesn't know about.
+        if (!this.walls.list().length) return false;
+        const dir = b.clone().sub(a);
+        const len = dir.length();
+        this.botRay.set(a, dir.normalize());
+        this.botRay.far = len;
+        return this.botRay.intersectObjects(this.walls.meshes(), false).length > 0;
+      },
     });
   }
 
@@ -1445,8 +1471,11 @@ export class Game {
         }
         this.debris.shot(origin, end);
       }
-      const dist = origin.distanceTo(this.camera.position);
-      if (!this.killcam) sfx.playShot(1 / (1 + dist / 10), gun);
+      // Watching through their eyes: their gun sounds like ours (centred), not like one fired beside our head.
+      if (!this.killcam) {
+        if (!evt.tur && this.seenThrough(evt.from)) sfx.playShot(0.7, gun);
+        else sfx.playShot(1, gun, this.soundAt(origin));
+      }
       // Turret shots never carry this; a player's can (at most a full shotgun blast per barrier or turret).
       if (evt.dep && !evt.tur) this.damageDeployables(evt.dep, evt.from, maxShotDamage(gun) * GUNS[gun].pellets);
       // Shotguns send damage per player hit; everything else a single hit. A shot from further
@@ -1463,9 +1492,9 @@ export class Game {
       if (evt.from === this.playerId || !evt.o) return;
       const origin = fromArr(evt.o);
       const knife = evt.w === 'knife';
-      const heard = this.heardFrom(origin);
-      if (heard && knife) sfx.playKnife(heard.volume * 1.6, heard.pan);
-      else if (heard) sfx.playSwing(heard.volume * 1.6, heard.pan);
+      const heard = this.seenThrough(evt.from) ? { volume: 0.6, at: undefined } : this.heardFrom(origin);
+      if (heard && knife) sfx.playKnife(heard.volume * 1.6, 0, heard.at);
+      else if (heard) sfx.playSwing(heard.volume * 1.6, 0, heard.at);
       if (knife) {
         this.remotes.get(evt.from)?.noteKnife();
         this.recorder.event({ t, kind: 'knife', from: evt.from });
@@ -1489,7 +1518,7 @@ export class Game {
       if (evt.from === this.playerId) return;
       const color = new THREE.Color(this.players[evt.from]?.color ?? evt.c ?? '#9aa6b8').getHex();
       this.turrets.place(evt.id, evt.from, evt.x, evt.y, evt.z, evt.yaw, evt.until, color);
-      sfx.playAbility();
+      sfx.playAbility(this.soundAt(new THREE.Vector3(evt.x, evt.y, evt.z)));
     } else if (evt.type === 'mine') {
       // Quietly: enemies only find out by seeing it.
       if (evt.from === this.playerId) return;
@@ -1509,7 +1538,7 @@ export class Game {
       if (evt.dep) this.damageDeployables(evt.dep, evt.from, evt.mine ? MINE_DAMAGE : GRENADE_DAMAGE);
       this.grenades.explode(evt.id, at, GRENADE_RADIUS);
       this.liftBodies(at);
-      sfx.playExplosion(1 / (1 + at.distanceTo(this.camera.position) / 12));
+      sfx.playExplosion(1, this.soundAt(at));
       const dmg = evt.hits?.[this.playerId];
       if (dmg) this.takeDamage(dmg, evt.from, false, evt.mine ? 'mine' : 'grenade', at);
     } else if (evt.type === 'kill') {
@@ -1622,6 +1651,7 @@ export class Game {
   /** Feed our kills into the highlight tracker. */
   private onOwnKill(victim: string, head: boolean, t: number): void {
     if (this.roundOver) return;
+    if (isBotId(victim)) this.botKills++;
     let stoppedCarrier = false;
     if (this.team) {
       const drop = this.lastDrop[this.team];
@@ -1693,7 +1723,7 @@ export class Game {
       if (!sameRules(rules, this.rules)) this.setRules(rules, !first);
     }
     // Build the next round's map while the results are up.
-    if (next.ended?.nextSeed) prefetchMap({ ...this.mapSpec, seed: normalizeSeed(next.ended.nextSeed) || CLASSIC_SEED });
+    if (next.ended?.nextSeed) prefetchMap(specForMode({ ...this.mapSpec, seed: normalizeSeed(next.ended.nextSeed) || CLASSIC_SEED }, this.rules.base));
 
     if (next.ended && (first || !prev.ended || newRound)) {
       this.endedAt = next.ended.at ?? this.net.serverNow();
@@ -1744,9 +1774,13 @@ export class Game {
     if (!ended || this.spectating || this.rankedRound === this.game.round) return;
     if (this.kills + this.deaths + this.stats.captures === 0 && performance.now() - this.joinedAt < 60_000) return;
     this.rankedRound = this.game.round;
-    const won = ended.winner !== 'draw' && (this.team ? ended.winner === this.team : ended.winner === this.playerId);
+    // Bots can't be farmed for rank: a kill on one counts a quarter, and only a round played against
+    // another person can be won.
+    const people = Object.entries(this.players).some(([id, p]) => id !== this.playerId && !isBotId(id) && !p.spec);
+    const won = people && ended.winner !== 'draw' && (this.team ? ended.winner === this.team : ended.winner === this.playerId);
+    const kills = this.kills - this.botKills + Math.floor(this.botKills / 4);
     // The database rules cap what one round can add (see leaderboard.ts); over the cap the whole round would be refused.
-    recordRound(this.profileId, this.name, { kills: Math.min(100, this.kills), deaths: Math.min(100, this.deaths), captures: Math.min(10, this.stats.captures), won }, this.guildId)
+    recordRound(this.profileId, this.name, { kills: Math.max(0, Math.min(100, kills)), deaths: Math.min(100, this.deaths), captures: Math.min(10, this.stats.captures), won }, this.guildId)
       .catch((err: unknown) => console.warn('Could not update the leaderboard', err));
   }
 
@@ -1800,6 +1834,7 @@ export class Game {
     this.stopReplay();
     this.hud.clearToasts();
     this.kills = 0;
+    this.botKills = 0;
     this.applyLoadout();
     this.deaths = 0;
     this.stats = { ...EMPTY_STATS };
@@ -1964,6 +1999,9 @@ export class Game {
       g.seed = seed;
       g.size ??= this.mapSpec.size;
       g.gen ??= this.mapSpec.gen;
+      // The next map follows the mode: asymmetric, unless it's Capture the Flag.
+      if (asymFor(this.rules.base) && seed !== CLASSIC_SEED) g.asym = true;
+      else delete g.asym;
       delete g.mapHash;
       g.startedAt = this.net.serverNow();
       delete g.ended;
@@ -1976,7 +2014,7 @@ export class Game {
         if (!committed) return;
         // The lobby should list the new map. (The old map's pickups are cleared by the leader when it
         // starts the round, so they can't be swept away after its spawner has restocked the new map.)
-        this.net.setLobbyMap({ ...this.mapSpec, seed: normalizeSeed(seed) || CLASSIC_SEED })
+        this.net.setLobbyMap(specForMode({ ...this.mapSpec, seed: normalizeSeed(seed) || CLASSIC_SEED }, this.rules.base))
           .catch((err: unknown) => console.warn('Could not update the lobby map', err));
       })
       .catch((err: unknown) => console.warn('Could not start the next round', err));
@@ -2697,7 +2735,8 @@ export class Game {
     for (const r of this.remotes.values()) {
       if (!r.alive && r.position.distanceTo(at) < BOMB_BLAST_RADIUS * 1.2) r.knockback(at, 14, false, true);
     }
-    sfx.playExplosion(Math.min(1.5, 2 / (1 + at.distanceTo(this.camera.position) / 30)));
+    // The bomb carries much further than a grenade.
+    sfx.playExplosion(1.5, this.soundAt(at), 25);
     this.shake = Math.min(1, this.shake + 1.2 - Math.min(1, at.distanceTo(this.camera.position) / 60));
     this.bots.bombBlast(at, BOMB_BLAST_RADIUS, b.planter);
     if (this.alive && !this.roundOver && this.player.position.distanceTo(at) < BOMB_BLAST_RADIUS) this.die(b.planter ?? '', false, 'bomb');
@@ -2854,8 +2893,7 @@ export class Game {
       const now = performance.now();
       if (now >= this.nextBeepAt) {
         const left = Math.max(0, secondsLeft(s, this.net.serverNow()));
-        const d = Math.hypot(b.x - me.x, b.y - me.y, b.z - me.z);
-        sfx.playBombBeep(1 / (1 + d / 18));
+        sfx.playBombBeep(1, this.soundAt(new THREE.Vector3(b.x, b.y, b.z)));
         this.nextBeepAt = now + (120 + 880 * (left / BOMB_TIME));
       }
     }
@@ -3609,14 +3647,14 @@ export class Game {
   /** A molotov landed: fire for a few seconds. A flashbang: everyone looking at it is blinded. */
   private setOff(b: { id: string; kind: 'molotov' | 'flash'; owner: string; p: THREE.Vector3 }): void {
     this.grenades.land(b.id);
-    const heard = 1 / (1 + b.p.distanceTo(this.camera.position) / 12);
+    const heard = this.soundAt(b.p);
     if (b.kind === 'molotov') {
       this.fires.ignite(b.id, b.owner, b.p, this.net.serverNow() + FIRE_DURATION * 1000);
-      sfx.playMolotov(heard);
+      sfx.playMolotov(1, heard);
       return;
     }
     this.grenades.explode(b.id, b.p, 2.5, 0xffffff);
-    sfx.playFlashbang(heard);
+    sfx.playFlashbang(1, heard);
     // Everyone works out their own blindness: distance, line of sight and which way they face.
     const eye = this.camera.getWorldPosition(new THREE.Vector3());
     const dist = eye.distanceTo(b.p);
@@ -3714,16 +3752,16 @@ export class Game {
       const turret = !this.walls.ownerOf(id);
       const hit = turret ? this.turrets.damage(id, amount) : this.walls.damage(id, amount);
       if (!hit?.destroyed) continue;
-      const volume = 1 / (1 + hit.at.distanceTo(this.camera.position) / 12);
+      const where = this.soundAt(hit.at);
       if (turret) {
         // A small pop, without the grenade's damage.
         this.grenades.explode(`${id}:boom`, hit.at, 1.6);
-        sfx.playExplosion(volume * 0.6);
+        sfx.playExplosion(0.6, where);
       } else {
         for (let i = 0; i < 8; i++) {
           this.effects.impact(hit.at.clone().add(new THREE.Vector3((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 0.6)));
         }
-        sfx.playBreak(volume);
+        sfx.playBreak(1, where);
       }
       if (owner === this.playerId) this.hud.toast(turret ? 'Your turret was destroyed' : 'Your barrier was destroyed');
       else if (from === this.playerId) this.hud.toast(turret ? 'Turret destroyed' : 'Barrier destroyed');
@@ -3847,7 +3885,7 @@ export class Game {
     else if (hit) this.effects.impact(end, 0xffc35c);
     this.debris.shot(muzzle, end);
     this.turrets.fired(t);
-    sfx.playShot(0.5 / (1 + muzzle.distanceTo(this.camera.position) / 10), 'rifle');
+    sfx.playShot(0.5, 'rifle', this.soundAt(muzzle));
     if (hitId) {
       const target = this.remotes.get(hitId);
       if (target) this.stats.damage += Math.min(TURRET_DAMAGE, target.displayedHp);
@@ -3906,7 +3944,6 @@ export class Game {
     const until = this.net.serverNow() + WALL_DURATION * 1000;
     // A record, not an event: everyone places it from the record (ours comes straight back to us), and
     // so does anyone who joins while it stands. We take it down again when it expires or breaks.
-    this.myWalls.add(id);
     this.net.placeDeployable(id, { kind: 'wall', owner: actor.id, x, y, z, axis, until, c: actor.color })
       .catch((err: unknown) => console.warn('Could not place the barrier', err));
     return true;
@@ -3917,7 +3954,10 @@ export class Game {
     if (rec.kind !== 'wall' || rec.until <= this.net.serverNow()) return;
     const color = new THREE.Color(this.players[rec.owner]?.color ?? rec.c ?? '#6fa8ff').getHex();
     this.walls.place(id, rec.owner, rec.x, rec.y, rec.z, rec.axis, rec.until, color);
-    if (rec.owner !== this.playerId && !this.bots.has(rec.owner)) sfx.playAbility();
+    // Ours (or our bots'): ours to take down when it's gone. Tracked from here, once it stands, not when
+    // asked for: before the record is back it isn't standing yet, and the sweep would delete it at once.
+    if (rec.owner === this.playerId || this.bots.has(rec.owner)) this.myWalls.add(id);
+    if (rec.owner !== this.playerId && !this.bots.has(rec.owner)) sfx.playAbility(this.soundAt(new THREE.Vector3(rec.x, rec.y, rec.z)));
   }
 
   /** Ours (and our bots') that have come down: take their records with them. */
@@ -3993,7 +4033,7 @@ export class Game {
     }
     this.grenades.explode(blast.id, blast.p, GRENADE_RADIUS);
     this.liftBodies(blast.p);
-    sfx.playExplosion(1 / (1 + blast.p.distanceTo(this.camera.position) / 12));
+    sfx.playExplosion(1, this.soundAt(blast.p));
     if (hitAnyone) {
       this.hud.hitmarker(false);
       sfx.playHit(false);
@@ -4024,7 +4064,7 @@ export class Game {
         this.grenades.land(smoke.id);
         this.smoke.spawn(smoke.id, smoke.p);
         const heard = this.heardFrom(smoke.p);
-        if (heard) sfx.playSlide('sand', heard.volume * 1.2, heard.pan);
+        if (heard) sfx.playSlide('sand', heard.volume * 1.2, 0, heard.at);
       }
     }
 
@@ -4235,6 +4275,8 @@ export class Game {
     this.timer.update();
     const dt = Math.min(this.timer.getDelta(), 0.05);
     this.update(dt);
+    // After the update: the camera is where it'll be drawn (ours, or the eyes we're watching through).
+    this.updateListener();
     if (PERF_DEBUG) this.renderer.info.autoReset = false;
     this.renderer.info.reset();
     this.renderer.clear();
@@ -4364,8 +4406,11 @@ export class Game {
       r.update(dt, serverNow);
       this.updateRemoteSteps(id, r, dt);
       if (r.consumeReloadStart()) {
-        const heard = this.heardFrom(r.position);
-        if (heard) sfx.playReload(heard.volume * 1.5, r.heldGun);
+        if (this.seenThrough(id)) sfx.playReload(1, r.heldGun);
+        else {
+          const heard = this.heardFrom(r.position);
+          if (heard) sfx.playReload(heard.volume * 1.5, r.heldGun, heard.at);
+        }
       }
     }
     // Bodies: ours is solid while we play; everyone else's follows where we draw them.
@@ -4625,13 +4670,18 @@ export class Game {
     // We only get their position, so "on the ground" means standing on the floor or on top of a box.
     const pos = remote.position;
     const grounded = pos.y - this.groundBelow(pos) < 0.08;
+    // Watching through their eyes, their steps and slides are ours: underfoot and centred, as quiet as our own.
+    const mine = this.seenThrough(id);
     if (remote.consumeSlideStart() && this.joined) {
-      const heard = this.heardFrom(pos);
-      if (heard) sfx.playSlide(this.surfaceAt(pos), heard.volume * 1.4, heard.pan);
+      if (mine) sfx.playSlide(this.surfaceAt(pos), 0.7);
+      else {
+        const heard = this.heardFrom(pos);
+        if (heard) sfx.playSlide(this.surfaceAt(pos), heard.volume * 1.4, 0, heard.at);
+      }
     }
     const step = tracker.update(dt, remote.stance === 'slide' ? 0 : remote.moveSpeed, grounded);
     // Cloaked players are quieter too, but still give themselves away.
-    if (step && this.joined) this.playStep(step, pos, true, remote.stance === 'crouch', remote.cloaked);
+    if (step && this.joined) this.playStep(step, pos, !mine, remote.stance === 'crouch', remote.cloaked);
   }
 
   /** What footsteps at `at` sound like: the top of whatever you're standing on, or the map's floor. */
@@ -4640,14 +4690,54 @@ export class Game {
   }
 
   /** How loud, and from which side, a sound at `at` reaches us; null when out of hearing range. */
-  private heardFrom(at: THREE.Vector3): { volume: number; pan: number } | null {
+  /**
+   * A quiet sound (a step, a reload, a swing) from `at`, if it's within hearing range: how loud it still is
+   * (it fades out toward the edge of the range) and where it is, for the spatial audio (which does the
+   * distance falloff and the direction). Null when it's too far to hear at all.
+   */
+  private heardFrom(at: THREE.Vector3): { volume: number; at: sfx.Where } | null {
     const distance = at.distanceTo(this.camera.position);
     if (distance > STEP_HEARING_RANGE) return null;
     // Fade out smoothly toward the edge of hearing range.
     const edge = 1 - Math.max(0, (distance - STEP_HEARING_RANGE * 0.7) / (STEP_HEARING_RANGE * 0.3));
-    const local = this.camera.worldToLocal(at.clone());
-    const pan = distance > 0.5 ? THREE.MathUtils.clamp(local.x / distance, -1, 1) * 0.85 : 0;
-    return { volume: edge / (1 + distance / 5), pan };
+    return { volume: edge, at: this.soundAt(at) };
+  }
+
+  /**
+   * Where a sound in the world is, for the spatial audio: its position, and whether a wall stands between
+   * it and the camera (then it's muffled). Aimed a little above `p`, so a sound at someone's feet isn't
+   * "behind" the floor they stand on.
+   */
+  private soundAt(p: THREE.Vector3): sfx.Where {
+    const from = this.camera.getWorldPosition(this.soundFrom);
+    const to = this.soundTo.set(p.x, p.y + SOUND_LIFT, p.z);
+    const distance = from.distanceTo(to);
+    let occluded = false;
+    if (distance > 1) {
+      this.soundRay.set(from, to.sub(from).divideScalar(distance));
+      // (Short of the source itself: whatever it stands against doesn't count.)
+      this.soundRay.far = distance - 0.5;
+      occluded = this.soundRay.intersectObjects(this.world.solids, false).length > 0;
+    }
+    return { x: p.x, y: p.y, z: p.z, occluded };
+  }
+
+  /**
+   * Whether `id` is who we're watching through (spectating them, or watching a teammate after dying in S&D).
+   * Their own sounds then play as ours do, centred: the camera is in their head, and placed in 3D they came
+   * from just below and in front of our ears, at a stranger's loudness.
+   */
+  private seenThrough(id: string): boolean {
+    return !!this.pov && !this.playback && this.remotes.get(id) === this.pov;
+  }
+
+  /** The spatial audio hears from the camera: our eyes, or whoever's we're watching through. */
+  private updateListener(): void {
+    const cam = this.camera;
+    cam.getWorldPosition(this.soundFrom);
+    cam.getWorldDirection(this.soundTo);
+    const up = this.soundUp.set(0, 1, 0).applyQuaternion(cam.getWorldQuaternion(this.soundQuat));
+    sfx.setListener(this.soundFrom.x, this.soundFrom.y, this.soundFrom.z, this.soundTo.x, this.soundTo.y, this.soundTo.z, up.x, up.y, up.z);
   }
 
   /** @param crouched crouch-walking is much quieter; @param cloaked so is a cloaked player */
@@ -4657,14 +4747,14 @@ export class Game {
     let volume = land ? Math.min(1, 0.35 + step.airTime * 0.5) : step.running ? 0.5 : 0.38;
     if (crouched && !land) volume *= 0.4;
     if (cloaked) volume *= 0.5;
-    let pan = 0;
+    let where: sfx.Where | undefined;
     if (remote) {
       const heard = this.heardFrom(at);
       if (!heard) return;
       volume *= 1.8 * heard.volume;
-      pan = heard.pan;
+      where = heard.at;
     }
-    sfx.playFootstep(this.surfaceAt(at), volume, pan, land);
+    sfx.playFootstep(this.surfaceAt(at), volume, 0, land, where);
   }
 
   private updateMode(): void {

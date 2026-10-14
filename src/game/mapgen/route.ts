@@ -26,6 +26,12 @@ export interface Route {
   label: Int32Array;
   /** Main path cells, base first, ending in row 1 */
   main: number[];
+  /**
+   * The other ways from the base to the middle: each leaves the main path next to the base, takes its
+   * own way through the maze (never onto the main path or another lane) and reaches the middle plaza
+   * in a column of its own. Base end first.
+   */
+  lanes: number[][];
   /** Band columns, first to last */
   band: [number, number];
   /** Pocket cells (the dead ends last) and loop cells */
@@ -84,7 +90,75 @@ export function planRoute(rng: Rng, sym: Symmetry, P: SizeParams): Route | null 
     if (!central.length) continue;
     const { path, ci } = rng.weighted(central);
     const route = build(rng.fork(`route${attempt}`), sym, P, maze, path, ci);
-    if (route.loops.length) return route;
+    // A flank loop, and at least one more way to the middle than the main path.
+    if (route.loops.length && route.lanes.length) return route;
+  }
+  return null;
+}
+
+/** The band's columns: from the crossing to its copy's (a rotated map), or round the crossing (mirrored) */
+function bandSpan(sym: Symmetry, cols: number, ci: number): [number, number] {
+  const other = sym === 'rotate' ? cols - 1 - ci : ci;
+  let a = Math.min(ci, other);
+  let b = Math.max(ci, other);
+  if (b - a < 2) {
+    a = Math.max(0, a - 1);
+    b = Math.min(cols - 1, b + 1);
+  }
+  return [a, b];
+}
+
+/**
+ * Another way from the base to the middle: a run of the maze that starts beside the base end of the
+ * main path, ends in row 1 over the band in a column nobody else uses, and touches no used cell on the
+ * way. The maze is a tree, so the main path often cuts every such run off; then a few of the walls
+ * between unused cells are knocked through (which can't shorten the main path: it isn't touched) and
+ * it's tried again. Null if there's still none of a fitting length.
+ */
+function findLane(
+  rng: Rng, P: SizeParams, maze: Maze, kind: Uint8Array, main: readonly number[], band: [number, number], takenCols: Set<number>,
+): { cells: number[]; from: number } | null {
+  const { cols, rows } = P;
+  const row = (c: number) => Math.floor(c / cols);
+  const col = (c: number) => c % cols;
+  const free = (c: number) => kind[c] === KIND.none && row(c) >= 1;
+  const meanCol = (p: readonly number[]) => p.reduce((s, c) => s + col(c), 0) / p.length;
+  const mainCol = meanCol(main);
+  // Where it may leave the main path: next to its first three cells (the base and the way out of it).
+  const starts: [number, number][] = [];
+  for (const m of main.slice(0, 3)) for (const c of around(maze, m)) if (free(c)) starts.push([c, m]);
+  // Where it may meet the middle: over the band, or anywhere in the middle third (the band grows to meet it).
+  const centre = (cols - 1) / 2;
+  const ends: number[] = [];
+  for (let x = 0; x < cols; x++) {
+    const near = (x >= band[0] && x <= band[1]) || Math.abs(x - centre) <= cols / 3;
+    // Not right beside another way into the middle: then it'd be the same way in.
+    if (near && ![-1, 0, 1].some((dx) => takenCols.has(x + dx)) && free(cols + x)) ends.push(cols + x);
+  }
+  if (!starts.length || !ends.length) return null;
+  const minLen = Math.max(4, Math.ceil(main.length * 0.6));
+  const maxLen = Math.ceil(main.length * 1.5) + 2;
+  for (let braid = 0; braid < 12; braid++) {
+    const picks: (readonly [{ cells: number[]; from: number }, number])[] = [];
+    for (const end of ends) {
+      const d = distances(maze, end, free);
+      for (const [start, from] of starts) {
+        if (d[start]! < 0) continue;
+        const cells = walkDown(maze, start, d);
+        if (cells.length < minLen || cells.length > maxLen || longestRun(cells) > P.maxRun + 1) continue;
+        // Away from the main path rather than alongside it: the further its middle, the better.
+        picks.push([{ cells, from }, 1 + Math.abs(meanCol(cells) - mainCol)]);
+      }
+    }
+    if (picks.length) return rng.weighted(picks);
+    // Knock through a few walls between unused cells and look again.
+    const walls: [number, number][] = [];
+    for (let c = cols; c < cols * rows; c++) {
+      if (!free(c)) continue;
+      for (const e of around(maze, c)) if (e > c && free(e) && !joined(maze, c, e)) walls.push([c, e]);
+    }
+    if (!walls.length) return null;
+    for (const [c, e] of rng.shuffle(walls).slice(0, Math.max(2, Math.floor(cols / 3)))) join(maze, c, e);
   }
   return null;
 }
@@ -97,6 +171,26 @@ function build(rng: Rng, sym: Symmetry, P: SizeParams, maze: Maze, main: number[
   const base = main[0]!;
   const used = (c: number) => kind[c] !== KIND.none;
   const routeFrom = () => distances(maze, base, used);
+  const band = bandSpan(sym, cols, ci);
+
+  // Lanes: more ways from the base to the middle (several paths to the same objective).
+  const lanes: number[][] = [];
+  const takenCols = new Set([ci]);
+  const laneCount = rng.int(P.lanes[0], P.lanes[1]);
+  for (let n = 0; n < laneCount; n++) {
+    const lane = findLane(rng.fork(`lane${n}`), P, maze, kind, main, band, takenCols);
+    if (!lane) break;
+    for (const c of lane.cells) kind[c] = KIND.path;
+    join(maze, lane.from, lane.cells[0]!);
+    const endCol = lane.cells[lane.cells.length - 1]! % cols;
+    takenCols.add(endCol);
+    // The middle plaza reaches out to wherever it comes in, and (a rotated map) to where its copy does,
+    // so the plaza stays the same shape either side of the middle line.
+    const copyCol = sym === 'rotate' ? cols - 1 - endCol : endCol;
+    band[0] = Math.min(band[0], endCol, copyCol);
+    band[1] = Math.max(band[1], endCol, copyCol);
+    lanes.push(lane.cells);
+  }
 
   // Pockets: a cell or two off the path, down a side branch of the maze.
   const pockets: number[][] = [];
@@ -150,18 +244,17 @@ function build(rng: Rng, sym: Symmetry, P: SizeParams, maze: Maze, main: number[
   }
 
   // The band: from the crossing to its copy's column (a rotated map), or round the crossing (mirrored).
-  const other = sym === 'rotate' ? cols - 1 - ci : ci;
-  let a = Math.min(ci, other);
-  let b = Math.max(ci, other);
-  if (b - a < 2) {
-    a = Math.max(0, a - 1);
-    b = Math.min(cols - 1, b + 1);
-  }
+  const [a, b] = band;
   for (let c = a; c <= b; c++) {
     kind[c] = KIND.band;
     if (c > a) join(maze, c - 1, c);
   }
   join(maze, ci, cols + ci);
+  // Each lane steps down into it too.
+  for (const lane of lanes) {
+    const end = lane[lane.length - 1]!;
+    join(maze, end % cols, end);
+  }
 
-  return { cols, rows, maze, kind, label: routeFrom(), main, band: [a, b], pockets, loops };
+  return { cols, rows, maze, kind, label: routeFrom(), main, lanes, band: [a, b], pockets, loops };
 }

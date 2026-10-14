@@ -1,6 +1,6 @@
 import { OBS_LAYOUT } from './observe';
 import { MAX_TURN, type BotAction } from './policy';
-import type { BodyView, CtfView } from './observe';
+import type { BodyView, CtfView, Walk } from './observe';
 import type { GameMode } from '../../types';
 import type { Team } from '../mapgen/types';
 
@@ -28,9 +28,11 @@ export interface Patrol {
   rallied: boolean;
   /** CTF attackers: since when it's been clearing the guards off their flag before grabbing it */
   clearingSince: number | null;
+  /** The jobs that go to whoever is nearest (defend, return, defuse...) this bot has: it keeps them a while (see holdsRole) */
+  roles: Record<string, boolean>;
 }
 
-export const newPatrol = (): Patrol => ({ target: null, until: 0, rallySince: null, rallied: false, clearingSince: null });
+export const newPatrol = (): Patrol => ({ target: null, until: 0, rallySince: null, rallied: false, clearingSince: null, roles: {} });
 
 /** Give up on a patrol point after this long (s), or once this close (m) */
 const PATROL_TIME = 25;
@@ -91,16 +93,35 @@ export interface GoalInput {
 
 const flat = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.z - b.z);
 
-/** Moving targets (carriers) are followed on a coarse grid: each new spot costs a path search over the map. */
-const FOLLOW_GRID = 3;
+/**
+ * Moving targets (carriers) are followed on a coarse grid: each new spot costs a path search over the
+ * whole map, so a few bots chasing a runner on a large map would otherwise search several times a second.
+ */
+const FOLLOW_GRID = 5;
 const follow = (p: Point): Point => ({ x: Math.round(p.x / FOLLOW_GRID) * FOLLOW_GRID, y: p.y, z: Math.round(p.z / FOLLOW_GRID) * FOLLOW_GRID });
 
 /** Whether `self` is among the `n` living teammates (itself included) nearest to `target` */
-function amongNearest(self: GoalInput['self'], mates: readonly BodyView[], target: Point, n: number): boolean {
-  const mine = flat(self, target);
+function amongNearest(self: GoalInput['self'], mates: readonly BodyView[], target: Point, n: number, slack = 0): boolean {
+  const mine = flat(self, target) - slack;
   let closer = 0;
   for (const m of mates) if (m.alive && flat(m, target) < mine) closer++;
   return closer < n;
+}
+
+/** A job held is only handed over to a teammate this much nearer (m) */
+const ROLE_SLACK = 4;
+
+/**
+ * amongNearest for a job (`key`), with memory: once this bot has it, it keeps it until a teammate is
+ * clearly nearer. Without it, two bots about as near swapped the job back and forth every decision, each
+ * turning round on the spot between going there and going elsewhere (bots seen spinning at spawn).
+ */
+function holdsRole(input: GoalInput, key: string, mates: readonly BodyView[], target: Point, n: number): boolean {
+  const roles = input.patrol.roles;
+  const had = roles[key] ?? false;
+  const has = n > 0 && amongNearest(input.self, mates, target, n, had ? ROLE_SLACK : 0);
+  roles[key] = has;
+  return has;
 }
 
 /** Hurt badly: back to the nearest living teammate (not if one is right here already). */
@@ -148,11 +169,11 @@ function ctfGoal(input: GoalInput, mates: readonly BodyView[], everyone: readonl
   // Carrying their flag: home (and wait there for ours if it's away).
   if (self.carrying) return ctf.ownBase;
   // Our flag lying somewhere: the nearest of us goes to send it home.
-  if (ctf.own.at === 'ground' && amongNearest(self, mates, ctf.own, 1)) return ctf.own;
+  if (ctf.own.at === 'ground' && holdsRole(input, 'return', mates, ctf.own, 1)) return ctf.own;
   // Someone has our flag: the two nearest chase them.
   if (ctf.own.at === 'carried') {
     const carrier = everyone.find((o) => o.id === (ctf.own as { carrier: string }).carrier);
-    if (carrier && amongNearest(self, mates, carrier, 2)) return follow(carrier);
+    if (carrier && holdsRole(input, 'chase', mates, carrier, 2)) return follow(carrier);
   }
   // A teammate has theirs: walk them home.
   if (ctf.enemy.at === 'carried') {
@@ -161,7 +182,7 @@ function ctfGoal(input: GoalInput, mates: readonly BodyView[], everyone: readonl
   }
   // One in three holds a spot in front of our flag, covering the way in; it goes for anyone closing in on the flag.
   const defenders = Math.floor((mates.filter((m) => m.alive).length + 1) / 3);
-  if (defenders > 0 && amongNearest(self, mates, ctf.ownBase, defenders)) {
+  if (holdsRole(input, 'defend', mates, ctf.ownBase, defenders)) {
     const close = intruder(input, ctf.ownBase);
     if (close) return follow(close);
     const toMiddle = Math.hypot(ctf.ownBase.x, ctf.ownBase.z) || 1;
@@ -233,22 +254,56 @@ export function defendedSite(self: GoalInput['self'], mates: readonly BodyView[]
 function sndGoal(input: GoalInput, mates: readonly BodyView[], snd: SndGoalView): Point {
   const { self } = input;
   const bomb = snd.bomb;
+  const alive = mates.filter((m) => m.alive);
   if (snd.attacking) {
     const site = snd.sites[snd.target];
     if (snd.carrying) return site;
-    if (bomb?.at === 'planted') return follow(bomb);
-    if (bomb?.at === 'ground' && amongNearest(self, mates, bomb, 1)) return bomb;
+    // Planted: guard it, each from its own side.
+    if (bomb?.at === 'planted') return ringSpot(bomb, self.id, alive.map((m) => m.id), GUARD_RING);
+    if (bomb?.at === 'ground' && holdsRole(input, 'fetch', mates, bomb, 1)) return bomb;
     const target = fight(input, HELP_RANGE * 0.6);
-    return target && flat(target, site) < flat(self, site) ? follow(target) : site;
+    if (target && flat(target, site) < flat(self, site)) return follow(target);
+    // Escorts take up places round the site, leaving its middle to the carrier.
+    const carrier = bomb?.at === 'carried' ? bomb.carrier : null;
+    return ringSpot(site, self.id, alive.filter((m) => m.id !== carrier).map((m) => m.id), ESCORT_RING);
   }
-  if (bomb?.at === 'planted') return bomb;
-  const mine = snd.sites[defendedSite(self, mates, snd.sites)];
+  if (bomb?.at === 'planted') {
+    // The nearest defuses; the rest cover them from round it.
+    if (holdsRole(input, 'defuse', mates, bomb, 1)) return bomb;
+    return ringSpot(bomb, self.id, alive.map((m) => m.id), GUARD_RING);
+  }
+  const siteId = defendedSite(self, mates, snd.sites);
+  const mine = snd.sites[siteId];
   const close = intruder(input, mine);
   if (close) return follow(close);
   const toMiddle = Math.hypot(mine.x, mine.z) || 1;
   const k = Math.min(1, SITE_HOLD / toMiddle);
-  return { x: mine.x * (1 - k), y: mine.y, z: mine.z * (1 - k) };
+  const hold = { x: mine.x * (1 - k), y: mine.y, z: mine.z * (1 - k) };
+  // Bots holding the same site stand apart (each works out the others' sites the same way).
+  const sharing = alive.filter((m) => !m.human && defendedSite(m, mates.filter((o) => o.id !== m.id).concat(asBody(self)), snd.sites) === siteId);
+  return sharing.length ? ringSpot(hold, self.id, sharing.map((m) => m.id), HOLD_RING) : hold;
 }
+
+/** S&D: how far round a shared point bots stand apart: escorts round the site, guards round the bomb, two holding one site (m) */
+const ESCORT_RING = 4;
+const GUARD_RING = 5;
+const HOLD_RING = 2.5;
+
+/**
+ * `self`'s own place on a circle round `center`, among everyone in `ids` sent there (in id order, so each
+ * works out the same places): several bots sent to one point stand apart instead of on top of each other,
+ * shoving and turning on the spot. A place in a wall is fine: the path leads to the nearest spot short of it.
+ */
+export function ringSpot(center: Point, self: string, ids: readonly string[], radius: number): Point {
+  const all = [...new Set([self, ...ids])].sort();
+  if (all.length < 2) return center;
+  const a = (all.indexOf(self) / all.length) * Math.PI * 2 + 0.6;
+  return { x: center.x + Math.cos(a) * radius, y: center.y, z: center.z + Math.sin(a) * radius };
+}
+
+/** The bot itself as one of the bodies defendedSite counts */
+const asBody = (self: GoalInput['self']): BodyView =>
+  ({ id: self.id, x: self.x, y: self.y, z: self.z, stance: 'stand', alive: true, hp: 1, maxHp: 1, team: self.team, carrying: false });
 
 function clearFirst(input: GoalInput, ctf: CtfView): Point | null {
   const { self, patrol, now } = input;
@@ -303,12 +358,23 @@ export function enemyKnown(obs: Float32Array): boolean {
 /** Carrying the enemy flag (guns stowed) */
 const carrying = (obs: Float32Array) => obs[OBS_LAYOUT.mode + 3]! > 0.5;
 
+/** A known enemy further than this (m), out of sight and not shooting at the bot, is no fight yet */
+const FAR_KNOWN = 25;
+
 /**
  * Whether the objective layer drives this decision: nobody to fight, or carrying the flag (a carrier's
- * only weapon is the flag itself, so it runs for home and swings at whoever gets in its way).
+ * only weapon is the flag itself, so it runs for home and swings at whoever gets in its way). Holding a
+ * spot, someone only heard or remembered far off counts as nobody: handed to the policy, a bot turned
+ * round and round looking for them (S&D / CTF bots spent 5-9% of their time spinning on their spot).
  */
 export function shouldTravel(obs: Float32Array): boolean {
-  return carrying(obs) || !enemyKnown(obs);
+  if (carrying(obs) || !enemyKnown(obs)) return true;
+  const seen = obs[E]! > 0.5;
+  const hurt = obs[OBS_LAYOUT.hurt]! > 0;
+  // Only while holding a spot (on the move, a heard enemy is the policy's to approach with care: given to
+  // the route instead, bots sprinted into fights and lost them).
+  const holding = obs[OBS_LAYOUT.attack + 2]! < 0.02;
+  return holding && !seen && !hurt && obs[E + 4]! > FAR_KNOWN / 60;
 }
 
 /**
@@ -318,6 +384,8 @@ export function shouldTravel(obs: Float32Array): boolean {
  */
 const PUSH_GOAL = 3;
 const PUSH_ENEMY = 20;
+/** Anyone this close stops a push, seen or not (m) */
+const PUSH_CLOSE = 5;
 
 /**
  * CTF / S&D: the objective comes first. Anywhere short of the goal, the bot keeps moving along the route
@@ -325,19 +393,46 @@ const PUSH_ENEMY = 20;
  * (a defender at its spot). Left to the policy everywhere, bots stop to trade shots and never score.
  */
 export function shouldPush(obs: Float32Array): boolean {
+  if (obs[OBS_LAYOUT.attack + 2]! <= PUSH_GOAL / 60) return false;
   // (No enemy in the list, e.g. only just shot from somewhere unseen: nobody close.)
   const nearest = obs[E + 4]! || 1;
-  return obs[OBS_LAYOUT.attack + 2]! > PUSH_GOAL / 60 && nearest > PUSH_ENEMY / 60;
+  // Someone right here, seen or not: fight. Further off, only someone in sight is worth stopping for: on
+  // maze maps someone heard or remembered behind a wall was nearly always that close, and attackers
+  // stopped for them over and over, never reaching the flag.
+  if (nearest < PUSH_CLOSE / 60) return false;
+  return !(obs[E]! > 0.5 && nearest < PUSH_ENEMY / 60);
 }
 
 /** Pushing, sprint unless someone in view is closer than this (m): then walk, for a steadier aim */
 const PUSH_WALK = 20;
 
 /** The policy's aim and trigger, the route's feet: sprinting, unless someone in view is close enough to shoot it out with. */
-export function pushAction(fight: BotAction, obs: Float32Array): BotAction {
-  const walk = travelAction(obs);
+export function pushAction(fight: BotAction, obs: Float32Array, way: Walk | null = null): BotAction {
+  const walk = travelAction(obs, way);
   const close = obs[E]! > 0.5 && obs[E + 4]! < PUSH_WALK / 60;
   return { ...fight, move: walk.move, sprint: walk.sprint && !close, jump: walk.jump, crouch: false };
+}
+
+/**
+ * Turn (as an aim action) to watch while holding a spot: toward an enemy it knows of (seen a moment ago,
+ * heard), else the most open way round it by its wall probes, where anyone would come from. None once facing it.
+ */
+function watchTurn(obs: Float32Array): number {
+  let turn: number;
+  if (obs[E + 4]! > 0) {
+    // The enemy's bearing (yaw error, as a fraction of π: positive is to the left, a positive turn).
+    turn = obs[E + 5]! * Math.PI;
+  } else {
+    const P = OBS_LAYOUT.probes;
+    const count = OBS_LAYOUT.attack - P;
+    let best = 0;
+    for (let p = 1; p < count; p++) if (obs[P + p]! > obs[P + best]! + 0.05) best = p;
+    // Probe p looks p eighths of a turn clockwise (to the right) of straight ahead: turning right is negative.
+    const a = -(best / count) * Math.PI * 2;
+    turn = Math.atan2(Math.sin(a), Math.cos(a));
+  }
+  // Unhurried (about 1.5 rad/s): a look round, not a snap.
+  return Math.abs(turn) < 0.4 ? 0 : Math.max(-1, Math.min(1, turn / MAX_TURN.yaw)) * 0.25;
 }
 
 /** The 8-way move closest to a direction (right, forward) in the bot's frame */
@@ -348,17 +443,20 @@ function moveToward(right: number, forward: number): number {
 }
 
 /**
- * Walk to the goal along the path (the observation's goal waypoint): face where the path goes, sprint
- * when it's straight ahead, hop when a wall is right in front. Only fires (swings) as a flag carrier.
+ * Walk to the goal along the path: face where the path goes, sprint when it's straight ahead, hop when a
+ * wall is right in front. Only fires (swings) as a flag carrier. `way` is which way to walk (the clear
+ * straight way along the path: see Waypoint.walkX); without it, toward the observation's waypoint.
  */
-export function travelAction(obs: Float32Array): BotAction {
+export function travelAction(obs: Float32Array, way: Walk | null = null): BotAction {
   const nav = OBS_LAYOUT.attack;
-  const right = obs[nav]!;
-  const forward = obs[nav + 1]!;
+  const right = way ? way[0] : obs[nav]!;
+  const forward = way ? way[1] : obs[nav + 1]!;
   const dist = obs[nav + 2]!;
-  // At the goal (holding a base, waiting at home): stand still and look about.
+  // At the goal (holding a site, waiting at home): stand still and watch the most open way, where anyone
+  // would come from (the brain's glances look about now and then). Turning on the spot for as long as it
+  // waited looked like a bot doing nothing, and two sent to one spot spun round each other.
   if (dist < 0.02 || Math.hypot(right, forward) < 0.1) {
-    return { move: 0, sprint: false, jump: false, crouch: false, fire: false, aimYaw: 0.15, aimPitch: -obs[OBS_LAYOUT.self + 7]! * 0.5 };
+    return { move: 0, sprint: false, jump: false, crouch: false, fire: false, aimYaw: watchTurn(obs), aimPitch: -obs[OBS_LAYOUT.self + 7]! * 0.5 };
   }
   const angle = Math.atan2(right, forward);
   // A carrier clubs anyone right in front of it (the flag reaches 2.4 m; distances are in sixtieths).

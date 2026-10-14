@@ -139,6 +139,15 @@ hygiene you can pick from.
 
 ## M4 — Bots: fairness and navigation
 
+**Status (12 Oct 2026): all seven done.** Notes:
+- 4.1 a `sight(body, eyeY)` hook on `ObsInput`, set only by the live host (`canSee`): 120° FOV (160° Expert, anything within 3 m felt), smoke (`SmokeField.blocksLine`) and barriers (`sightBlocked` api) block it, cloaked enemies only within 6 m; enemy HP quantised to quarters in `others()`. Aim reads the same memory, so it's covered. **No `OBS_VERSION` bump**: layout unchanged, and the trainer passes no hook, so training is unchanged.
+- 4.2 jump edges only in `BotNav` (`allowJumps(1.1)`, live host only), two cells straight on (a body's radius keeps the cell beside a crate empty), `JUMP_COST` 3 m; `Waypoint.jump` → host holds jump 0.25 s when heading at it. `NavGrid` (map validation) untouched, so no map changes.
+- 4.3 `BotNav.setBlocks(key, boxes)` from the live barriers; fields rebuilt only when the set changes.
+- 4.4 follow grid 3 → 5 m, field cache 24 → 32 (no worker; re-measure if hitches show).
+- 4.5 `Gear.rifleReserve` (90; Infinity in forced loadouts), refilled on respawn and by ammo boxes (wanted under 2 mags); ADS ×0.55 recoil.
+- 4.6 no change needed: the trainer also shows S&D as TDM (no S&D slot in the observation); comment fixed.
+- 4.7 bot kills count ¼ on the leaderboard; a win needs another person in the round.
+
 | # | Task | Where | Verify |
 |---|---|---|---|
 | 4.1 | **Bots see 360°, through smoke, and through cloak, and know exact enemy HP.** Add a FOV test (120°, 160° on Expert) in `observe.ts`; make `senses.ts` sight check consult active smoke clouds and barriers; filter cloaked players unless within 6 m; quantise `hp` to {low, mid, high}. Needs `OBS_VERSION` bump only if the observation *layout* changes — FOV/smoke are filters, HP quantisation changes values not layout (check `observe.ts` and decide; retrain if bumped). | `src/game/bot/observe.ts:207-208`, `senses.ts:24,53-55`, `botHost.ts:536-553, 549` | unit senses tests; bots eval |

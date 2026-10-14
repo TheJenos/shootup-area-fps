@@ -10,7 +10,16 @@ export interface MapSpec {
   size: MapSize;
   /** Generator version (GENERATOR_VERSION); the classic map ignores it, and the size */
   gen: number;
+  /**
+   * The two halves are designed separately rather than one copied onto the other. Only Capture the
+   * Flag needs the halves the same (each team attacks the other's base); every other mode plays on
+   * an asymmetric map. Missing means symmetric.
+   */
+  asym?: boolean;
 }
+
+/** Whether a mode's maps are asymmetric (see MapSpec.asym) */
+export const asymFor = (base: string): boolean => base !== 'ctf';
 
 export const MAP_SIZES: readonly MapSize[] = ['s', 'm', 'l'];
 
@@ -28,6 +37,8 @@ export interface SizeParams {
   rows: number;
   /** Cells on the main path, from the base to the middle plaza */
   pathCells: [number, number];
+  /** More ways from the base to the middle, besides the main path (each its own way through the maze) */
+  lanes: [number, number];
   /** Flank loops per half: reopened maze walls between far-apart parts of the path */
   loops: [number, number];
   /** Dead-end side pockets per half */
@@ -49,18 +60,18 @@ export interface SizeParams {
 
 export const SIZE_PARAMS: Record<MapSize, SizeParams> = {
   s: {
-    cols: 12, rows: 6, pathCells: [9, 13], loops: [1, 2], pockets: [2, 3], blobs: [3, 5], baseR: 9,
+    cols: 12, rows: 6, pathCells: [9, 13], lanes: [1, 1], loops: [1, 2], pockets: [2, 3], blobs: [6, 8], baseR: 9,
     spawnsPerTeam: 6, pickups: 6, coverGap: 8, maxRun: 4, crossTime: 45,
   },
   m: {
-    cols: 16, rows: 8, pathCells: [12, 18], loops: [2, 3], pockets: [2, 4], blobs: [5, 6], baseR: 10,
+    cols: 16, rows: 8, pathCells: [12, 18], lanes: [1, 2], loops: [2, 3], pockets: [2, 4], blobs: [9, 12], baseR: 10,
     spawnsPerTeam: 8, pickups: 7, coverGap: 9, maxRun: 4, crossTime: 58,
   },
   l: {
-    cols: 18, rows: 9, pathCells: [15, 22], loops: [2, 4], pockets: [3, 5], blobs: [6, 8], baseR: 11,
+    cols: 18, rows: 9, pathCells: [15, 22], lanes: [2, 2], loops: [2, 4], pockets: [3, 5], blobs: [12, 15], baseR: 11,
     spawnsPerTeam: 10, pickups: 9, coverGap: 10, maxRun: 5, crossTime: 70,
   },
 };
 
 /** Cache and comparison key */
-export const specKey = (s: MapSpec): string => `${s.gen}:${s.size}:${s.seed}`;
+export const specKey = (s: MapSpec): string => `${s.gen}:${s.size}:${s.seed}${s.asym ? ':asym' : ''}`;

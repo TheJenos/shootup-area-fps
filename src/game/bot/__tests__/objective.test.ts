@@ -39,8 +39,8 @@ describe('the objective layer (CTF)', () => {
     const thief = body('b1', 'blue', 5, 0);
     const ctf: CtfView = { ...home, own: { at: 'carried', carrier: 'b1' } };
     const others = [thief, body('r2', 'red', 6, 2), body('r3', 'red', 0, 28)];
-    // (Followed on a 3 m grid.)
-    expect(goal({ id: 'r1', x: 4, z: 4 }, others, ctf)).toMatchObject({ x: 6, z: 0 });
+    // (Followed on a 5 m grid.)
+    expect(goal({ id: 'r1', x: 4, z: 4 }, others, ctf)).toMatchObject({ x: 5, z: 0 });
   });
 
   it('keeps one of three in front of the flag, and sends the rest for theirs', () => {
@@ -114,7 +114,7 @@ describe('the objective layer (CTF)', () => {
       mode: 'ctf', ctf: home, patrolPoints: [], patrol: newPatrol(), now: 0, known,
     });
     // Someone 8 m from our flag: go get them.
-    expect(g([{ x: 6, y: 0, z: 25 }])).toMatchObject({ x: 6, z: 24 });
+    expect(g([{ x: 6, y: 0, z: 25 }])).toMatchObject({ x: 5, z: 25 });
     // A fight 12 m from the defender but 25 m from the flag: hold the spot.
     expect(g([{ x: 0, y: 0, z: 12 }])).toMatchObject({ x: 0, z: 24 });
   });
@@ -128,7 +128,7 @@ describe('the objective layer (FFA / TDM)', () => {
       self: { id: 'r1', team: 'red', x: 0, y: 0, z: 0, carrying: false }, others: [body('r2', 'red', 5, 5)], mode: 'tdm', ctf: null,
       patrolPoints: points, patrol: newPatrol(), now: 0, known,
     });
-    expect(input([{ x: 12, y: 0, z: 0 }])).toMatchObject({ x: 12, z: 0 });
+    expect(input([{ x: 12, y: 0, z: 0 }])).toMatchObject({ x: 10, z: 0 });
     // Too far: keep patrolling (toward the enemy's half).
     expect(input([{ x: 80, y: 0, z: 0 }]).z).toBe(-30);
   });
@@ -183,6 +183,27 @@ describe('pushing (CTF / S&D)', () => {
     obs[OBS_LAYOUT.attack + 2] = 2 / 60;
     expect(shouldPush(obs)).toBe(false);
   });
+
+  it('only stops for someone in sight, or someone right on top of it', async () => {
+    const { OBS_LAYOUT } = await import('../observe');
+    const { shouldPush } = await import('../objective');
+    const obs = new Float32Array(OBS_SIZE);
+    const E = OBS_LAYOUT.enemies;
+    obs[OBS_LAYOUT.attack + 1] = 1;
+    obs[OBS_LAYOUT.attack + 2] = 40 / 60;
+    obs[OBS_LAYOUT.attack + 3] = 1;
+    // Heard or remembered 10 m off behind a wall: keep going (stopping for them, attackers never got there).
+    obs[E] = 0;
+    obs[E + 4] = 10 / 60;
+    expect(shouldPush(obs)).toBe(true);
+    // In sight at 10 m: fight.
+    obs[E] = 1;
+    expect(shouldPush(obs)).toBe(false);
+    // Unseen but 4 m away: fight too.
+    obs[E] = 0;
+    obs[E + 4] = 4 / 60;
+    expect(shouldPush(obs)).toBe(false);
+  });
 });
 
 describe('the objective layer (S&D defenders)', () => {
@@ -212,5 +233,54 @@ describe('the objective layer (S&D defenders)', () => {
 
   it('a lone bot holds the closer site', () => {
     expect(defendedSite(self('b1', 25, 20), [], sites)).toBe('b');
+  });
+});
+
+describe('not spinning on the spot', () => {
+  it('spreads bots sent to one point round it', async () => {
+    const { ringSpot } = await import('../objective');
+    const c = { x: 0, y: 0, z: 0 };
+    const ids = ['b1', 'b2', 'b3'];
+    const spots = ids.map((id) => ringSpot(c, id, ids, 4));
+    for (let i = 0; i < spots.length; i++) for (let j = i + 1; j < spots.length; j++) {
+      expect(Math.hypot(spots[i]!.x - spots[j]!.x, spots[i]!.z - spots[j]!.z)).toBeGreaterThan(3);
+    }
+    // Alone: the point itself.
+    expect(ringSpot(c, 'b1', [], 4)).toEqual(c);
+  });
+
+  it('keeps a nearest-bot job instead of swapping it every decision', () => {
+    // Two red bots about as near their base: whichever defends keeps doing so as they shuffle about.
+    const patrol = newPatrol();
+    const home: CtfView = { ...bases, own: { at: 'base' }, enemy: { at: 'base' } };
+    const defends = (selfZ: number, mateZ: number) => {
+      const g = goalFor({
+        self: { id: 'r1', team: 'red', x: 0, y: 0, z: selfZ, carrying: false },
+        others: [body('r2', 'red', 1, mateZ), body('r3', 'red', 0, 0)], mode: 'ctf', ctf: home, patrolPoints: [], patrol, now: 0,
+      });
+      return g.z > 15;
+    };
+    expect(defends(24, 23)).toBe(true);
+    // r2 now a metre nearer than r1: r1 keeps the job (it isn't clearly further).
+    expect(defends(23, 24)).toBe(true);
+    // r2 well nearer: handed over.
+    expect(defends(10, 25)).toBe(false);
+  });
+
+  it('leaves a far, unseen enemy to the objective layer, and faces them while holding', async () => {
+    const { OBS_LAYOUT } = await import('../observe');
+    const { shouldTravel, travelAction } = await import('../objective');
+    const obs = new Float32Array(OBS_SIZE);
+    const E = OBS_LAYOUT.enemies;
+    obs[E + 4] = 40 / 60; // heard 40 m off...
+    obs[E + 5] = 0.5; // ...a quarter turn to the left
+    expect(shouldTravel(obs)).toBe(true);
+    // At the goal: turn toward them (left is positive), then stop once facing them.
+    expect(travelAction(obs).aimYaw).toBeGreaterThan(0);
+    obs[E + 5] = 0.05;
+    expect(travelAction(obs).aimYaw).toBe(0);
+    // Near, or in view, or shooting: a fight, the policy's.
+    obs[E + 4] = 15 / 60;
+    expect(shouldTravel(obs)).toBe(false);
   });
 });

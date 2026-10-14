@@ -9,7 +9,7 @@ import { BOT_PREFIX, randomId, type RoomConnection } from '../../net/network';
 import { DECISION_DT, Policy, type PolicyJson } from './policy';
 import { BotBrain, SKILLS, type BotSkill } from './brain';
 import { MAX_BOTS, botName, rosterEntries, type BotRoster, type BotSlot } from './roster';
-import { MEMORY_TIME, OBS_SIZE, observe, type BodyView, type CtfView, type FlagState } from './observe';
+import { MEMORY_TIME, OBS_SIZE, observe, type BodyView, type CtfView, type FlagState, type Walk } from './observe';
 import { MapSenses } from './senses';
 import { goalFor, newPatrol, type Patrol, type Point, type SndGoalView } from './objective';
 import {
@@ -21,10 +21,14 @@ import {
   CLOAK_DURATION, DASH_SPEED, FIRE_DAMAGE, FIRE_TICK, FLASH_MAX, FLASH_RANGE, LIFESTEAL_DURATION, LIFESTEAL_FRACTION, MEDKIT_HEAL,
   SCAN_RADIUS, SHIELD_AMOUNT, SHIELD_DURATION, SPEED_DURATION, SPEED_MULTIPLIER,
 } from '../abilities';
-import { aimAngles, hitPlayer, lookDir, scatter, spreadOf, type Target } from './hitscan';
+import { CHEST_Y, aimAngles, hitPlayer, lookDir, scatter, spreadOf, type Target } from './hitscan';
+import {
+  BOT_FOV, CLOAK_SEEN_RANGE, EXPERT_FOV, FEEL_RANGE, JUMP_HOLD, JUMP_UP, RIFLE_RESERVE, adsRecoil, inFieldOfView, ledgeAhead, roughHp,
+} from './limits';
 import type { PhysicsWorld } from '../physics';
 import type { MapData } from '../mapgen';
 import type { ModeRules } from '../rules';
+import type { NavBlock } from './nav';
 import type {
   AbilityType, GameEvent, GameState, GunKind, PickupType, PlayerState, SiteId, SndRecord, Stance, Team, Vec3Tuple, WeaponKind,
 } from '../../types';
@@ -49,7 +53,11 @@ const SEND_RATE = 10;
 /** Seconds between sending a bot's whole pose rather than just what changed */
 const HEARTBEAT = 5;
 
-type BotPose = Pick<PlayerState, 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'stance' | 'aim' | 'rl' | 'th' | 'ab' | 'am'>;
+
+/** A reserve as `am` carries it: a count, or nothing for endless */
+const reserveLabel = (n: number): string => (Number.isFinite(n) ? String(n) : '');
+
+type BotPose = Pick<PlayerState,'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'stance' | 'aim' | 'rl' | 'th' | 'ab' | 'am'>;
 
 /** The fields of `next` that differ from `prev`, or null if none do. */
 function poseChanges<T extends object>(prev: T, next: T): Partial<T> | null {
@@ -130,6 +138,10 @@ export interface BotHostApi {
   firesAt(x: number, y: number, z: number): { owner: string; center: THREE.Vector3 }[];
   /** Tell the player something about their bots (a toast) */
   notify(text: string): void;
+  /** Deployed barriers standing now, with their boxes (no path goes through one) */
+  barriers(): readonly { id: string; box: NavBlock }[];
+  /** Smoke or a deployed barrier is between the two points (the map's own walls aren't counted) */
+  sightBlocked(ax: number, ay: number, az: number, bx: number, by: number, bz: number): boolean;
 }
 
 /** A bot as something that places things */
@@ -165,6 +177,8 @@ interface HostedBot {
   deaths: number;
   captures: number;
   decideIn: number;
+  /** Jump is held until this (host clock): a ledge on its path (see ledgeAhead) */
+  jumpUntil: number;
   /** The pose (and gun) as last sent, and when the whole of it last went out (bot host clock) */
   lastPose: (BotPose & { gun: GunKind }) | null;
   fullAt: number;
@@ -179,6 +193,8 @@ interface HostedBot {
   detour: string | null;
   /** Its current goal and how far away (straight line) */
   goal: Point | null;
+  /** Which way to walk along its route, as of its last observation (for the feet; see Waypoint.walkX) */
+  walk: Walk | null;
   goalDist: number;
   /** When it last spawned (bot host clock) */
   spawnedAt: number;
@@ -215,6 +231,8 @@ export class BotHost {
   private pending = 0;
   private senses: MapSenses | null = null;
   private readonly obs = new Float32Array(OBS_SIZE);
+  /** What the last observation worked out besides the observation itself (the way to walk) */
+  private readonly obsInfo: { attackDist: number; walk?: Walk | null } = { attackDist: Infinity };
   /** Seconds until the next batch of bot poses goes out */
   private sendIn = 0;
   /** Seconds since we started, for the bots' memories */
@@ -340,7 +358,7 @@ export class BotHost {
     const bot: HostedBot = {
       id, slot: slotId, skill: slot.skill, name, team, mover, attached: null, brain: new BotBrain(policy, SKILLS[slot.skill]),
       yaw: 0, pitch: 0, hp: rules.health, alive: true, respawnIn: 0, gun: 'rifle', ammo: 0, reloadLeft: 0, cooldown: 0, burst: 0,
-      meleeCooldown: 0, deaths: 0, captures: 0, decideIn: Math.random() * DECISION_DT, lastPose: null, fullAt: 0, flagBusy: false, channel: 0, patrol: newPatrol(), gear: new Gear(), detour: null, goal: null, goalDist: 0, spawnedAt: 0,
+      meleeCooldown: 0, deaths: 0, captures: 0, decideIn: Math.random() * DECISION_DT, lastPose: null, fullAt: 0, jumpUntil: 0, flagBusy: false, channel: 0, patrol: newPatrol(), gear: new Gear(), detour: null, goal: null, walk: null, goalDist: 0, spawnedAt: 0,
       stats: { damage: 0, shots: 0, hits: 0, headshots: 0, streak: 0, best: 0 }, seenKills: 0, statsKey: '', statsAt: 0,
     };
     this.bots.set(id, bot);
@@ -449,7 +467,14 @@ export class BotHost {
     const physics = api.physics();
     const map = api.map();
     if (!physics || !map) return;
-    if (this.senses?.map !== map) this.senses = new MapSenses(map, physics);
+    if (this.senses?.map !== map) {
+      this.senses = new MapSenses(map, physics);
+      // Live bots may path up ledges they can jump (they press jump at them below); the trainer's never do.
+      this.senses.nav.allowJumps(JUMP_UP);
+    }
+    // Barriers standing now: no path through them (rebuilt only when the set changes).
+    const barriers = api.barriers();
+    this.senses.nav.setBlocks(barriers.map((b) => b.id).sort().join(','), barriers.map((b) => b.box));
     const roundOver = api.roundOver();
     const rules = api.rules();
     const snd = rules.base === 'snd' ? api.game().snd ?? null : null;
@@ -473,8 +498,10 @@ export class BotHost {
       let decided = false;
       if (bot.decideIn <= 0) {
         bot.decideIn += DECISION_DT;
-        bot.brain.decide(this.observe(bot), rules.base === 'ctf' || rules.base === 'snd', bot.mover.position);
+        // Held at spawn (S&D's freeze): no getting unstuck from standing still.
+        bot.brain.decide(this.observe(bot), rules.base === 'ctf' || rules.base === 'snd', frozen ? undefined : bot.mover.position, bot.walk);
         decided = true;
+        this.ledgeAhead(bot);
       }
       // Someone in view: the aim model aims. Otherwise the decision's turn (walking, looking about).
       const [dYaw, dPitch] = bot.brain.steering.step(dt);
@@ -485,7 +512,10 @@ export class BotHost {
         bot.pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, bot.pitch + dPitch));
       }
       // Planting or defusing (S&D) means standing still.
-      bot.mover.step(dt, bot.yaw, roundOver || frozen || bot.channel > 0 ? null : bot.brain.moveInput);
+      const input = bot.brain.moveInput;
+      // A ledge on the way that only a jump gets up: jump, whoever's steering (script or network).
+      if (this.clock < bot.jumpUntil) input.jump = true;
+      bot.mover.step(dt, bot.yaw, roundOver || frozen || bot.channel > 0 ? null : input);
       // The same backstop as the player's: never outside the map.
       const edge = map.half - 0.9;
       const p = bot.mover.position;
@@ -551,9 +581,9 @@ export class BotHost {
       x: r2(p.x), y: r2(p.y), z: r2(p.z), yaw: r3(bot.yaw), pitch: r3(bot.pitch), stance: bot.mover.stance, aim: bot.alive && bot.brain.aim.ads > 0.5, rl: bot.reloadLeft > 0,
       th: bot.gear.throws,
       // Its items and rounds, for whoever watches through its eyes (type and uses left per slot, like a
-      // player's; its rifle never runs dry, so that reserve is left out: endless)
+      // player's; an endless reserve is left out)
       ab: bot.gear.inventory.view(0).map((s) => (s ? `${s.type}:${s.usesLeft}` : '')).join(',').replace(/,+$/, ''),
-      am: `${bot.ammo}/${bot.gear.special && bot.gun === bot.gear.special.kind ? bot.gear.special.reserve : ''}`,
+      am: `${bot.ammo}/${reserveLabel(bot.gear.special && bot.gun === bot.gear.special.kind ? bot.gear.special.reserve : bot.gear.rifleReserve)}`,
     };
   }
 
@@ -585,11 +615,36 @@ export class BotHost {
         ? { x: mine.mover.position.x, y: mine.mover.position.y, z: mine.mover.position.z, stance: mine.mover.stance, alive: mine.alive }
         : api.bodyOf(id);
       if (!body) continue;
+      // Health only roughly (in quarters), as a player reads a name tag's bar, not the exact number.
+      const hp = mine ? mine.hp : p.hp;
       out.push({
-        id, ...body, hp: mine ? mine.hp : p.hp, maxHp, team: mine ? mine.team : p.team ?? null, carrying: carriers.has(id), human: !mine && !p.bot,
+        id, ...body, hp: roughHp(hp, maxHp), maxHp, team: mine ? mine.team : p.team ?? null, carrying: carriers.has(id), human: !mine && !p.bot,
       });
     }
     return out;
+  }
+
+  /** Its way to its goal goes up a ledge just ahead, and it's heading that way: jump for a moment. */
+  private ledgeAhead(bot: HostedBot): void {
+    if (this.senses && ledgeAhead(this.senses.nav, bot.mover.position, bot.mover.velocity, bot.mover.onGround, bot.goal, bot.yaw)) {
+      bot.jumpUntil = this.clock + JUMP_HOLD;
+    }
+  }
+
+  /**
+   * What a player in the bot's place could see, beyond the map's own walls (the occlusion grid has
+   * those): only what's in front of it (anyone right next to it is felt), not through smoke or a
+   * barrier, and a cloaked enemy only up close.
+   */
+  private canSee(bot: HostedBot, b: BodyView, eyeY: number): boolean {
+    const p = bot.mover.position;
+    const d = Math.hypot(b.x - p.x, b.z - p.z);
+    if (d < FEEL_RANGE) return true;
+    if (this.api.players()[b.id]?.cloak && d > CLOAK_SEEN_RANGE) return false;
+    if (!inFieldOfView(p.x, p.z, bot.yaw, b.x, b.z, bot.skill === 'expert' ? EXPERT_FOV : BOT_FOV)) return false;
+    const ty = b.y + CHEST_Y[b.stance];
+    if (this.api.sightBlocked(p.x, eyeY, p.z, b.x, ty, b.z)) return false;
+    return true;
   }
 
   private carrying(bot: HostedBot): boolean {
@@ -645,9 +700,12 @@ export class BotHost {
         carrying,
       },
       others, mode: rules.base, ctf, now: this.clock, memory: bot.brain.memory, senses: this.senses!,
-      // The policy was trained on FFA, TDM and CTF: S&D fights look like TDM to it.
+      // The observation has no S&D slot: its fights are shown as TDM, here and in training alike (sim/arena.ts).
       goal, asMode: rules.base === 'snd' || (goal && rules.base === 'ctf') ? 'tdm' : undefined,
+      sight: (b, eyeY) => this.canSee(bot, b, eyeY),
+      info: this.obsInfo,
     }, this.obs);
+    bot.walk = this.obsInfo.walk ?? null;
     // Whoever it just saw, its teammates hear about.
     if (bot.team) {
       const mates = [...this.bots.values()].filter((b) => b !== bot && b.team === bot.team && b.alive).map((b) => b.brain.memory);
@@ -675,6 +733,8 @@ export class BotHost {
         bot.gun = this.gunFor(bot);
         return;
       }
+      // Out of rifle rounds altogether: nothing to fire (the knife still works up close; an ammo box is the way back).
+      if (!special && bot.gear.rifleReserve <= 0) return;
       bot.reloadLeft = def.reloadTime;
       return;
     }
@@ -721,9 +781,10 @@ export class BotHost {
       const dealt = [...damageTo].reduce((sum, [id, dmg]) => sum + Math.min(dmg, this.api.players()[id]?.hp ?? dmg), 0);
       this.heal(bot, Math.round(dealt * LIFESTEAL_FRACTION));
     }
-    // Recoil, as the player gets it (bots never aim down sights).
-    bot.pitch = Math.min(MAX_PITCH, bot.pitch + def.recoil);
-    bot.yaw += (Math.random() - 0.5) * def.recoil * 0.5;
+    // Recoil, as the player gets it (less with the sights up). The aim model pulls it back down.
+    const recoil = adsRecoil(def.recoil, bot.brain.aim.ads);
+    bot.pitch = Math.min(MAX_PITCH, bot.pitch + recoil);
+    bot.yaw += (Math.random() - 0.5) * recoil * 0.5;
 
     const [first, ...rest] = ends;
     const shot = { o: arr(eye.x, eye.y - 0.1, eye.z), e: first ?? arr(eye.x, eye.y, eye.z) };
@@ -886,6 +947,8 @@ export class BotHost {
     bot.detour = null;
     bot.gun = this.gunFor(bot);
     bot.ammo = GUNS[bot.gun].mag;
+    // Spare rifle rounds as a player gets them: 90, or endless where the mode hands everyone one gun.
+    bot.gear.rifleReserve = api.rules().loadout === 'standard' ? RIFLE_RESERVE : Infinity;
     bot.reloadLeft = bot.cooldown = bot.burst = 0;
     bot.brain.steering.reset();
     bot.brain.aim.reset();
@@ -928,11 +991,13 @@ export class BotHost {
     return bot.gear.special ? bot.gear.special.mag : bot.ammo;
   }
 
-  /** A reload finished: the picked-up gun's from its spare rounds, the rifle's from nowhere (bots never run dry). */
+  /** A reload finished: from the spare rounds of whichever gun is in hand (a player's rules). */
   private reloaded(bot: HostedBot): void {
     const special = bot.gear.special;
     if (!special) {
-      bot.ammo = GUNS[bot.gun].mag;
+      const take = Math.min(GUNS[bot.gun].mag - bot.ammo, bot.gear.rifleReserve);
+      bot.ammo += take;
+      if (Number.isFinite(bot.gear.rifleReserve)) bot.gear.rifleReserve -= take;
       return;
     }
     const take = Math.min(GUNS[special.kind].mag - special.mag, special.reserve);

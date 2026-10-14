@@ -62,6 +62,8 @@ const cases = [
   ['lobby: unknown map size', 'lobby/ROOM1/size', 'xl', false],
   ['lobby: generator version not a number', 'lobby/ROOM1/gen', '2', false],
   ['lobby: seed too long', 'lobby/ROOM1/seed', 'ABCDEFGHIJKLMNOPQ', false],
+  ['lobby: an asymmetric map', 'lobby/ROOM1/asym', true, true],
+  ['lobby: asym not a boolean', 'lobby/ROOM1/asym', 'yes', false],
   ['lobby: rules with bots', 'lobby/ROOM1/rules', { ...ffaRules, bots: 6, botSkill: 'hard' }, true],
   ['lobby: too many bots', 'lobby/ROOM1/rules/bots', 50, false],
   ['lobby: expert bots', 'lobby/ROOM1/rules/botSkill', 'expert', true],
@@ -74,6 +76,8 @@ const cases = [
   ['game: round on a map', 'rooms/ROOM1/game', { round: 0, seed: 'ABC123', size: 'm', gen: 2, mapHash: 123456 }, true],
   ['game: unknown map size', 'rooms/ROOM1/game/size', 'huge', false],
   ['game: map fingerprint not a number', 'rooms/ROOM1/game/mapHash', 'abc', false],
+  ['game: an asymmetric map', 'rooms/ROOM1/game/asym', true, true],
+  ['game: asym not a boolean', 'rooms/ROOM1/game/asym', 1, false],
   ['unknown top-level path', 'admin/flag', true, false],
 ];
 
