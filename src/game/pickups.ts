@@ -215,7 +215,7 @@ export class PickupField {
     let icon: THREE.Object3D;
     if (kind === 'gun') {
       // A full-size copy of the gun itself, spinning on its side.
-      const model = buildGunModel(type as Exclude<PickupType, AbilityType | 'ammo'>).group;
+      const model = buildGunModel(type as Exclude<PickupType, AbilityType | 'ammo'>, false).group;
       model.scale.setScalar(1.6);
       model.rotation.z = Math.PI / 2;
       icon = new THREE.Group().add(model);

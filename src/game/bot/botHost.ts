@@ -545,9 +545,10 @@ export class BotHost {
 
     // All the bots' poses go out together, SEND_RATE times a second, as one write: only what changed
     // for each (everything, every HEARTBEAT seconds, in case a change was lost), like a player's own.
+    // (Keeping the remainder, as the player's own sends do, so the rate holds at any frame rate.)
     this.sendIn -= dt;
     if (this.sendIn > 0) return;
-    this.sendIn = 1 / SEND_RATE;
+    this.sendIn = Math.max(this.sendIn + 1 / SEND_RATE, 0);
     const batch = new Map<string, Partial<PlayerState>>();
     const t = Math.round(api.net.serverNow());
     for (const bot of this.bots.values()) {

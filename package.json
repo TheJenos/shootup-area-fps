@@ -3,6 +3,12 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "imports": {
+    "#rapier": {
+      "node": "@dimforge/rapier3d-compat",
+      "default": "@dimforge/rapier3d"
+    }
+  },
   "scripts": {
     "dev": "vite",
     "dev:emu": "vite --mode emulator",
@@ -24,6 +30,7 @@
     "export:bots": "rolldown scripts/export-bots.ts --platform node --format esm --file node_modules/.cache/export-bots.mjs --log-level warn && node node_modules/.cache/export-bots.mjs"
   },
   "dependencies": {
+    "@dimforge/rapier3d": "^0.21.0",
     "@dimforge/rapier3d-compat": "^0.21.0",
     "@discord/embedded-app-sdk": "^2.5.0",
     "firebase": "^12.19.0",
@@ -44,6 +51,7 @@
     "pngjs": "^7.0.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.2",
+    "vite-plugin-wasm": "^3.6.0",
     "vitest": "^5.0.3"
   }
 }

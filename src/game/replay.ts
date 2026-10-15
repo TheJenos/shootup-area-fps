@@ -18,6 +18,15 @@ const LEAD_IN = 1500;
 const LEAD_OUT = 1500;
 /** The replay must fit in the MVP screen; longer highlights play faster. */
 const MAX_REPLAY = 9_000;
+/**
+ * The recording keeps the last minute (the kill cam looks a few seconds back) and the highlights that
+ * may still become the MVP replay, with the replay's lead-in (plus the footage check's slack) and
+ * lead-out. Trimmed every few seconds (ms).
+ */
+const KEEP_RECENT = 60_000;
+const KEEP_BEFORE = LEAD_IN + 2_000;
+const KEEP_AFTER = LEAD_OUT;
+const TRIM_EVERY = 5_000;
 
 interface PoseSample {
   t: number;
@@ -38,6 +47,17 @@ interface Track {
   samples: PoseSample[];
 }
 
+/** A stretch of the round (server ms) that may be replayed: a player's best highlight so far */
+export interface Highlight {
+  start: number;
+  end: number;
+}
+
+interface FlagChange {
+  t: number;
+  placement: FlagPlacement;
+}
+
 export type ReplayEvent =
   | { t: number; kind: 'shot'; o: Vec3Tuple; e: Vec3Tuple; hit: boolean; w?: GunKind; ends?: Vec3Tuple[]; from?: string }
   | { t: number; kind: 'kill'; killer: string; victim: string; head: boolean }
@@ -48,19 +68,35 @@ export type ReplayEvent =
   | { t: number; kind: 'flag'; team: Team; placement: FlagPlacement };
 
 /**
- * Everything this client saw during the round (poses and events, in server ms), so the
- * MVP's highlight can be replayed when the round ends. Cleared at the start of each round.
+ * What this client saw during the round (poses and events, in server ms), so the kill cam can replay
+ * the last few seconds and the MVP's highlight can be replayed when the round ends. Cleared at the
+ * start of each round; in between it keeps the last minute and the highlights that may be the MVP's.
  */
 export class ReplayRecorder {
   readonly tracks = new Map<string, Track>();
   readonly events: ReplayEvent[] = [];
-  /** Flag positions when recording started */
+  /** Flag positions when recording started (or as of the oldest change folded in by a trim) */
   private initialFlags: Partial<Record<Team, FlagPlacement>> = {};
+  /** Each team's flag changes, in time order, so flagsAt doesn't scan every event */
+  private readonly flagChanges: Partial<Record<Team, FlagChange[]>> = {};
+  /** Every player's best highlight so far: kept past the last minute, any may be the MVP replay */
+  private readonly highlights: () => Iterable<Highlight | null | undefined>;
+  /** The latest time recorded, and when we last trimmed (server ms) */
+  private latest = 0;
+  private trimmedAt = 0;
+  /** Replays playing from the recording: it isn't trimmed under them */
+  private holds = 0;
+
+  constructor(highlights: () => Iterable<Highlight | null | undefined> = () => []) {
+    this.highlights = highlights;
+  }
 
   reset(flags: Partial<Record<Team, FlagPlacement>> = {}): void {
     this.tracks.clear();
     this.events.length = 0;
     this.initialFlags = { ...flags };
+    for (const team of TEAMS) delete this.flagChanges[team];
+    this.latest = this.trimmedAt = 0;
   }
 
   pose(
@@ -83,17 +119,97 @@ export class ReplayRecorder {
     track.samples.push({
       t, x: data.x || 0, y: data.y || 0, z: data.z || 0, yaw: data.yaw || 0, pitch: data.pitch || 0, alive, stance, aim, gun,
     });
+    this.tick(t);
   }
 
   event(e: ReplayEvent): void {
     this.events.push(e);
+    if (e.kind === 'flag') {
+      const changes = (this.flagChanges[e.team] ??= []);
+      // In time order (one can arrive a little late).
+      let i = changes.length;
+      while (i > 0 && changes[i - 1]!.t > e.t) i--;
+      changes.splice(i, 0, { t: e.t, placement: e.placement });
+    }
+    this.tick(e.t);
   }
 
   /** Where each flag was at time `t` */
   flagsAt(t: number): Partial<Record<Team, FlagPlacement>> {
     const flags = { ...this.initialFlags };
-    for (const e of this.events) if (e.kind === 'flag' && e.t <= t) flags[e.team] = e.placement;
+    for (const team of TEAMS) {
+      const changes = this.flagChanges[team];
+      if (!changes?.length) continue;
+      // The last change at or before `t`.
+      let lo = 0;
+      let hi = changes.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (changes[mid]!.t <= t) lo = mid + 1;
+        else hi = mid;
+      }
+      const change = changes[lo - 1];
+      if (change) flags[team] = change.placement;
+    }
     return flags;
+  }
+
+  /** A replay is playing from the recording: don't trim it until it's released. */
+  hold(): void {
+    this.holds++;
+  }
+
+  release(): void {
+    this.holds = Math.max(0, this.holds - 1);
+  }
+
+  private tick(t: number): void {
+    if (t > this.latest) this.latest = t;
+    if (this.latest - this.trimmedAt >= TRIM_EVERY && !this.holds) this.trim(this.latest);
+  }
+
+  /**
+   * Drop what's older than the last minute, except the highlights (and their lead-in and lead-out).
+   * Each player keeps the pose from just before any stretch that's kept, so a replay starting there
+   * has somewhere to put them (someone standing still sends few poses).
+   */
+  trim(now: number): void {
+    this.trimmedAt = now;
+    const cutoff = now - KEEP_RECENT;
+    const windows: Highlight[] = [];
+    for (const h of this.highlights()) {
+      if (h && h.start > 0) windows.push({ start: h.start - KEEP_BEFORE, end: h.end + KEEP_AFTER });
+    }
+    const kept = (t: number) => t >= cutoff || windows.some((w) => t >= w.start && t <= w.end);
+
+    for (const { samples } of this.tracks.values()) {
+      const n = samples.length;
+      // Nothing old enough to go
+      if (!n || samples[0]!.t >= cutoff) continue;
+      let w = 0;
+      for (let i = 0; i < n; i++) {
+        const s = samples[i]!;
+        const next = samples[i + 1];
+        if (kept(s.t) || i === n - 1 || (next && kept(next.t))) samples[w++] = s;
+      }
+      samples.length = w;
+    }
+
+    let w = 0;
+    for (const e of this.events) if (kept(e.t)) this.events[w++] = e;
+    this.events.length = w;
+
+    // Flag changes before anything a replay can start from are folded into the starting positions.
+    const floor = windows.reduce((m, h) => Math.min(m, h.start), cutoff);
+    for (const team of TEAMS) {
+      const changes = this.flagChanges[team];
+      if (!changes) continue;
+      let folded = 0;
+      while (folded < changes.length && changes[folded]!.t <= floor) folded++;
+      if (!folded) continue;
+      this.initialFlags[team] = changes[folded - 1]!.placement;
+      changes.splice(0, folded);
+    }
   }
 }
 
@@ -117,6 +233,51 @@ function sampleAt(samples: PoseSample[], t: number): PoseSample | null {
 
 const fromArr = (a: Vec3Tuple) => new THREE.Vector3(a[0], a[1], a[2]);
 
+/**
+ * Replay stand-ins, kept from one replay to the next: making one clones the character (skinned mesh,
+ * materials, name tag, guns), which every kill cam used to do for every player. A few are made when
+ * the game loads; a replay with more players makes the rest, and they're all kept for the next.
+ */
+export class StandIns {
+  private readonly spare: RemotePlayer[] = [];
+  private readonly all: RemotePlayer[] = [];
+
+  constructor(private readonly scene: THREE.Scene, private readonly character: CharacterAsset) {}
+
+  /** Have at least `count` made. */
+  warm(count: number): void {
+    while (this.all.length < count) {
+      const ghost = this.make({ name: '', color: '#ffffff', x: 0, y: 0, z: 0, yaw: 0, pitch: 0, alive: true, hp: 100, kills: 0, deaths: 0 });
+      ghost.park();
+      this.spare.push(ghost);
+    }
+  }
+
+  take(data: PlayerState): RemotePlayer {
+    const ghost = this.spare.pop();
+    if (!ghost) return this.make(data);
+    ghost.reuse(data);
+    return ghost;
+  }
+
+  give(ghost: RemotePlayer): void {
+    ghost.park();
+    this.spare.push(ghost);
+  }
+
+  dispose(): void {
+    for (const ghost of this.all) ghost.dispose();
+    this.all.length = 0;
+    this.spare.length = 0;
+  }
+
+  private make(data: PlayerState): RemotePlayer {
+    const ghost = new RemotePlayer('replay', data, this.scene, this.character);
+    this.all.push(ghost);
+    return ghost;
+  }
+}
+
 export interface ReplayOptions {
   /** Whose eyes, and the moment to show (server ms) */
   mvp: Pick<MvpInfo, 'id' | 'start' | 'end'>;
@@ -128,6 +289,8 @@ export interface ReplayOptions {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   character: CharacterAsset;
+  /** Where the stand-ins come from and go back to (without: made for this replay, and thrown away) */
+  standIns?: StandIns;
   effects: Effects;
   grenades: GrenadeFx;
   colliders: THREE.Box3[];
@@ -158,6 +321,7 @@ export class ReplayDirector {
   private orbit = 0;
   /** Where each flag is at the replay's current time, so carriers' stand-ins stow their guns */
   private flags: Partial<Record<Team, FlagPlacement>> = {};
+  private disposed = false;
 
   /** Whose eyes the replay is seen through */
   get viewerId(): string {
@@ -167,6 +331,8 @@ export class ReplayDirector {
   constructor(opts: ReplayOptions) {
     this.opts = opts;
     const { mvp, recorder } = opts;
+    // Its events are played by index, and the kill cam's end is still being recorded: no trimming meanwhile.
+    recorder.hold();
     this.start = mvp.start - (opts.leadIn ?? LEAD_IN);
     this.end = mvp.end + (opts.leadOut ?? LEAD_OUT);
     this.rate = Math.max(1, (this.end - this.start) / (opts.maxLength ?? MAX_REPLAY));
@@ -180,7 +346,8 @@ export class ReplayDirector {
     for (const [id, t] of recorder.tracks) {
       const first = sampleAt(t.samples, this.start) ?? t.samples.find((s) => s.t <= this.end);
       if (!first) continue;
-      const ghost = new RemotePlayer(`replay:${id}`, { ...first, name: t.name, color: t.color, hp: 100, kills: 0, deaths: 0 }, opts.scene, opts.character);
+      const data: PlayerState = { ...first, name: t.name, color: t.color, hp: 100, kills: 0, deaths: 0 };
+      const ghost = opts.standIns?.take(data) ?? new RemotePlayer(`replay:${id}`, data, opts.scene, opts.character);
       this.ghosts.set(id, ghost);
     }
     this.eventIndex = recorder.events.findIndex((e) => e.t > this.start);
@@ -243,7 +410,14 @@ export class ReplayDirector {
   }
 
   dispose(): void {
-    for (const ghost of this.ghosts.values()) ghost.dispose();
+    if (this.disposed) return;
+    this.disposed = true;
+    this.opts.recorder.release();
+    const { standIns } = this.opts;
+    for (const ghost of this.ghosts.values()) {
+      if (standIns) standIns.give(ghost);
+      else ghost.dispose();
+    }
     this.ghosts.clear();
   }
 

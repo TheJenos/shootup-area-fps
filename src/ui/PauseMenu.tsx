@@ -125,7 +125,8 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onMatchSet
           )}
           {hud.map && (
             <div className="map">
-              {layout && <MapPreview map={layout} mode={hud.mode} />}
+              {/* Still (redrawn only when dragged): the game is rendering behind the menu. */}
+              {layout && <MapPreview map={layout} mode={hud.mode} spin={false} />}
               <div>
                 <strong>{hud.map.name}</strong>
                 <span className="muted">seed {hud.map.seed}{isClassic(hud.map.spec) ? '' : ` · ${SIZE_LABEL[hud.map.size]}`}</span>

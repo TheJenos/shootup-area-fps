@@ -4,7 +4,7 @@ import { buildWorld } from '../game/world';
 import { PAINT, insideOutline, type MapData } from '../game/mapgen';
 import { TEAM_INFO } from '../game/modes';
 import { bombSites, SITE_IDS } from '../game/snd';
-import { reducedMotion } from '../game/settings';
+import { reducedMotion, settings } from '../game/settings';
 import type { GameMode } from '../types';
 
 const SIZE = 168;
@@ -202,8 +202,12 @@ function siteMarkers(map: MapData): THREE.Group {
   return g;
 }
 
-/** A small 3D view of a generated map, slowly orbiting; drag to turn it. */
-export function MapPreview({ map, mode }: { map: MapData; mode: GameMode }) {
+/**
+ * A small 3D view of a generated map; drag to turn it. With `spin` (the lobby) it slowly orbits on its
+ * own, unless motion is reduced. Otherwise (the pause menu, over a running game) it draws only when
+ * something changes: on open, on a drag and on a resize, so it doesn't run a second render loop.
+ */
+export function MapPreview({ map, mode, spin = true }: { map: MapData; mode: GameMode; spin?: boolean }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [flat, setFlat] = useState(false);
@@ -228,6 +232,34 @@ export function MapPreview({ map, mode }: { map: MapData; mode: GameMode }) {
     if (markers) scene.add(markers);
 
     const camera = new THREE.PerspectiveCamera(40, 1, 1, 400);
+    let yaw = Math.PI / 4;
+    let pitch = 0.85;
+    let dragging: { x: number; y: number } | null = null;
+    /** Turning on its own right now (checked every frame, so the reduce-motion setting applies at once) */
+    const spinning = () => spin && !dragging && !reducedMotion();
+    /** The pending frame (0: none), and when the last one was drawn (0: not orbiting) */
+    let frame = 0;
+    let last = 0;
+    const draw = (now: number) => {
+      frame = 0;
+      // Another preview took the canvas: this one stops drawing.
+      if (renderer.domElement.parentElement !== host) return;
+      if (spinning()) {
+        if (last) yaw += (Math.min(0.1, (now - last) / 1000) * Math.PI * 2) / ORBIT_PERIOD;
+        last = now;
+        frame = requestAnimationFrame(draw);
+      } else {
+        last = 0;
+      }
+      const dist = map.half * 3.05;
+      camera.position.set(Math.sin(yaw) * Math.cos(pitch) * dist, Math.sin(pitch) * dist, Math.cos(yaw) * Math.cos(pitch) * dist);
+      camera.lookAt(0, 0, 0);
+      renderer.render(scene, camera);
+    };
+    /** Draw on the next frame (at most once per frame, however many changes come in) */
+    const redraw = () => {
+      if (!frame) frame = requestAnimationFrame(draw);
+    };
     const size = () => {
       const w = host.clientWidth || SIZE;
       const h = host.clientHeight || SIZE;
@@ -235,29 +267,10 @@ export function MapPreview({ map, mode }: { map: MapData; mode: GameMode }) {
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      redraw();
     };
     host.appendChild(renderer.domElement);
     size();
-
-    let yaw = Math.PI / 4;
-    let pitch = 0.85;
-    let dragging: { x: number; y: number } | null = null;
-    let last = performance.now();
-    let frame = 0;
-    const tick = (now: number) => {
-      frame = requestAnimationFrame(tick);
-      const dt = Math.min(0.1, (now - last) / 1000);
-      last = now;
-      // Another preview took the canvas: this one stops drawing.
-      if (renderer.domElement.parentElement !== host) return;
-      // Reduced motion: it holds still until dragged.
-      if (!dragging && !reducedMotion()) yaw += (dt * Math.PI * 2) / ORBIT_PERIOD;
-      const dist = map.half * 3.05;
-      camera.position.set(Math.sin(yaw) * Math.cos(pitch) * dist, Math.sin(pitch) * dist, Math.cos(yaw) * Math.cos(pitch) * dist);
-      camera.lookAt(0, 0, 0);
-      renderer.render(scene, camera);
-    };
-    frame = requestAnimationFrame(tick);
 
     const el = renderer.domElement;
     const down = (e: PointerEvent) => {
@@ -269,17 +282,25 @@ export function MapPreview({ map, mode }: { map: MapData; mode: GameMode }) {
       yaw -= (e.clientX - dragging.x) * 0.01;
       pitch = Math.max(0.25, Math.min(1.45, pitch + (e.clientY - dragging.y) * 0.01));
       dragging = { x: e.clientX, y: e.clientY };
+      redraw();
     };
-    const up = () => { dragging = null; };
+    // Letting go starts the orbit again (where it spins).
+    const up = () => { dragging = null; redraw(); };
     el.addEventListener('pointerdown', down);
     el.addEventListener('pointermove', move);
     el.addEventListener('pointerup', up);
     el.addEventListener('pointercancel', up);
     const resize = new ResizeObserver(size);
     resize.observe(host);
+    // Motion allowed again (the setting, or the system's): the lobby's orbit picks up where it stopped.
+    const unsubscribe = spin ? settings.subscribe(redraw) : null;
+    const motion = spin ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
+    motion?.addEventListener('change', redraw);
 
     return () => {
-      cancelAnimationFrame(frame);
+      if (frame) cancelAnimationFrame(frame);
+      unsubscribe?.();
+      motion?.removeEventListener('change', redraw);
       resize.disconnect();
       el.removeEventListener('pointerdown', down);
       el.removeEventListener('pointermove', move);

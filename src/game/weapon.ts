@@ -629,12 +629,27 @@ interface Effect {
   life: number;
   max: number;
   grow: boolean;
+  /** Where it goes back to when it's done */
+  spares: Effect[];
 }
 
-/** Short-lived bullet tracers and impact sparks in the world scene. */
+/**
+ * Most tracers and sparks alive at once; past that the oldest is reused. Shots keep arriving while
+ * the tab is hidden, but no frames run to fade them out, so without a cap they'd pile up.
+ */
+const MAX_EFFECTS = 160;
+
+/**
+ * Short-lived bullet tracers and impact sparks in the world scene. Each fades on its own, so each has
+ * its own material; finished ones (mesh and material) are hidden and reused, so firing allocates nothing.
+ * (Not one instanced mesh: that sorts as one object, and sparks on a player would draw behind them.)
+ */
 export class Effects {
   private readonly scene: THREE.Scene;
-  private items: Effect[] = [];
+  /** Alive, oldest first */
+  private readonly items: Effect[] = [];
+  private readonly spareTracers: Effect[] = [];
+  private readonly spareSparks: Effect[] = [];
   private readonly tracerGeo = new THREE.BoxGeometry(1, 1, 1).translate(0, 0, 0.5);
   private readonly sparkGeo = new THREE.SphereGeometry(0.06, 6, 4);
 
@@ -643,36 +658,59 @@ export class Effects {
   }
 
   tracer(from: THREE.Vector3, to: THREE.Vector3, color = 0xffe08a): void {
-    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false });
-    const mesh = new THREE.Mesh(this.tracerGeo, mat);
-    mesh.position.copy(from);
-    mesh.lookAt(to);
-    mesh.scale.set(0.025, 0.025, from.distanceTo(to));
-    this.add(mesh, 0.07);
+    const it = this.take(this.spareTracers, 0.07, false, () => new THREE.Mesh(
+      this.tracerGeo,
+      new THREE.MeshBasicMaterial({ transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }),
+    ));
+    it.mesh.material.color.setHex(color);
+    it.mesh.material.opacity = 0.9;
+    it.mesh.position.copy(from);
+    it.mesh.lookAt(to);
+    it.mesh.scale.set(0.025, 0.025, from.distanceTo(to));
   }
 
   impact(point: THREE.Vector3, color = 0xffc35c): void {
-    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, depthWrite: false });
-    const mesh = new THREE.Mesh(this.sparkGeo, mat);
-    mesh.position.copy(point);
-    this.add(mesh, 0.18, true);
+    const it = this.take(this.spareSparks, 0.18, true, () => new THREE.Mesh(
+      this.sparkGeo,
+      new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false }),
+    ));
+    it.mesh.material.color.setHex(color);
+    it.mesh.material.opacity = 1;
+    it.mesh.position.copy(point);
+    it.mesh.scale.setScalar(1);
   }
 
-  private add(mesh: Effect['mesh'], life: number, grow = false): void {
-    this.scene.add(mesh);
-    this.items.push({ mesh, life, max: life, grow });
+  /** A spare effect of this kind (or a new one), alive for `life` seconds. */
+  private take(spares: Effect[], life: number, grow: boolean, make: () => Effect['mesh']): Effect {
+    if (this.items.length >= MAX_EFFECTS) this.retire(this.items.shift()!);
+    let it = spares.pop();
+    if (!it) {
+      it = { mesh: make(), life, max: life, grow, spares };
+      this.scene.add(it.mesh);
+    }
+    it.life = it.max = life;
+    it.mesh.visible = true;
+    this.items.push(it);
+    return it;
+  }
+
+  /** Done: hidden (it stays in the scene) until it's reused. */
+  private retire(it: Effect): void {
+    it.mesh.visible = false;
+    it.spares.push(it);
   }
 
   update(dt: number): void {
-    this.items = this.items.filter((it) => {
+    // In place, keeping the order (oldest first).
+    let kept = 0;
+    for (const it of this.items) {
       it.life -= dt;
       const k = Math.max(it.life / it.max, 0);
       it.mesh.material.opacity = k;
       if (it.grow) it.mesh.scale.setScalar(1 + (1 - k) * 2);
-      if (it.life > 0) return true;
-      this.scene.remove(it.mesh);
-      it.mesh.material.dispose();
-      return false;
-    });
+      if (it.life > 0) this.items[kept++] = it;
+      else this.retire(it);
+    }
+    this.items.length = kept;
   }
 }

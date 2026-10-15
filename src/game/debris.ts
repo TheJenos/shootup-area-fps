@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { RigidBody } from '@dimforge/rapier3d-compat';
+import type { RigidBody } from '#rapier';
 import { GROUP, groups, toQuat, toVec3, type PhysicsWorld } from './physics';
 import { propParts, whenPropsReady } from './props';
 import type { MapProp } from './mapgen';

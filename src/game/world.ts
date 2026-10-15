@@ -9,6 +9,7 @@ import {
   type BoxSurface,
 } from './textures';
 import { propParts, whenPropsReady } from './props';
+import type { ShotShapes } from './physics';
 import type { Team } from '../types';
 
 /** The sky dome sits inside the camera's far plane (300 m) and follows the camera. */
@@ -18,7 +19,10 @@ const SKY_RADIUS = 250;
 export interface WorldLists {
   /** Axis-aligned boxes the player collides with */
   colliders: THREE.Box3[];
-  /** Meshes bullets can hit (invisible proxies for the merged map geometry) */
+  /**
+   * Solid meshes: the floor and ramps, and barriers and turrets while they stand (deployables.ts).
+   * Bullets don't raycast these: they're cast in the physics world (World.shots, PhysicsWorld.castRay).
+   */
   solids: THREE.Mesh[];
   /** Sloped surfaces the player walks up */
   ramps: Ramp[];
@@ -42,6 +46,8 @@ export interface World extends WorldLists {
   half: number;
   /** The terrain (null on a flat map), for the physics engine */
   ground: Ground | null;
+  /** What bullets stop at where that isn't `colliders` (cylinders, bullet-only boxes), for the physics engine */
+  shots: ShotShapes;
   spawns: SpawnPoint[];
   /** Where the map's designer wants pickups (lanes, the middle, overlooks); none on the classic map */
   pickupSpots: MapData['pickupSpots'];
@@ -95,12 +101,12 @@ const GROUND_STEP: Partial<Record<string, StepSurface>> = { grass: 'sand', dirt:
  *
  * The terrain is drawn in chunks with the floor texture, blended toward the lane paint along the
  * lanes and tinted by slope and shade. Boxes are merged into one mesh per texture and colour (per
- * quarter of the map, so frustum culling still works), with an invisible box per obstacle in
- * `solids` for bullets. Models (map.props) are drawn as InstancedMeshes once props.glb has loaded;
- * their collision is the invisible boxes the generator placed with them.
+ * quarter of the map, so frustum culling still works). Models (map.props) are drawn as InstancedMeshes
+ * once props.glb has loaded; their collision is the invisible boxes the generator placed with them.
+ * Bullets hit the same boxes in the physics world, with `shots` for where they differ from movement.
  *
- * Fills `colliders` (Box3, for movement) and `solids` (meshes, for bullet raycasts) in place,
- * so code holding on to those arrays sees the new map when it's rebuilt for the next round.
+ * Fills `colliders` (Box3, for movement) and `solids` in place, so code holding on to those arrays
+ * sees the new map when it's rebuilt for the next round.
  */
 export function buildWorld(scene: THREE.Scene, map: MapData, lists: WorldLists, options: WorldOptions = {}): World {
   const { colliders, solids, ramps, obstacles } = lists;
@@ -170,20 +176,8 @@ export function buildWorld(scene: THREE.Scene, map: MapData, lists: WorldLists, 
     return mat;
   };
 
-  // Invisible boxes bullets and line-of-sight rays hit (raycasting ignores `visible`).
-  const proxies = new THREE.Group();
-  proxies.visible = false;
-  root.add(proxies);
-  const proxyGeo = new THREE.BoxGeometry(1, 1, 1);
-  const proxyMat = new THREE.MeshBasicMaterial();
-  const addProxy = (b: { x: number; z: number; w: number; h: number; d: number; y: number }) => {
-    const mesh = new THREE.Mesh(proxyGeo, proxyMat);
-    mesh.position.set(b.x, b.y + b.h / 2, b.z);
-    mesh.scale.set(b.w, b.h, b.d);
-    proxies.add(mesh);
-    mesh.updateMatrixWorld();
-    solids.push(mesh);
-  };
+  /** Where bullets and movement differ, for the physics world (bullets are cast there, not at meshes) */
+  const shots = { passable: new Set<THREE.Box3>(), boxes: [] as THREE.Box3[], cylinders: [] as THREE.Box3[], floor: half } satisfies ShotShapes;
 
   /** Footsteps on each collider or ramp, for groundAt */
   const stepOf = new WeakMap<THREE.Box3, StepSurface>();
@@ -214,19 +208,10 @@ export function buildWorld(scene: THREE.Scene, map: MapData, lists: WorldLists, 
     batch.geos.push(geo);
   };
 
-  /** A round thing's invisible stand-in for bullets: the cylinder itself, not its box. */
-  const proxyCylGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
-  const addCylinderProxy = (b: MapBox) => {
-    const mesh = new THREE.Mesh(proxyCylGeo, proxyMat);
-    mesh.position.set(b.x, b.y + b.h / 2, b.z);
-    mesh.scale.set(b.w, b.h, b.d);
-    proxies.add(mesh);
-    mesh.updateMatrixWorld();
-    solids.push(mesh);
-  };
-
-  const addCollider = (box: THREE.Box3, step: StepSurface | null, floorSpace = true) => {
+  /** `shotsToo`: bullets stop at it as well (the boundary and `blocks: 'move'` boxes they fly through) */
+  const addCollider = (box: THREE.Box3, step: StepSurface | null, floorSpace = true, shotsToo = true) => {
     colliders.push(box);
+    if (!shotsToo) shots.passable.add(box);
     if (floorSpace) obstacles.push(box);
     if (step) stepOf.set(box, step);
     grid.insert(box.min.x, box.max.x, box.min.z, box.max.z, box);
@@ -235,20 +220,21 @@ export function buildWorld(scene: THREE.Scene, map: MapData, lists: WorldLists, 
   const addBox = (b: MapBox) => {
     const blocks = b.blocks ?? 'all';
     if (b.visible !== false) addVisual(b);
+    const round = b.shape === 'cylinder';
     if (blocks !== 'shots') {
       // Cylinders (tanks, barrels) collide as an eight-sided shape that stays inside them, not as
-      // their box: no invisible corners to bump into.
-      const parts = b.shape === 'cylinder' ? CYLINDER_FIT : [[0.5, 0.5] as const];
+      // their box: no invisible corners to bump into. Bullets stop at the round side instead.
+      const parts = round ? CYLINDER_FIT : [[0.5, 0.5] as const];
       for (const [fx, fz] of parts) {
         addCollider(new THREE.Box3(
           new THREE.Vector3(b.x - b.w * fx, b.y, b.z - b.d * fz),
           new THREE.Vector3(b.x + b.w * fx, b.y + b.h, b.z + b.d * fz),
-        ), stepFor(b));
+        ), stepFor(b), true, blocks !== 'move' && !round);
       }
     }
-    if (blocks !== 'move') {
-      if (b.shape === 'cylinder') addCylinderProxy(b);
-      else addProxy(b);
+    if (blocks !== 'move' && (round || blocks === 'shots')) {
+      const bounds = new THREE.Box3(new THREE.Vector3(b.x - b.w / 2, b.y, b.z - b.d / 2), new THREE.Vector3(b.x + b.w / 2, b.y + b.h, b.z + b.d / 2));
+      (round ? shots.cylinders : shots.boxes).push(bounds);
     }
   };
 
@@ -292,13 +278,13 @@ export function buildWorld(scene: THREE.Scene, map: MapData, lists: WorldLists, 
     [-W - T, -W - T, W + T, -W + 0.5], [-W - T, W - 0.5, W + T, W + T],
     [-W - T, -W - T, -W + 0.5, W + T], [W - 0.5, -W - T, W + T, W + T],
   ] as const) {
-    addCollider(new THREE.Box3(new THREE.Vector3(x0, -10, z0), new THREE.Vector3(x1, BOUNDARY_HEIGHT, z1)), null, false);
+    addCollider(new THREE.Box3(new THREE.Vector3(x0, -10, z0), new THREE.Vector3(x1, BOUNDARY_HEIGHT, z1)), null, false, false);
   }
   // A shaped map: the same over everything outside its shape, so nobody gets onto the roofs or
   // cliff tops. Floor space, so pickups never land out there.
   if (map.outline) {
     for (const r of outsideRects(map.outline)) {
-      addCollider(new THREE.Box3(new THREE.Vector3(r.minX, -10, r.minZ), new THREE.Vector3(r.maxX, BOUNDARY_HEIGHT, r.maxZ)), null);
+      addCollider(new THREE.Box3(new THREE.Vector3(r.minX, -10, r.minZ), new THREE.Vector3(r.maxX, BOUNDARY_HEIGHT, r.maxZ)), null, true, false);
     }
   }
 
@@ -496,7 +482,7 @@ export function buildWorld(scene: THREE.Scene, map: MapData, lists: WorldLists, 
 
   const looseProps = map.props.filter((p) => options.looseProps?.has(p.id));
   return {
-    colliders, solids, ramps, obstacles, half, ground, spawns, pickupSpots: map.pickupSpots, sky, root, looseProps,
+    colliders, solids, ramps, obstacles, half, ground, shots, spawns, pickupSpots: map.pickupSpots, sky, root, looseProps,
     groundAt, terrainAt, terrainUnder, blockedBy, setQuality, dispose,
   };
 }
@@ -521,7 +507,7 @@ function paintLanes(mat: THREE.MeshStandardMaterial, path: THREE.Texture, scale:
   mat.customProgramCacheKey = () => `lanes:${scale}`;
 }
 
-/** Floor chunks per side: separate meshes so bullet raycasts and culling skip most of the hills */
+/** Floor chunks per side: separate meshes so culling skips most of the hills */
 const FLOOR_CHUNK = 16;
 
 /** Vertex tint for each kind of ground paint */

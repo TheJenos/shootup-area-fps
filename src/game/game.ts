@@ -22,7 +22,7 @@ import {
 } from './abilities';
 import { FireField, MineField, ScanPulses, TurretField, type Mine, type Turret } from './fieldfx';
 import { MAX_AMMO_PICKUPS, MAX_GUN_PICKUPS, MAX_PICKUPS, PickupField, kindOf, type PickupKind } from './pickups';
-import { SmokeField, WALL_DISTANCE, WALL_DURATION, WallField, type DeployableData, type WallAxis } from './deployables';
+import { SmokeField, WALL_DISTANCE, WALL_DURATION, WallField, type WallAxis } from './deployables';
 import { GUNS, PICKUP_GUNS, isPickupGun, loadGunModels, maxShotDamage, shotDamage } from './guns';
 import { loadFpArms } from './fpArms';
 import { loadPropModels } from './props';
@@ -44,7 +44,7 @@ import {
 } from './modes';
 import { MomentTracker } from './moments';
 import { pickRespawn, roundSpawn, spawnSalt } from './spawnPlan';
-import { ReplayDirector, ReplayRecorder } from './replay';
+import { ReplayDirector, ReplayRecorder, StandIns } from './replay';
 import { RoomConnection, isBotId, randomId } from '../net/network';
 import { BotHost } from './bot/botHost';
 import { MAX_BOTS, botName, newSlotId, pickBase, rosterEntries, type BotRoster, type BotSlot } from './bot/roster';
@@ -62,12 +62,17 @@ import { TOUCH } from './device';
 import { StepTracker, type StepEvent } from './footsteps';
 import { hints, type HintId } from './hints';
 import { PERF_DEBUG, perfStats } from './perfStats';
+import { DynamicResolution } from './dynamicResolution';
 import type {
   AbilityType, BombRecord, DeployableRecord, GameEvent, GameMode, GameState, GunKind, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, SiteId, SndRecord, Team,
   Vec3Tuple, WeaponKind,
 } from '../types';
 
 const SEND_INTERVAL = 1 / 15;
+/** How often the frame loop rebuilds the score bar's view (ms) */
+const SCORE_REFRESH_MS = 100;
+/** An empty list to hand out instead of making one */
+const NONE: readonly never[] = [];
 /** Even when nothing changed, the whole pose is resent this often (s) */
 const HEARTBEAT = 5;
 /** Events older than this (server ms) are ignored on arrival and swept up at round start */
@@ -123,6 +128,8 @@ const ABILITY_ACTIONS: Action[] = ['ability1', 'ability2', 'ability3'];
 const UNKNOWN_PLAYER = { name: '?', color: '#888888' };
 /** Kill cam: how much before the kill it shows, and after (ms) */
 const KILLCAM_BEFORE = 3_500;
+/** Replay stand-ins made up front, so the first kill cam doesn't clone a character per player */
+const STAND_INS = 4;
 const KILLCAM_AFTER = 1_000;
 const EMPTY_STATS: PlayerStats = { damage: 0, shots: 0, hits: 0, headshots: 0, streak: 0, best: 0, captures: 0 };
 const EMPTY_MY_MATCH: MyMatch = { pickups: 0, abilitiesUsed: 0, dropped: 0 };
@@ -179,6 +186,8 @@ export const LOW_HEALTH = 0.3;
  * screen, full resolution plus MSAA is four times the pixels for little visible difference.
  */
 const PIXEL_RATIO: Record<Quality, number> = { low: 1, medium: 1.5, high: 1.5 };
+/** Touch screens drop below the quality setting's pixel ratio while frames are slow, down to this */
+const MIN_PIXEL_RATIO = 0.6;
 /** How often to check whether teammates are hidden behind cover (s) */
 const ALLY_SIGHT_INTERVAL = 0.1;
 /** Radians of turn per pixel of finger drag, at sensitivity 1 */
@@ -260,6 +269,7 @@ export class Game {
   private botRoster: BotRoster = {};
   /** Other players' bodies in our physics world, so nobody walks through anybody */
   private readonly remoteBodies = new RemoteBodies();
+  private readonly bodyPoseList: BodyPose[] = [];
   private readonly timer = new THREE.Timer();
 
   private readonly remotes = new Map<string, RemotePlayer>();
@@ -275,7 +285,6 @@ export class Game {
   /** Right mouse button: aim down sights (held, or toggled in settings) */
   private aimHeld = false;
   private allySightTimer = 0;
-  private readonly sightRay = new THREE.Raycaster();
   private locked = false;
   private joinedAt = 0;
   private sendTimer = 0;
@@ -308,6 +317,7 @@ export class Game {
   /** When each other player last fired (performance.now ms): gunfire gives them away on the radar */
   private readonly lastShotAt = new Map<string, number>();
   private character: CharacterAsset | null = null;
+  private standIns: StandIns | null = null;
 
   // Abilities
   private readonly inventory = new Inventory();
@@ -330,15 +340,12 @@ export class Game {
   private lifestealUntil = 0;
   /** Seconds until standing in enemy fire hurts again */
   private fireTick = 0;
-  private readonly turretRay = new THREE.Raycaster();
   private dryToastAt = 0;
   /** How many things we've thrown this session (others animate the throw when it changes) */
   private throws = 0;
   /** Where we put the enemy flag down with E: not picked back up until we step away */
   private flagLeftAt: { x: number; z: number } | null = null;
-  private readonly losRay = new THREE.Raycaster();
-  /** For the spatial audio: is a wall between a sound and the camera? (and scratch vectors) */
-  private readonly soundRay = new THREE.Raycaster();
+  /** For the spatial audio: scratch vectors for whether a wall is between a sound and the camera */
   private readonly soundFrom = new THREE.Vector3();
   private readonly soundTo = new THREE.Vector3();
   private readonly soundUp = new THREE.Vector3();
@@ -373,6 +380,8 @@ export class Game {
   private timeUpRequested = -1;
   private clockFixRequested = -1;
   private lastScoreKey = '';
+  /** When the frame loop next refreshes the score bar (performance.now() ms) */
+  private scoreRefreshAt = 0;
   // Capture the flag
   private flagField: FlagField | null = null;
   private flagBusy = false;
@@ -399,7 +408,8 @@ export class Game {
 
   // MVP: our own highlights, everything we saw this round, and the replay when it's on
   private readonly moments = new MomentTracker();
-  private readonly recorder = new ReplayRecorder();
+  // (It keeps everyone's best highlight past its last minute: any of them may become the MVP replay.)
+  private readonly recorder = new ReplayRecorder(() => [this.moments.get(), ...Object.values(this.players).map((p) => p.moment)]);
   private replay: ReplayDirector | null = null;
   /** After being killed: the last moments through the killer's eyes, while we wait to respawn */
   private killcam: ReplayDirector | null = null;
@@ -559,7 +569,7 @@ export class Game {
       colliders: this.colliders, solids: this.solids, ramps: this.ramps, obstacles: this.obstacles,
     }, { looseProps: LOOSE_PROPS });
     if (this.appliedQuality) this.world.setQuality(this.appliedQuality);
-    this.physics?.setMap(this.colliders, this.ramps, this.world.ground);
+    this.physics?.setMap(this.colliders, this.ramps, this.world.ground, this.world.shots);
     this.player?.setTerrain(this.world.terrainAt);
     this.debris.setProps(this.world.looseProps);
     setFlagBases(map.flags);
@@ -603,7 +613,7 @@ export class Game {
   private startPhysics(): void {
     const physics = new PhysicsWorld();
     this.physics = physics;
-    physics.setMap(this.colliders, this.ramps, this.world.ground);
+    physics.setMap(this.colliders, this.ramps, this.world.ground, this.world.shots);
     // Deployed walls and turrets block movement too.
     const mirror = (box: THREE.Box3, added: boolean) => (added ? physics.addBox(box, box) : physics.removeBox(box));
     this.walls.onCollider = mirror;
@@ -617,11 +627,15 @@ export class Game {
 
   /** Resolution and shadows from the quality setting; applied live when it changes. */
   private appliedQuality: Quality | null = null;
+  /** Touch screens only: scales the pixel ratio below the quality setting's while frames are slow */
+  private dynamicResolution: DynamicResolution | null = null;
   private applyQuality(): void {
     const quality = settings.get().quality;
     if (quality === this.appliedQuality) return;
     this.appliedQuality = quality;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, PIXEL_RATIO[quality]));
+    const ratio = Math.min(window.devicePixelRatio, PIXEL_RATIO[quality]);
+    this.renderer.setPixelRatio(ratio);
+    this.dynamicResolution = this.touch ? new DynamicResolution({ max: ratio, min: MIN_PIXEL_RATIO }) : null;
     this.renderer.shadowMap.enabled = quality !== 'low';
     this.renderer.shadowMap.needsUpdate = true;
     this.world.setQuality(quality);
@@ -1028,6 +1042,8 @@ export class Game {
     if (this.disposed) return;
     this.startPhysics();
     this.character = character;
+    this.standIns = new StandIns(this.scene, character);
+    this.standIns.warm(STAND_INS);
     this.weapon.setArms(arms);
     this.povWeapon.setArms(arms);
     if (this.disposed) return;
@@ -1271,11 +1287,7 @@ export class Game {
         if (!r || !data || data.spec) return null;
         return { x: r.position.x, y: r.position.y, z: r.position.z, stance: data.stance ?? 'stand', alive: r.alive };
       },
-      wallDistance: (ox, oy, oz, dx, dy, dz, max) => {
-        this.botRay.set(new THREE.Vector3(ox, oy, oz), new THREE.Vector3(dx, dy, dz));
-        this.botRay.far = max;
-        return this.botRay.intersectObjects(this.world.solids, false)[0]?.distance ?? max;
-      },
+      wallDistance: (ox, oy, oz, dx, dy, dz, max) => this.physics?.castRay({ x: ox, y: oy, z: oz }, { x: dx, y: dy, z: dz }, max)?.toi ?? max,
       groundBelow: (x, y, z) => this.groundBelow(new THREE.Vector3(x, y, z)),
       terrainAt: (x, z) => this.world.terrainAt(x, z),
       spawns: () => this.world.spawns,
@@ -2195,7 +2207,7 @@ export class Game {
   /** What any replay (the MVP's, the kill cam) plays in */
   private replayScene(character: CharacterAsset) {
     return {
-      recorder: this.recorder, scene: this.scene, camera: this.camera, character, effects: this.effects, grenades: this.grenades,
+      recorder: this.recorder, scene: this.scene, camera: this.camera, character, standIns: this.standIns ?? undefined, effects: this.effects, grenades: this.grenades,
       colliders: this.colliders, terrainAt: this.world.terrainAt, solids: this.solids, flagField: this.flagField, smoke: this.smoke,
     };
   }
@@ -3136,14 +3148,27 @@ export class Game {
     if (this.joined) void this.net.sendState({ inv: null });
   }
 
-  /** Where everyone else's body is (the bots we play have real ones already: their movement's). */
-  private *bodyPoses(): Generator<BodyPose> {
+  /**
+   * Where everyone else's body is (the bots we play have real ones already: their movement's). Filled in
+   * every frame, so the list and its entries are reused.
+   */
+  private bodyPoses(): BodyPose[] {
+    const list = this.bodyPoseList;
+    let n = 0;
     for (const [id, r] of this.remotes) {
       if (this.bots.has(id)) continue;
       const data = this.players[id];
       const p = r.position;
-      yield { id, x: p.x, y: p.y, z: p.z, stance: data?.stance ?? 'stand', solid: r.alive && !data?.spec && !this.playback };
+      const pose = (list[n++] ??= { id, x: 0, y: 0, z: 0, stance: 'stand', solid: false });
+      pose.id = id;
+      pose.x = p.x;
+      pose.y = p.y;
+      pose.z = p.z;
+      pose.stance = data?.stance ?? 'stand';
+      pose.solid = r.alive && !data?.spec && !this.playback;
     }
+    list.length = n;
+    return list;
   }
 
   /**
@@ -3202,14 +3227,16 @@ export class Game {
   private enemySees(p: THREE.Vector3, enemies: THREE.Vector3[]): boolean {
     const from = _spawnEye.set(p.x, p.y + EYE_HEIGHT, p.z);
     for (const e of enemies) {
-      const to = _spawnTarget.set(e.x, e.y + EYE_HEIGHT, e.z).sub(from);
-      const len = to.length();
-      if (len > SPAWN_SEEN_RANGE) continue;
-      this.losRay.set(from, to.normalize());
-      this.losRay.far = len;
-      if (this.losRay.intersectObjects(this.solids, false).length === 0) return true;
+      const to = _spawnTarget.set(e.x, e.y + EYE_HEIGHT, e.z);
+      if (to.distanceTo(from) > SPAWN_SEEN_RANGE) continue;
+      if (this.clearLine(from, to)) return true;
     }
     return false;
+  }
+
+  /** Nothing a bullet stops at (the map, barriers, turrets) between `a` and `b` */
+  private clearLine(a: THREE.Vector3, b: THREE.Vector3): boolean {
+    return this.physics?.clearLine(a, b) ?? true;
   }
 
   private shoot(): void {
@@ -3228,10 +3255,9 @@ export class Game {
       + (this.player.onGround ? 0 : def.airSpread)
       + (def.auto ? Math.min(this.weapon.shotsInBurst, 10) * 0.0015 : 0)) * steady;
 
-    const targets: THREE.Object3D[] = [...this.world.solids];
+    const hitboxes: THREE.Object3D[] = [];
     // Bullets pass through teammates.
-    for (const [id, r] of this.remotes) if (!this.isAlly(id)) targets.push(...r.hitboxes);
-    this.raycaster.far = def.range;
+    for (const [id, r] of this.remotes) if (!this.isAlly(id)) hitboxes.push(...r.hitboxes);
 
     // One ray per pellet (the shotgun fires nine); damage adds up per player hit.
     const ends: THREE.Vector3[] = [];
@@ -3242,17 +3268,21 @@ export class Game {
     for (let p = 0; p < def.pellets; p++) {
       // The same scatter as the bots' (even over the cone, not crowded at its edge).
       const dir = fromArr(scatter([forward.x, forward.y, forward.z], spread));
+      // The map, barriers and turrets are cast in the physics world; players' hitboxes only up to
+      // the wall (the same idea as the bots' shots in training).
+      const wall = this.physics?.castRay(origin, dir, def.range) ?? null;
       this.raycaster.set(origin, dir);
-      const hit = this.raycaster.intersectObjects(targets, false)[0];
-      const end = hit ? hit.point : origin.clone().addScaledVector(dir, def.range);
+      this.raycaster.far = wall?.toi ?? def.range;
+      const hit = this.raycaster.intersectObjects(hitboxes, false)[0];
+      const end = hit ? hit.point : origin.clone().addScaledVector(dir, wall?.toi ?? def.range);
       ends.push(end);
       const hitbox = hit?.object.userData as Partial<HitboxData> | undefined;
       const id = hitbox?.playerId;
-      if (hit) this.effects.impact(end, id ? 0xff3b3b : 0xffc35c);
+      if (hit || wall) this.effects.impact(end, id ? 0xff3b3b : 0xffc35c);
       this.debris.shot(origin, end);
-      const dep = hit && !id ? this.deployableOf(hit.object) : null;
+      const dep = !hit && wall ? this.deployableOf(wall.key) : null;
       if (dep && this.canBreak(dep.owner, this.playerId)) {
-        depDamage.set(dep.id, (depDamage.get(dep.id) ?? 0) + shotDamage(gun, false, hit!.distance));
+        depDamage.set(dep.id, (depDamage.get(dep.id) ?? 0) + shotDamage(gun, false, wall!.toi));
       }
       if (!id || !hit) continue;
       const head = !!hitbox?.head;
@@ -3342,16 +3372,16 @@ export class Game {
    */
   private meleeTarget(origin: THREE.Vector3, range: number): { id: string; head: boolean; distance: number } | null {
     const forward = this.camera.getWorldDirection(new THREE.Vector3());
-    const targets: THREE.Object3D[] = [...this.world.solids];
-    for (const [id, r] of this.remotes) if (!this.isAlly(id)) targets.push(...r.hitboxes);
-    this.raycaster.far = range;
+    const hitboxes: THREE.Object3D[] = [];
+    for (const [id, r] of this.remotes) if (!this.isAlly(id)) hitboxes.push(...r.hitboxes);
     let best: { id: string; head: boolean; distance: number } | null = null;
     for (const yaw of [0, -0.22, 0.22, -0.42, 0.42]) {
       for (const pitch of [0, -0.18]) {
         const dir = forward.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
         dir.y += pitch;
         this.raycaster.set(origin, dir.normalize());
-        const hit = this.raycaster.intersectObjects(targets, false)[0];
+        this.raycaster.far = this.physics?.castRay(origin, dir, range)?.toi ?? range;
+        const hit = this.raycaster.intersectObjects(hitboxes, false)[0];
         const box = hit?.object.userData as Partial<HitboxData> | undefined;
         if (!hit || !box?.playerId) continue;
         if (!best || hit.distance < best.distance) best = { id: box.playerId, head: !!box.head, distance: hit.distance };
@@ -3665,9 +3695,7 @@ export class Game {
     const dist = eye.distanceTo(b.p);
     if (dist > FLASH_RANGE) return;
     const from = b.p.clone().setY(b.p.y + 0.25);
-    this.losRay.set(from, eye.clone().sub(from).normalize());
-    this.losRay.far = Math.max(0.01, from.distanceTo(eye) - 0.3);
-    if (this.losRay.intersectObjects(this.world.solids, false).length > 0) return;
+    if (this.physics?.castRay(from, eye.clone().sub(from).normalize(), Math.max(0.01, from.distanceTo(eye) - 0.3))) return;
     const facing = this.camera.getWorldDirection(new THREE.Vector3()).dot(b.p.clone().sub(eye).normalize());
     const near = Math.pow(1 - dist / FLASH_RANGE, 0.6);
     const strength = near * (facing > 0.2 ? 0.55 + 0.45 * facing : 0.25);
@@ -3729,12 +3757,13 @@ export class Game {
     return true;
   }
 
-  /** The barrier or turret a bullet hit, if that's what it hit */
-  private deployableOf(o: THREE.Object3D): { id: string; owner: string } | null {
-    const id = (o.userData as Partial<DeployableData>).deployable;
-    if (!id) return null;
-    const owner = this.walls.ownerOf(id) ?? this.turrets.get(id)?.owner;
-    return owner ? { id, owner } : null;
+  /** The barrier or turret a bullet hit, from castRay's key (the physics world mirrors them by their box) */
+  private deployableOf(key: unknown): { id: string; owner: string } | null {
+    if (!key) return null;
+    const wall = this.walls.list().find((w) => w.box === key);
+    if (wall) return { id: wall.id, owner: wall.owner };
+    const turret = this.turrets.list().find((t) => t.box === key);
+    return turret ? { id: turret.id, owner: turret.owner } : null;
   }
 
   /** Can `attacker` damage `owner`'s barrier or turret? Not their own, nor (in team modes) a teammate's. */
@@ -3842,9 +3871,7 @@ export class Game {
       // Start the sight line just outside the turret's own box.
       const dir = chest.clone().sub(head).normalize();
       const from = head.clone().addScaledVector(dir, 0.6);
-      this.turretRay.set(from, dir);
-      this.turretRay.far = from.distanceTo(chest);
-      if (this.turretRay.intersectObjects(this.world.solids, false).length > 0) continue;
+      if (!this.clearLine(from, chest)) continue;
       best = { target, chest, dist };
     }
     if (!best) {
@@ -3861,13 +3888,15 @@ export class Game {
     const muzzle = t.muzzle.getWorldPosition(new THREE.Vector3());
     const dir = best.chest.clone().sub(muzzle).normalize().add(new THREE.Vector3().randomDirection().multiplyScalar(0.035)).normalize();
     const enemies = this.targetsOf(t.owner);
-    const targets: THREE.Object3D[] = [...this.world.solids.filter((s) => s !== t.solid)];
-    for (const e of enemies) if (e.remote) targets.push(...e.remote.hitboxes);
-    this.turretRay.set(muzzle, dir);
-    this.turretRay.far = TURRET_RANGE + 4;
-    const hit = this.turretRay.intersectObjects(targets, false)[0];
-    let reach = hit ? hit.distance : TURRET_RANGE;
-    let hitId = (hit?.object.userData as Partial<HitboxData> | undefined)?.playerId ?? null;
+    const hitboxes: THREE.Object3D[] = [];
+    for (const e of enemies) if (e.remote) hitboxes.push(...e.remote.hitboxes);
+    // Never its own box (the physics world has it by its box).
+    const wall = this.physics?.castRay(muzzle, dir, TURRET_RANGE + 4, t.box) ?? null;
+    this.raycaster.set(muzzle, dir);
+    this.raycaster.far = wall?.toi ?? TURRET_RANGE + 4;
+    const body = this.raycaster.intersectObjects(hitboxes, false)[0];
+    let reach = body?.distance ?? wall?.toi ?? TURRET_RANGE;
+    let hitId = (body?.object.userData as Partial<HitboxData> | undefined)?.playerId ?? null;
     // We have no hitboxes: a bot's turret checks us by shape.
     const me = enemies.find((e) => !e.remote);
     if (me) {
@@ -3887,7 +3916,7 @@ export class Game {
     }
     this.effects.tracer(muzzle, end, 0xffd27a);
     if (hitId) this.effects.impact(end, 0xff3b3b);
-    else if (hit) this.effects.impact(end, 0xffc35c);
+    else if (body || wall) this.effects.impact(end, 0xffc35c);
     this.debris.shot(muzzle, end);
     this.turrets.fired(t);
     sfx.playShot(0.5, 'rifle', this.soundAt(muzzle));
@@ -4015,9 +4044,7 @@ export class Game {
       const dist = chest.distanceTo(blast.p);
       if (dist > radius) continue;
       const from = blast.p.clone().setY(blast.p.y + 0.2);
-      this.losRay.set(from, chest.clone().sub(from).normalize());
-      this.losRay.far = from.distanceTo(chest);
-      if (this.losRay.intersectObjects(this.world.solids, false).length > 0) continue;
+      if (!this.clearLine(from, chest)) continue;
       const dmg = Math.round((mine ? MINE_DAMAGE : GRENADE_DAMAGE) * (1 - dist / radius));
       if (dmg < 5) continue;
       hits[t.id] = dmg;
@@ -4057,12 +4084,13 @@ export class Game {
       this.player.speedMultiplier = 1;
     }
 
-    const due = this.pendingBlasts.filter((b) => now >= b.at);
+    // (Both are nearly always empty: no new arrays every frame for nothing.)
+    const due = this.pendingBlasts.length ? this.pendingBlasts.filter((b) => now >= b.at) : NONE;
     if (due.length) {
       this.pendingBlasts = this.pendingBlasts.filter((b) => now < b.at);
       due.forEach((b) => this.detonate(b, false, b.owner));
     }
-    const landed = this.pendingSmokes.filter((b) => now >= b.at);
+    const landed = this.pendingSmokes.length ? this.pendingSmokes.filter((b) => now >= b.at) : NONE;
     if (landed.length) {
       this.pendingSmokes = this.pendingSmokes.filter((b) => now < b.at);
       for (const smoke of landed) {
@@ -4278,7 +4306,11 @@ export class Game {
   private frame(): void {
     const frameStart = PERF_DEBUG ? performance.now() : 0;
     this.timer.update();
-    const dt = Math.min(this.timer.getDelta(), 0.05);
+    const frameTime = this.timer.getDelta();
+    const dt = Math.min(frameTime, 0.05);
+    // Phones: fewer pixels while frames are slow, back up when they're quick again (dynamicResolution.ts).
+    const ratio = this.dynamicResolution?.update(frameTime * 1000);
+    if (ratio) this.renderer.setPixelRatio(ratio);
     this.update(dt);
     // After the update: the camera is where it'll be drawn (ours, or the eyes we're watching through).
     this.updateListener();
@@ -4308,6 +4340,7 @@ export class Game {
     perfStats.programs = programs?.length ?? 0;
     perfStats.geometries = memory.geometries;
     perfStats.textures = memory.textures;
+    perfStats.pixelRatio = this.renderer.getPixelRatio();
   }
 
   private update(dt: number): void {
@@ -4384,16 +4417,22 @@ export class Game {
     this.publishGun();
     this.weapon.update(dt, speed, sprinting && !this.triggerHeld && !aiming, aiming);
     this.updateZoom();
-    this.hud.update({
-      ammo: this.weapon.ammo,
-      magSize: this.weapon.magSize,
-      reserve: this.weapon.reserve,
-      gun: this.weapon.gun,
-      special: this.weapon.special,
-      specialRounds: this.weapon.specialRounds,
-      melee,
-      reloading: this.weapon.reloading,
-    });
+    // (Compared here first, so a frame where nothing changed doesn't build a patch for the store to throw away.)
+    const w = this.weapon;
+    const hud = this.hud.get();
+    if (hud.ammo !== w.ammo || hud.magSize !== w.magSize || hud.reserve !== w.reserve || hud.gun !== w.gun || hud.special !== w.special
+      || hud.specialRounds !== w.specialRounds || hud.melee !== melee || hud.reloading !== w.reloading) {
+      this.hud.update({
+        ammo: w.ammo,
+        magSize: w.magSize,
+        reserve: w.reserve,
+        gun: w.gun,
+        special: w.special,
+        specialRounds: w.specialRounds,
+        melee,
+        reloading: w.reloading,
+      });
+    }
 
     if (this.alive) {
       if (this.player.slideStarted) sfx.playSlide(this.surfaceAt(this.player.position), 0.7);
@@ -4426,7 +4465,7 @@ export class Game {
     this.world.sky.position.copy(this.camera.position);
     this.updateDamageIndicators();
     this.updateAbilities(dt);
-    this.updateMode();
+    this.updateMode(dt);
     // After the player update, so the replay's camera wins.
     this.updateReplay(dt);
     this.updateKillcam(dt);
@@ -4598,9 +4637,7 @@ export class Game {
       const hidden = r.sightPoints().every((point) => {
         const toPoint = point.clone().sub(eye);
         const distance = toPoint.length();
-        this.sightRay.set(eye, toPoint.normalize());
-        this.sightRay.far = Math.max(0, distance - 0.1);
-        return this.sightRay.intersectObjects(this.solids, false).length > 0;
+        return !!this.physics?.castRay(eye, toPoint.normalize(), Math.max(0, distance - 0.1));
       });
       r.setOccluded(hidden);
     }
@@ -4622,7 +4659,9 @@ export class Game {
     this.player.lookScale = zoom * THREE.MathUtils.lerp(1, settings.get().aimSensitivity, aim);
     // The sniper's scope takes over the screen once it's up to the eye.
     const scoped = GUNS[this.weapon.gun].scope && aim > 0.85;
-    this.hud.update({ aiming: aim > 0.6, scoped });
+    const aiming = aim > 0.6;
+    const hud = this.hud.get();
+    if (hud.aiming !== aiming || hud.scoped !== scoped) this.hud.update({ aiming, scoped });
   }
 
   private lastGunSent: GunKind = 'rifle';
@@ -4732,10 +4771,8 @@ export class Game {
     const distance = from.distanceTo(to);
     let occluded = false;
     if (distance > 1) {
-      this.soundRay.set(from, to.sub(from).divideScalar(distance));
       // (Short of the source itself: whatever it stands against doesn't count.)
-      this.soundRay.far = distance - 0.5;
-      occluded = this.soundRay.intersectObjects(this.world.solids, false).length > 0;
+      occluded = !!this.physics?.castRay(from, to.sub(from).divideScalar(distance), distance - 0.5);
     }
     return { x: p.x, y: p.y, z: p.z, occluded };
   }
@@ -4775,7 +4812,7 @@ export class Game {
     sfx.playFootstep(this.surfaceAt(at), volume, 0, land, where);
   }
 
-  private updateMode(): void {
+  private updateMode(dt: number): void {
     this.bombField?.update(performance.now() / 1000, this.net.serverNow());
     if (this.flagField) {
       this.flagField.update(performance.now() / 1000, (id) => {
@@ -4799,10 +4836,16 @@ export class Game {
     this.ensureRoundClock();
     this.checkTimeLimit();
     if (this.roundOver && this.net.serverNow() >= this.endedAt + this.intermissionMs()) this.requestNextRound();
-    // Keeps the round-over countdown ticking; does nothing when the score hasn't changed.
-    this.refreshScore();
+    // Keeps the clocks and the round-over countdown ticking; does nothing when the score hasn't changed. They
+    // count whole seconds, so ten looks a second do (each builds the whole view to compare it); a change to
+    // the game record refreshes it at once (onGame).
+    const now = performance.now();
+    if (now >= this.scoreRefreshAt) {
+      this.scoreRefreshAt = now + SCORE_REFRESH_MS;
+      this.refreshScore();
+    }
     this.updateRoundBed();
-    this.updatePresence();
+    this.updatePresence(dt);
     this.updateRadar();
   }
 
@@ -4921,9 +4964,9 @@ export class Game {
   }
 
   /** Keep the Discord profile line current (mode, map, score, player count); at most every few seconds. */
-  private updatePresence(): void {
+  private updatePresence(dt: number): void {
     if (!IN_DISCORD) return;
-    this.presenceTimer -= 1 / 60;
+    this.presenceTimer -= dt;
     if (this.presenceTimer > 0) return;
     this.presenceTimer = 5;
     const map = this.hud.get().map;
@@ -4999,6 +5042,7 @@ export class Game {
     this.turrets.clear();
     this.mines.clear();
     this.stopReplay();
+    this.standIns?.dispose();
     this.bombField?.dispose();
     this.flagField?.dispose();
     this.world.dispose();

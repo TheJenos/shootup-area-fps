@@ -755,6 +755,7 @@ function perfLine(elapsedMs: number): string {
     `cpu ${avg.toFixed(1)}/${p.frameMax.toFixed(1)}ms`,
     `calls ${p.calls}  tris ${(p.triangles / 1000).toFixed(0)}k`,
     `prog ${p.programs}  geo ${p.geometries}  tex ${p.textures}`,
+    `pixel ratio ${p.pixelRatio.toFixed(2)}`,
     `net ↑${(p.netUp * perSec).toFixed(1)} ↓${(p.netDown * perSec).toFixed(1)} KB/s`,
     heap ? `heap ${(heap.usedJSHeapSize / 1048576).toFixed(0)}MB` : '',
   ].filter(Boolean).join('\n');

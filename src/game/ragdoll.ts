@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { ImpulseJoint, RevoluteImpulseJoint, RigidBody } from '@dimforge/rapier3d-compat';
+import type { ImpulseJoint, RevoluteImpulseJoint, RigidBody } from '#rapier';
 import { setWorldQuaternion } from './ik';
 import { GRAVITY as WORLD_GRAVITY, GROUP, activePhysics, groups, toQuat, toVec3, type PhysicsWorld } from './physics';
 

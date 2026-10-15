@@ -160,6 +160,18 @@ hygiene you can pick from.
 
 ## M5 — Performance and load time
 
+**Status (15 Oct 2026): nine done, 5.6 measured and left as is.** Notes:
+- 5.1 `#rapier` subpath import (Node → compat, browser → `@dimforge/rapier3d` + `vite-plugin-wasm`, `optimizeDeps.exclude` so dev serves the real file). Rapier 1,652 → 1,220 KB gz (1,196 → 891 KB br); import+init 106 → 21 ms (4× throttle 177 → 47 ms, no long tasks). Netlify brotli-compresses `application/wasm` (checked on another Netlify site); the Discord proxy is Cloudflare, which compresses it too; its CSP already allows `'unsafe-eval'`. Not yet smoke-tested inside a real Activity.
+- 5.2 `PhysicsWorld.castRay`/`clearLine` with a `GROUP.SHOT` bit (same as the sim's `SHOTS_GROUP`); real cylinder colliders; colliders added since the last step are tested directly (Rapier's query pipeline only sees them after a step). Proxies removed from `world.ts`. 1,117 rays agree with the old raycasts within 0.6 mm (`shots.test.ts`); shotgun shot 6–8 ms → ~0.05 ms on a large map. Bot sim still stops bullets at the boundary / `blocks:'move'` boxes / 8-sided cylinders (small train-vs-play gap).
+- 5.3 effects are pooled (hidden and reused, cap 160) and never disposed: disposing the last tracer material freed its shader program, so the next tracer (and every kill cam) recompiled it — that, not avatar cloning, was the death hitch. Hidden-tab growth: +77 MB → +0.35 MB per 20k effects.
+- 5.4 three.js was rebuilding programs every frame (materials shared across scenes/skinned and plain meshes): split materials, 59 → 0.16 KB/frame. Scratch vectors in `RemotePlayer`, `refreshScore` at 10 Hz from the loop, reused `bodyPoses`. Idle solo ~75 KB/frame remains, mostly Rapier/three/Firebase internals: the < 1 KB target isn't met. Firebase transaction re-runs on bot writes (~48 KB/frame) worth a look later.
+- 5.5 `StandIns` pool of 4 avatars (`replay.ts`, `RemotePlayer.park/reuse`). With 5.3: CPU of the frame after a kill-cam start 340–650 ms → 2–15 ms.
+- 5.6 not changed: single-sided, depth-writing, same draw calls and render time; going opaque cost a 653 ms first-frame compile.
+- 5.7 recorder keeps the last 60 s plus each player's best highlight (the MVP is picked from those); `flagsAt` binary-searches a per-team index (`replay.test.ts`).
+- 5.8 `dynamicResolution.ts` (touch only): −0.1 after 2 s over 20 ms, +0.1 after 3 s under 12 ms or the display's own refresh, floor 0.6, back-off on failed step-ups; ratio shown in the `?debug` overlay.
+- 5.9 `MapPreview` `spin` prop: the pause menu draws once and on drag/resize.
+- 5.10 `updatePresence(dt)`; the bot send timer keeps its remainder.
+
 | # | Task | Where | Verify |
 |---|---|---|---|
 | 5.1 | **Rapier bundle is 1.65 MB gz — bigger than everything else combined.** Switch the browser to `@dimforge/rapier3d` (real `.wasm`, streaming compile) via a `#rapier` subpath import that resolves to the compat build under Node (training, vitest). Expected ~1.65 → ~1.1 MB gz and no 4 MB base64 decode on the main thread. **Go/no-go first:** confirm Netlify and the Discord proxy serve `application/wasm` compressed, and that `vite-plugin-wasm` works on Vite 8/rolldown. The lobby already calls `loadPhysics()` (prefetch exists). *(Design: Appendix A.3.)* | `src/game/physics.ts:27`, `vite.config.ts`, `package.json` (`imports`), type imports in `ragdoll.ts`/`debris.ts`/`movement.ts` | `npm run build` size table; `npm run train:bots -- --steps 1`; `npm test`; Discord Activity smoke |

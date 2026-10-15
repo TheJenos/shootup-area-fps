@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GROUP, groups, type PhysicsWorld, type RapierCollider, type RapierBody } from './physics';
-import type { CharacterCollision, KinematicCharacterController, Capsule } from '@dimforge/rapier3d-compat';
+import type { CharacterCollision, KinematicCharacterController, Capsule } from '#rapier';
 import type { Stance } from '../types';
 import { EYE_HEIGHT, HEIGHT, MAX_SLOPE, RADIUS, STEP_UP } from './playerDims';
 

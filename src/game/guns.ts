@@ -61,7 +61,18 @@ const GUN_LAYOUT: Record<GunKind, Layout> = {
 const meshes = new Map<GunKind, THREE.Object3D>();
 let pendingGuns: Promise<void> | null = null;
 /** Groups built before the file arrived, filled in when it does */
-const waiting: { kind: GunKind; group: THREE.Group }[] = [];
+const waiting: { kind: GunKind; group: THREE.Group; firstPerson: boolean }[] = [];
+/**
+ * The first-person gun's own copies of the materials. It's drawn in its own scene with its own lights,
+ * and a material drawn under two different sets of lights has three.js look its shader up again at every
+ * switch (twice a frame, for every material of every gun on show).
+ */
+const fpMaterials = new Map<THREE.Material, THREE.Material>();
+const fpMaterial = (m: THREE.Material): THREE.Material => {
+  let copy = fpMaterials.get(m);
+  if (!copy) fpMaterials.set(m, (copy = m.clone()));
+  return copy;
+};
 
 /** Loads the gun models once; later calls share the same promise. */
 export function loadGunModels(): Promise<void> {
@@ -76,7 +87,7 @@ export function loadGunModels(): Promise<void> {
         mesh.position.set(0, 0, 0);
         meshes.set(kind, mesh);
       }
-      for (const { kind, group } of waiting.splice(0)) group.add(gunMesh(kind));
+      for (const { kind, group, firstPerson } of waiting.splice(0)) group.add(gunMesh(kind, firstPerson));
     })
     .catch((err: unknown) => {
       pendingGuns = null; // allow a retry on the next join
@@ -85,17 +96,27 @@ export function loadGunModels(): Promise<void> {
   return pendingGuns;
 }
 
-/** A copy of a gun's mesh (geometry and materials are shared). */
-function gunMesh(kind: GunKind): THREE.Object3D {
-  return meshes.get(kind)!.clone();
+/** A copy of a gun's mesh (geometry and materials are shared, with the world's or with the other first-person copies). */
+function gunMesh(kind: GunKind, firstPerson: boolean): THREE.Object3D {
+  const mesh = meshes.get(kind)!.clone();
+  if (firstPerson) {
+    mesh.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) m.material = Array.isArray(m.material) ? m.material.map(fpMaterial) : fpMaterial(m.material);
+    });
+  }
+  return mesh;
 }
 
-/** The gun in first person (and on pickups): -Z forward, laid out per GUN_LAYOUT. */
-export function buildGunModel(kind: GunKind): GunModel {
+/**
+ * The gun in first person (and on pickups): -Z forward, laid out per GUN_LAYOUT.
+ * @param firstPerson for the first-person view's own scene (false: in the world, like a pickup)
+ */
+export function buildGunModel(kind: GunKind, firstPerson = true): GunModel {
   const layout = GUN_LAYOUT[kind];
   const group = new THREE.Group();
-  if (meshes.has(kind)) group.add(gunMesh(kind));
-  else waiting.push({ kind, group });
+  if (meshes.has(kind)) group.add(gunMesh(kind, firstPerson));
+  else waiting.push({ kind, group, firstPerson });
   return {
     group,
     muzzle: new THREE.Vector3(...layout.muzzle),
@@ -129,7 +150,7 @@ export function buildRemoteGun(kind: GunKind): THREE.Group {
   inner.position.z = (layout.muzzle[2] + layout.length / 2) * REMOTE_SCALE;
   inner.scale.setScalar(REMOTE_SCALE);
   group.add(inner);
-  if (meshes.has(kind)) inner.add(gunMesh(kind));
-  else waiting.push({ kind, group: inner });
+  if (meshes.has(kind)) inner.add(gunMesh(kind, false));
+  else waiting.push({ kind, group: inner, firstPerson: false });
   return group;
 }

@@ -59,6 +59,10 @@ const _q = new THREE.Quaternion();
 const _tmp = new THREE.Vector3();
 /** The pose sampled for this frame, as a vector */
 const _at = new THREE.Vector3();
+/** setData's new position, updateGait's step and plantFeet's foot */
+const _next = new THREE.Vector3();
+const _moved = new THREE.Vector3();
+const _foot = new THREE.Vector3();
 const _color = new THREE.Color();
 /** Lengths of the switch dip and the throw swing (s) */
 const SWITCH_LEN = 0.4;
@@ -169,7 +173,8 @@ function bone(root: THREE.Object3D, name: string): THREE.Object3D {
 
 export class RemotePlayer {
   readonly id: string;
-  readonly name: string;
+  /** (Changes only when a replay stand-in is reused for someone else.) */
+  name: string;
   readonly target: THREE.Vector3;
   alive: boolean;
 
@@ -241,6 +246,8 @@ export class RemotePlayer {
   private adsAmount = 0;
   /** The animation's arm rotations, kept to blend the aim pose over them */
   private readonly armAnim: THREE.Quaternion[] = Array.from({ length: 6 }, () => new THREE.Quaternion());
+  /** The right arm's bones then the left's, in armAnim's order */
+  private readonly arms: THREE.Object3D[];
   private stanceNow: Stance = 'stand';
   private colorNow: string | undefined;
   /** In the right hand: one model per gun they've held, only the current one shown */
@@ -253,6 +260,11 @@ export class RemotePlayer {
   /** Flat silhouette drawn over the walls while a teammate is behind cover (made on first need) */
   private xray: THREE.Mesh[] = [];
   private xrayMaterial: THREE.ShaderMaterial | null = null;
+  /**
+   * The same for the gun, sharing its colour: the gun isn't skinned, and one material on skinned and plain
+   * meshes has three.js look its shader up again at every switch, twice a frame.
+   */
+  private gunXrayMaterial: THREE.ShaderMaterial | null = null;
   /** Red outline from our scan pulse */
   private scanned = false;
   private scanXray: THREE.Mesh[] = [];
@@ -311,6 +323,8 @@ export class RemotePlayer {
       const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
       // Always on the transparent path (drawn solid at opacity 1): three.js compiles opaque
       // materials to ignore opacity, so switching for the cloak would need a shader recompile.
+      // It costs next to nothing: the materials are single-sided (no back/front double pass) and
+      // keep writing depth, so it's the same draw calls, just drawn after the opaque scene.
       mat.transparent = true;
       mat.userData.baseColor = mat.color.clone();
       mesh.material = mat;
@@ -333,6 +347,7 @@ export class RemotePlayer {
     this.head = bone(this.model, BONES.head);
     this.rightArm = bones(BONES.rightArm) as [THREE.Object3D, THREE.Object3D, THREE.Object3D];
     this.leftArm = bones(BONES.leftArm) as [THREE.Object3D, THREE.Object3D, THREE.Object3D];
+    this.arms = [...this.rightArm, ...this.leftArm];
     this.ragdollBones = {
       hips: this.hips, chest: this.spine, head: this.head,
       lArm: this.leftArm[0], lFore: this.leftArm[1], lHand: this.leftArm[2],
@@ -394,7 +409,7 @@ export class RemotePlayer {
   }
 
   setData(data: Partial<PlayerState>): void {
-    const next = new THREE.Vector3(data.x ?? this.target.x, data.y ?? this.target.y, data.z ?? this.target.z);
+    const next = _next.set(data.x ?? this.target.x, data.y ?? this.target.y, data.z ?? this.target.z);
     const wasAlive = this.alive;
     this.alive = data.alive !== false;
     // Snap on respawn / big jumps instead of sliding across the map.
@@ -529,8 +544,12 @@ export class RemotePlayer {
   private buildGunXray(): void {
     for (const copy of this.gunXray) copy.removeFromParent();
     this.gunXray = [];
-    const material = this.xrayMaterial;
-    if (!material) return;
+    if (!this.xrayMaterial) return;
+    if (!this.gunXrayMaterial) {
+      this.gunXrayMaterial = this.xrayMaterial.clone();
+      this.gunXrayMaterial.uniforms = this.xrayMaterial.uniforms;
+    }
+    const material = this.gunXrayMaterial;
     const sources: THREE.Mesh[] = [];
     this.gunModels.get(this.gunNow)?.traverse((o) => { if ((o as THREE.Mesh).isMesh) sources.push(o as THREE.Mesh); });
     for (const mesh of sources) {
@@ -877,8 +896,7 @@ export class RemotePlayer {
       return;
     }
 
-    const bones = [...this.rightArm, ...this.leftArm];
-    bones.forEach((b, i) => this.armAnim[i]!.copy(b.quaternion));
+    for (let i = 0; i < this.arms.length; i++) this.armAnim[i]!.copy(this.arms[i]!.quaternion);
     this.group.updateMatrixWorld(true);
 
     // Reload: the gun dips and tilts while the support hand drops to the magazine and back.
@@ -1013,9 +1031,8 @@ export class RemotePlayer {
   /** Blend the first `count` arm bones (right arm, then left) from the animation's pose to the one just set, by `w`. */
   private blendArms(count: number, w: number): void {
     if (w >= 0.999) return;
-    const bones = [...this.rightArm, ...this.leftArm];
     for (let i = 0; i < count; i++) {
-      const b = bones[i]!;
+      const b = this.arms[i]!;
       // (Not slerpQuaternions(anim, b.quaternion, w): that copies `anim` over b.quaternion before reading it.)
       _q.copy(b.quaternion);
       b.quaternion.copy(this.armAnim[i]!).slerp(_q, w);
@@ -1080,23 +1097,23 @@ export class RemotePlayer {
     const parent = this.hips.parent;
     if (!parent) return;
     this.model.updateMatrixWorld(true);
-    const v = new THREE.Vector3();
-    const lowest = Math.min(...this.feet.map((f) => f.getWorldPosition(v).y)) - this.group.position.y;
-    const lift = lowest - FOOT_REST;
+    let lowest = Infinity;
+    for (const f of this.feet) lowest = Math.min(lowest, f.getWorldPosition(_foot).y);
+    const lift = lowest - this.group.position.y - FOOT_REST;
     if (lift <= 0) return;
     // World down in the parent's space (the animation sets the position afresh every frame).
     parent.getWorldQuaternion(_q).invert();
-    const scale = parent.getWorldScale(v).x;
-    this.hips.position.addScaledVector(v.set(0, -1, 0).applyQuaternion(_q), lift / scale);
+    const scale = parent.getWorldScale(_foot).x;
+    this.hips.position.addScaledVector(_foot.set(0, -1, 0).applyQuaternion(_q), lift / scale);
   }
 
   /** Pick Idle / Walk / Run from how fast the avatar is actually moving. */
   private updateGait(dt: number): void {
-    const moved = this.group.position.clone().sub(this.lastPos);
+    const moved = _moved.copy(this.group.position).sub(this.lastPos);
     this.lastPos.copy(this.group.position);
     moved.y = 0;
     const instant = dt > 0 ? moved.length() / dt : 0;
-    if (dt > 0) this.velocity.lerp(moved.clone().divideScalar(dt), 1 - Math.exp(-10 * dt));
+    if (dt > 0) this.velocity.lerp(_tmp.copy(moved).divideScalar(dt), 1 - Math.exp(-10 * dt));
     this.speed += (instant - this.speed) * (1 - Math.exp(-10 * dt));
 
     const next: Gait = this.speed < WALK_FROM ? 'Idle' : this.speed < RUN_FROM ? 'Walk' : 'Run';
@@ -1139,6 +1156,70 @@ export class RemotePlayer {
     this.lastCloakLook = -1;
   }
 
+  /** Put away for reuse (a replay stand-in between replays): hidden, its body's physics freed. */
+  park(): void {
+    this.ragdoll?.dispose();
+    this.ragdoll = null;
+    this.pendingHit = null;
+    if (this.knifeMesh) this.knifeMesh.visible = false;
+    this.setVisible(false);
+  }
+
+  /**
+   * Start over as someone else (a replay stand-in reused for the next replay): their name, colour,
+   * gun and pose, and nothing left from the last one (its body, swings, aim, the first-person view).
+   */
+  reuse(data: PlayerState): void {
+    this.park();
+    this.name = data.name;
+    this.alive = data.alive !== false;
+    this.fall = this.alive ? 0 : 1;
+    this.fallRoll = 0;
+    this.target.set(data.x || 0, data.y || 0, data.z || 0);
+    this.targetYaw = data.yaw || 0;
+    this.targetPitch = this.pitch = data.pitch || 0;
+    this.buffer.reset();
+    this.group.position.copy(this.target);
+    this.group.rotation.set(0, this.targetYaw, 0);
+    this.model.position.y = 0;
+    this.lastPos.copy(this.target);
+    this.velocity.set(0, 0, 0);
+    this.speed = 0;
+    this.mixer.stopAllAction();
+    this.actions.Idle.reset().play();
+    this.gait = 'Idle';
+    this.hp = this.shownHp = data.hp ?? 100;
+    this.maxHp = 100;
+    this.lastHitAt = 0;
+    this.aiming = !!data.aim;
+    this.reloading = this.reloadStarted = false;
+    this.reloadTime = 0;
+    this.throwTime = this.knifeTime = this.switchTime = -1;
+    this.throwsSeen = undefined;
+    this.knifeFlash = this.shotFlash = this.slideStarted = false;
+    this.firedAt = -Infinity;
+    this.flagSwingNow = this.swingAmount = 0;
+    this.readyAmount = 1;
+    this.adsAmount = this.crouchAmount = this.slideAmount = 0;
+    this.stanceNow = data.stance ?? 'stand';
+    this.setCarrying(false);
+    this.cloak = !!data.cloak;
+    this.cloakAmount = 0;
+    this.cloakHidden = false;
+    this.lastCloakLook = -1;
+    this.setFirstPerson(false);
+    this.setAlly(false);
+    this.setScanned(false);
+    this.setColor(data.color, data.team);
+    this.setGun(data.gun ?? 'rifle');
+    this.tag.setName(data.name || '???');
+    this.tag.setHp(this.hpPercent(this.shownHp));
+    this.tag.hide();
+    this.shield.material = shieldMat;
+    this.shield.visible = !!data.shield;
+    this.setVisible(true);
+  }
+
   dispose(): void {
     this.ragdoll?.dispose();
     this.ragdoll = null;
@@ -1148,6 +1229,7 @@ export class RemotePlayer {
     this.scene.remove(this.group);
     for (const mat of this.materials) mat.dispose();
     this.xrayMaterial?.dispose();
+    this.gunXrayMaterial?.dispose();
     this.scanMaterial?.dispose();
     this.tag.dispose();
   }

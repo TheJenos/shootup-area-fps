@@ -17,6 +17,8 @@ export const perfStats = {
   programs: 0,
   geometries: 0,
   textures: 0,
+  /** The renderer's pixel ratio (touch screens scale it with the frame rate: dynamicResolution.ts) */
+  pixelRatio: 0,
   /** Approximate JSON bytes to and from Firebase since the HUD last sampled */
   netUp: 0,
   netDown: 0,
