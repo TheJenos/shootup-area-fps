@@ -8,6 +8,7 @@ import { TOUCH } from '../game/device';
 import { hints } from '../game/hints';
 import { Crosshair } from './Crosshair';
 import { useDialogFocus } from './useDialogFocus';
+import { MenuTabs, type MenuTab } from './MenuShell';
 
 export function useSettings(): Settings {
   return useSyncExternalStore(settings.subscribe, settings.get);
@@ -20,18 +21,24 @@ interface Props {
 }
 
 type SettingsTab = 'controls' | 'video' | 'audio' | 'access';
-const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
-  { id: 'controls', label: 'Controls' },
-  { id: 'video', label: 'Video' },
-  { id: 'audio', label: 'Audio' },
-  { id: 'access', label: 'Accessibility' },
+/** The tabs down the side, as in the lobby's menu (touch screens have no keys to bind: "Look" instead) */
+const SETTINGS_TABS: (MenuTab & { id: SettingsTab })[] = [
+  TOUCH
+    ? { id: 'controls', label: 'Look', short: 'Look', icon: '◉', sub: 'Sensitivity, fullscreen' }
+    : { id: 'controls', label: 'Controls', short: 'Controls', icon: '▤', sub: 'Mouse and keys' },
+  { id: 'video', label: 'Video', short: 'Video', icon: '▣', sub: 'Display and crosshair' },
+  { id: 'audio', label: 'Audio', short: 'Audio', icon: '♪', sub: 'Volume and 3D sound' },
+  { id: 'access', label: 'Accessibility', short: 'Access', icon: '◑', sub: 'Motion, HUD size, tips' },
 ];
 
 /** Reopening settings goes back to the tab you were on (for this visit). */
 let lastTab: SettingsTab = 'controls';
 const rememberTab = (t: SettingsTab) => { lastTab = t; };
 
-/** Mouse, video, crosshair, audio, accessibility and key bindings. Opened from the lobby or the pause menu. */
+/**
+ * Mouse, video, crosshair, audio, accessibility and key bindings, a tab each down the side. Opened over
+ * the lobby or the pause menu (and the lobby's has your name at the top).
+ */
 export function SettingsPanel({ onClose, profile }: Props) {
   const current = useSettings();
   const [draftName, setDraftName] = useState(profile?.name ?? '');
@@ -78,10 +85,10 @@ export function SettingsPanel({ onClose, profile }: Props) {
 
   return (
     <div id="settings" className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div ref={box} className="panel-box tabbed" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-        <header>
+      <div ref={box} className="panel-box menu-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <header className="menu-dialog-head">
           <h3 id="settings-title">Settings</h3>
-          <button onClick={onClose} autoFocus>Done</button>
+          {!TOUCH && <span className="muted esc-hint">Saved as you go · <kbd>Esc</kbd> closes</span>}
         </header>
 
         {profile && (
@@ -101,24 +108,18 @@ export function SettingsPanel({ onClose, profile }: Props) {
           </form>
         )}
 
-        <nav className="tabs settings-tabs" role="tablist" aria-label="Settings">
-          {SETTINGS_TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              id={`settings-tab-${t.id}`}
-              aria-selected={tab === t.id}
-              aria-controls={`settings-panel-${t.id}`}
-              className={tab === t.id ? 'tab selected' : 'tab'}
-              onClick={() => { setTab(t.id); rememberTab(t.id); }}
-            >
-              {t.id === 'controls' && TOUCH ? 'Look' : t.label}
-            </button>
-          ))}
-        </nav>
+        <div className="menu-dialog-main">
+          <div className="menu-dialog-rail">
+            <MenuTabs
+              label="Settings"
+              idPrefix="settings-"
+              tabs={SETTINGS_TABS}
+              active={tab}
+              onSelect={(id) => { setTab(id as SettingsTab); rememberTab(id as SettingsTab); }}
+            />
+          </div>
 
-        <div className="settings-body" role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`}>
+          <div className="menu-dialog-body" role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`}>
         {tab === 'controls' && (
           <>
         <section>
@@ -406,18 +407,20 @@ export function SettingsPanel({ onClose, profile }: Props) {
         </section>
           </>
         )}
+          </div>
         </div>
 
-        <footer>
+        <footer className="menu-dialog-foot">
           {confirmReset ? (
             <span className="confirm">
               Reset every setting?
-              <button className="danger" onClick={() => { settings.reset(); setConfirmReset(false); }}>Reset</button>
+              <button className="danger solid" onClick={() => { settings.reset(); setConfirmReset(false); }}>Reset</button>
               <button onClick={() => setConfirmReset(false)}>Keep</button>
             </span>
           ) : (
             <button className="danger" onClick={() => setConfirmReset(true)}>Reset to defaults</button>
           )}
+          <button type="button" className="primary push" onClick={onClose} autoFocus>Done</button>
         </footer>
       </div>
     </div>

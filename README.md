@@ -7,18 +7,33 @@ Pick a name, create or join a room, and shoot each other in Free-for-all, Team D
 
 ## Lobby
 
-- **Your name** is chosen on your first visit and kept in the browser (`fps-name`); change it any time from the
-  ⚙ settings button in the lobby ("Your name"). It shows as "Playing as …" at the top. Names are 2–16 letters,
-  numbers, spaces, `-` or `_`.
-- **Open rooms** (the first tab) lists every room with its mode badge, mode, map, code and players. The search
-  box filters by room name, code, mode, map, host or any player; type a code next to it to join directly, or
-  press **＋ Create room**. **▶ Quick play** drops you straight into a free-for-all against five bots (nobody
-  online? that's the button); a room created while no other room is open starts with three bots.
-- **Create room**: pick a mode (see [Game modes](#game-modes)), a map seed, and a room name, then create it.
-- **Leaderboard**: the global top 20.
-- **Inside Discord** the lobby looks the same, with your Discord name as "Playing as …". Its tabs are **This
-  channel** (the voice channel's match: join it if it's running, otherwise pick a mode and map and start it),
-  **Open rooms** (every other room, with the same search and room-code join) and **Leaderboard**.
+The lobby is a game-style main menu (`src/ui/MenuShell.tsx`): behind everything, a slow drone fly-over of a
+freshly generated map, as it looks in the game (`MenuBackdrop.tsx`); the menu down the left; the chosen view in a
+glass panel on the right. Phones stack the menu above the view. The fly-over is cheap: it waits until the page is
+idle before making its map, draws at most 30 frames a second below full resolution, stops while the tab is
+hidden, and is a single still frame on touch screens, on low quality and with reduced motion.
+
+- **Your name** is chosen on your first visit ("What should we call you?") and kept in the browser (`fps-name`);
+  change it any time in **Settings** ("Your name"). It shows as "Playing as …" at the top right. Names are 2–16
+  letters, numbers, spaces, `-` or `_`.
+- **▶ Play now** (top of the menu) drops you straight into a free-for-all against five bots — the button for
+  when nobody's online, or a warm-up.
+- **Rooms** lists every open room as a card: a top-down thumbnail of its map, its mode badge and name, the map,
+  its code, how many are playing and who. The search box filters by room name, code, mode, map, host or any
+  player. **Have a room code?** under the menu joins one directly.
+- **Create room** is three steps, one decision each (Esc or Back goes back a step; the step bar jumps to any
+  step already reached):
+  1. **Mode** — cards for every mode, grouped Classic, Zombies, Arcade and your own, each with what it is in a
+     line; the chosen one is summed up on top with **Customize** (or Edit / Delete for your own).
+  2. **Map** — a big 3D preview to drag round, the seed (🎲 for a new one; blank means a fresh random map) and
+     the size, with how long each takes to cross.
+  3. **Launch** — the mode and map on one card (click either to change it), the room's name and its bots, and
+     the button that creates it. A room created while no other room is open starts with three bots.
+- **Leaderboard**: the global top 20, the top three on a podium.
+- **Inside Discord** the menu is the same, with your Discord name as "Playing as …". Its main button joins the
+  voice channel's match (or starts making one), and its views are **This channel** (the running match, or the
+  same three steps to start it), **Rooms** (every other room) and **Leaderboard**.
+- The menu works from the keyboard: Tab moves through it, the arrow keys move between the views, Esc steps back.
 
 ## Quick start (local, no Firebase account needed)
 
@@ -132,7 +147,7 @@ Every mode is one of six **base types**, which decide teams, flags and how point
 
 | Rule | Options |
 | --- | --- |
-| Loadout | Standard (rifle + pickups), Rifles / Shotguns / Snipers / Deagles only (endless ammo, no other guns or ammo boxes), or the Gun Game ladder (FFA only) |
+| Loadout | Standard (rifle + pickups); one gun for everyone: Rifles / Shotguns / Snipers / Deagles; two guns, **Q** switches: Sniper + Deagle, Rifle + Sniper, Rifle + Shotgun, Rifle + Deagle, Shotgun + Deagle, Sniper + Shotgun; **Roulette** (a random gun each life); or the Gun Game ladder (FFA only). Everything but Standard has endless ammo and no gun or ammo pickups. Bots with two guns hold whichever suits the nearest enemy they know of |
 | Pickups | Gun pickups, ammo boxes, abilities: each on or off |
 | Headshots only | Body hits do nothing; grenades don't spawn |
 | Score limit | FFA 5–60 kills, TDM 10–150 team kills, CTF 1–10 captures, S&D 2–10 rounds; Infection: 1–4 zombies at the start; Horde: 3–30 waves to win |
@@ -140,6 +155,9 @@ Every mode is one of six **base types**, which decide teams, flags and how point
 | Health | 25–200 HP (medkits heal up to it, the health bar and name tags scale to it) |
 | Respawn | 1–10 seconds (not in S&D: the dead sit out the rest of the round; in Infection, the zombies'; not in Horde: the fallen are back after each wave) |
 | Speed / gravity | 70–150 % movement speed, 30–150 % gravity (low gravity = higher, floatier jumps) |
+| Recoil | 0–200 % of each gun's kick (0: none, every gun a laser) |
+| Pickup spawn rate | 0.25–3×: how fast taken pickups come back; above 1× more lie about, too (up to twice as many) |
+| Head size | 100–300 %: big heads, for everyone (bots included). The model and its headshot hitbox grow from the neck, and bots' bullets know it |
 
 **Prebuilt modes:**
 
@@ -160,6 +178,9 @@ Every mode is one of six **base types**, which decide teams, flags and how point
 | SPD | Speed Rush | FFA | 145 % speed, 1 s respawn, 30 kills |
 | SIEG | Shotgun Siege | INF | Survivors get shotguns only; 2 zombies at the start, 6 min |
 | NITE | Long Night | HRD | 30 waves |
+| QS | Quickscope | FFA | Sniper + Deagle |
+| RLT | Roulette | FFA | A random gun each life |
+| BIG | Big Heads | FFA | 250 % heads, 30 kills |
 
 **Search & Destroy** (`src/game/snd.ts`): a match is a series of short rounds. Red attacks first; one attacker
 starts with the bomb (it drops where its carrier dies, and any attacker can pick it up). Holding **E** for 3.5 s
@@ -206,8 +227,13 @@ kills); fallen ones are brought back on as the wave's next zombies. The room own
 when it starts, and how many of its zombies are left to kill). The owner's bot skill setting decides how quickly
 the zombies strike.
 
-**Custom modes:** **＋ Create custom mode** in the lobby opens an editor: pick the base, name it (and a badge of
-up to 4 letters), set every rule, and see a live description. **Use once** plays it in the room you create;
+**Custom modes:** **＋ New mode** (or **Customize** on any mode) opens the editor (`src/ui/ModeEditor.tsx`), a
+dialog in the menus' look that builds the mode in steps, as a room is made: **Mode** (the base as cards, the name
+and a badge of up to 4 letters) → **Loadout** (the loadouts as cards, and the pickups) → **Rules** (score, clock,
+respawns) → **Players** (health, speed, gravity, head size). The Loadout step also has the guns' recoil and
+headshots only, and the pickups' spawn rate. The mode is summed up beside the steps as it changes. Every step
+has its defaults, so any can be jumped to from the step bar; **Next**, **Back** and Esc walk them in order, and
+**Use once** / **Save & use** are on the last. **Use once** plays it in the room you create;
 **Save & use** also keeps it under your modes (in this browser, up to 12; ✎ edits, ✕ deletes). The Discord
 lobby has the same picker. A room's rules are stored with it (`lobby/{code}/rules`, checked by the database
 rules), so everyone who joins plays the same; rooms made before custom modes keep working (their old mode
@@ -503,8 +529,9 @@ Discord, with no website to visit.
 
 ### Settings
 
-The ⚙ panel (lobby or pause menu) is split into tabs: **Controls** (mouse / look and key bindings), **Video**
-(display and crosshair), **Audio** and **Accessibility**; it reopens on the last tab you used. Altogether it has mouse sensitivity, aim sensitivity and aim toggle, invert Y, fullscreen,
+The ⚙ panel (over the lobby or the pause menu) has its tabs down the side like the menus: **Controls** (mouse /
+look and key bindings), **Video** (display and crosshair), **Audio** and **Accessibility**; it reopens on the
+last tab you used, and on/off settings are switches. Altogether it has mouse sensitivity, aim sensitivity and aim toggle, invert Y, fullscreen,
 **field of view** (60–110°), **graphics quality** (Low: no shadows and a 1× resolution cap; Medium: soft
 shadows at native resolution; High: sharp shadows, up to 2×; phones default to Low), an **FPS counter** in the
 top-right corner (off by default; green at 50+, yellow at 30+, red below), the **radar** (on by default; see
@@ -555,13 +582,24 @@ highlighted (or shown underneath if you're not in the top 20).
 
 ### Menu (Esc)
 
-Esc opens the menu. The left side shows what's going on: the mode and its goal, the round clock and score, a
-status line ("You're alive — the match is still running", "Dead — respawning in 2", "Round over — next map in
-5", "Spectating"), a thumbnail of the current map with its seed and the player count, and the room code with a
-**Copy invite link** button. The right side has Resume, Spectate, Switch team, Settings, Leave room (leaves
-straight away) and the key list with your own bindings. Clicking the dimmed backdrop resumes; clicking the card
-doesn't. The match keeps running while the menu is open. Round results and the MVP replay stay visible
-(dimmed) behind it, so a late joiner sees what's happening.
+Esc opens the menu, laid out like the lobby's (`src/ui/PauseMenu.tsx`, on the lobby's `MenuShell` pieces): the
+mode's name across the top with the room code and **Copy invite link**, a rail down the left and the chosen view
+in a panel on the right. The rail starts with a big **Resume**, then the views:
+
+- **Match**: the round clock and score, a status line ("You're alive — the match is still running", "Dead —
+  respawning in 2", "Round over — next map in 5", "Spectating"), the mode's goal, your team, a thumbnail of the
+  current map with its seed and the player count, and who owns the room.
+- **Controls**: every key with your own bindings (on touch screens, how the on-screen controls work and the
+  controls guide).
+- **Change match** (room owner): end the round and start another mode and / or map, in the same Mode → Map →
+  Restart steps as making a room. It asks before ending the round for everyone.
+- **Bots** (room owner): see [Bots](#bots).
+
+Under them are **Spectate** (or **Back to the fight**) and **Switch team**, and at the foot **Settings** (it opens
+over the menu) and **Leave room** (no confirmation; if you own the room, your bots leave with you). Arrow keys move along the views; Esc goes back to Match, then
+resumes; clicking the dimmed game around the menu resumes too. The HUD fades out while the menu is up, and the
+match keeps running. Round results and the MVP replay stay visible (dimmed) behind it, so a late joiner sees
+what's happening.
 
 ### Feedback and tips
 
@@ -989,11 +1027,15 @@ src/
     Lobby.tsx        name, create / join / list rooms
     DiscordLobby.tsx start screen inside Discord (mode pick / join the channel's match)
     GameView.tsx     mounts the Game engine for the current room
-    Hud.tsx          health, ammo, ability bar, kill feed, death / pause overlays
+    Hud.tsx          health, ammo, ability bar, kill feed, death overlay
+    MenuShell.tsx    the menus' frame: fly-over backdrop, rail of big entries (MenuTabs), panel
+    PauseMenu.tsx    the Esc menu: Resume, Match / Controls / Change match / Bots views, Settings, Leave
     InventoryPanel.tsx  inventory (I) with drop buttons
     TouchControls.tsx   on-screen controls for phones and tablets
     MatchSummary.tsx    match summary (Tab)
-    SettingsPanel.tsx   sensitivity + key binding editor
+    SettingsPanel.tsx   settings dialog: tabs down the side, key binding editor
+    ModeEditor.tsx      custom mode editor (the same dialog), in steps: mode, loadout cards, rules, players
+    StepBar.tsx         the numbered steps along the top (making a room, building a mode)
     MapPreview.tsx      3D map preview (lobby and pause menu); 2D fallback without WebGL
   game/
     game.ts          game loop, shooting, damage, respawn, rendering

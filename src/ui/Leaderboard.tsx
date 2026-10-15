@@ -72,6 +72,22 @@ export function Leaderboard({ limit = 20, me, guildId }: { limit?: number; me: s
           {onServer ? 'Nobody on this server is ranked yet — finish a round here to get on the board.' : 'No ranked players yet — finish a round to get on the board.'}
         </p>
       ) : (
+        <>
+        {entries.length >= 3 && (
+          <ol className="podium-board" aria-label="Top three">
+            {[1, 0, 2].map((i) => {
+              const e = entries[i]!;
+              return (
+                <li key={e.id} className={`place-${i + 1}${e.id === me ? ' me' : ''}`}>
+                  <span className="medal" aria-hidden="true">{MEDALS[i]}</span>
+                  <span className="who">{e.name}</span>
+                  <span className="pts">{e.score.toLocaleString()}<small> pts</small></span>
+                  <span className="plinth" aria-hidden="true">{i + 1}</span>
+                </li>
+              );
+            })}
+          </ol>
+        )}
         <table>
           <thead>
             <tr>
@@ -105,6 +121,7 @@ export function Leaderboard({ limit = 20, me, guildId }: { limit?: number; me: s
             </tfoot>
           )}
         </table>
+        </>
       )}
       <p className="muted hint">
         Score: kills × 10, captures × 30, wins × 50.{' '}

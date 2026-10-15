@@ -42,6 +42,14 @@ const EYE_UP = 0.09;
 const EYE_FORWARD = 0.08;
 /** After a shot the aim pose holds this long, so a burst fired on the run reads as shooting (ms) */
 const SHOOT_HOLD_MS = 700;
+/** How far the name tag rises for each extra head's worth of a big head (m) */
+const TAG_LIFT = 0.35;
+
+/** Big-head modes: every player's head this many times its size (rules.ts headSize), set by the game */
+let headSize = 1;
+export function setHeadSize(size: number): void {
+  headSize = size;
+}
 /** Blend speeds for the ready pose (on/off) and for raising the sights */
 const READY_SPEED = 8;
 const ADS_SPEED = 12;
@@ -201,6 +209,9 @@ export class RemotePlayer {
   private readonly shins: THREE.Object3D[];
   private readonly feet: THREE.Object3D[];
   private readonly head: THREE.Object3D;
+  /** The head bone's own scale, and how many times that it's drawn (big-head modes) */
+  private readonly headRest: number;
+  private headSized = 1;
   /** Upper arm, forearm, hand: right then left */
   private readonly rightArm: [THREE.Object3D, THREE.Object3D, THREE.Object3D];
   private readonly leftArm: [THREE.Object3D, THREE.Object3D, THREE.Object3D];
@@ -362,6 +373,7 @@ export class RemotePlayer {
     this.shins = bones(BONES.shins);
     this.feet = bones(BONES.feet);
     this.head = bone(this.model, BONES.head);
+    this.headRest = this.head.scale.x;
     this.rightArm = bones(BONES.rightArm) as [THREE.Object3D, THREE.Object3D, THREE.Object3D];
     this.leftArm = bones(BONES.leftArm) as [THREE.Object3D, THREE.Object3D, THREE.Object3D];
     this.arms = [...this.rightArm, ...this.leftArm];
@@ -799,6 +811,7 @@ export class RemotePlayer {
 
   /** @param serverNow the server clock (ms), which timed poses are drawn against */
   update(dt: number, serverNow?: number): void {
+    this.applyHeadSize();
     this.updateCloak(dt);
     if (serverNow !== undefined && this.buffer.sample(serverNow - RENDER_DELAY, this.sampled) !== 'empty') {
       // The pose for this moment is known: go to it nearly at once (the little ease hides the step
@@ -874,6 +887,16 @@ export class RemotePlayer {
     if (this.firstPerson) this.shield.visible = false;
   }
 
+  /**
+   * The head as big as the mode makes it. Its hitbox rides on the head bone, so it grows too, from the
+   * neck up (as the bots' bullets have it: hitscan.ts).
+   */
+  private applyHeadSize(): void {
+    if (this.headSized === headSize) return;
+    this.headSized = headSize;
+    this.head.scale.setScalar(this.headRest * headSize);
+  }
+
   /** Blend the crouch / slide pose and shrink the hitbox, name tag and shield to match. */
   private applyStance(dt: number): void {
     const ease = 1 - Math.exp(-12 * dt);
@@ -894,7 +917,7 @@ export class RemotePlayer {
     const body = 1 - (1 - CROUCH_BODY) * c - (1 - SLIDE_BODY) * sl;
     this.bodyHit.scale.y = body;
     this.bodyHit.position.y = 0.75 * body;
-    this.tag.sprite.position.y = 2.15 - 0.6 * c - 0.95 * sl;
+    this.tag.sprite.position.y = 2.15 + TAG_LIFT * (this.headSized - 1) - 0.6 * c - 0.95 * sl;
     this.shield.scale.y = 1.05 * body;
     this.shield.position.y = 0.95 * body;
   }
@@ -969,7 +992,7 @@ export class RemotePlayer {
     const high = pistol ? PISTOL_ADS : ADS_STOCK;
     const lerp = THREE.MathUtils.lerp;
     // Anchor: the eye when aiming, the shoulder at the ready.
-    this.head.getWorldPosition(_anchor).addScaledVector(WORLD_UP, EYE_UP).addScaledVector(_dir, EYE_FORWARD);
+    this.head.getWorldPosition(_anchor).addScaledVector(WORLD_UP, EYE_UP * this.headSized).addScaledVector(_dir, EYE_FORWARD * this.headSized);
     this.rightArm[0].getWorldPosition(_gunAt);
     _anchor.lerp(_gunAt, 1 - a);
     _gunAt.copy(_anchor)

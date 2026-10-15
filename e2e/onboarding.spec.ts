@@ -5,7 +5,7 @@ test.describe('first visit', () => {
     const p = await players.open({ name: null });
     await p.gotoLobby();
     const page = p.page;
-    await expect(page.getByRole('heading', { name: 'Choose your name' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'What should we call you?' })).toBeVisible();
     const input = page.getByLabel('Your name');
     const cont = page.getByRole('button', { name: 'Continue' });
 
@@ -24,7 +24,7 @@ test.describe('first visit', () => {
 
     // A returning visit goes straight to the lobby
     await page.reload();
-    await expect(page.getByRole('heading', { name: 'Choose your name' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'What should we call you?' })).toHaveCount(0);
     await expect(page.locator('.lobby-profile strong')).toHaveText('Maverick Jr');
   });
 

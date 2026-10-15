@@ -8,13 +8,14 @@ import { loadGunModels } from '../game/guns';
 import { loadFpArms } from '../game/fpArms';
 import { loadPropModels } from '../game/props';
 import { loadPhysics } from '../game/physics';
-import { ModePicker } from './ModePicker';
 import { PRESETS, type ModeRules } from '../game/rules';
 import { GENERATOR_VERSION, isPlayableSpec, specForMode, type MapSpec } from '../game/mapgen';
-import { MapPicker, useMapChoice } from './MapPicker';
-import { RoomBrowser, mapLabel, useRooms, versionMessage } from './RoomBrowser';
+import { useMapChoice } from './MapPicker';
+import { CodeJoin, RoomList, RoomSearch, mapLabel, useRooms, versionMessage } from './RoomBrowser';
 import type { Session } from './App';
-import { Brand } from './Brand';
+import { MenuFrame, MenuPanel, MenuRail, ProfileChip, type MenuTab } from './MenuShell';
+import { CreateWizard } from './CreateWizard';
+import { MapThumb } from './MapPreview';
 import { friendlyError } from './errors';
 import { SettingsPanel } from './SettingsPanel';
 import { Leaderboard } from './Leaderboard';
@@ -52,6 +53,9 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
   /** Which listed room's Join button should spin (Open rooms tab) */
   const [joiningCode, setJoiningCode] = useState('');
   const [tab, setTab] = useState<Tab>('channel');
+  const [search, setSearch] = useState('');
+  /** Why joining another room (by its code or from the list) didn't work */
+  const [joinError, setJoinError] = useState('');
   const mapChoice = useMapChoice();
   const { rooms, failed: roomsFailed, retry: retryRooms } = useRooms();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -116,7 +120,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
     initAudio();
     setBusy(true);
     setJoiningCode(normalized);
-    setError('');
+    setJoinError('');
     try {
       await afterLeave();
       const setup = await getRoomSetup(normalized);
@@ -125,34 +129,24 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
       onEnter({ roomCode: normalized, playerId: sessionPlayerId(normalized, randomId), name: discord.name, map: setup.map, profileId: discordProfileId(discord.userId), guildId: discord.guildId });
     } catch (err) {
       console.error(err);
-      setError(friendlyError(err));
+      setJoinError(friendlyError(err));
       setBusy(false);
       setJoiningCode('');
     }
   };
 
-  const tabs: { id: Tab; label: string; count?: number }[] = [
-    { id: 'channel', label: 'This channel' },
-    { id: 'rooms', label: 'Open rooms', ...(rooms ? { count: rooms.filter((r) => r.code !== roomCode).length } : {}) },
-    { id: 'leaderboard', label: 'Leaderboard' },
+  const others = rooms ? rooms.filter((r) => r.code !== roomCode).length : undefined;
+  const tabs: MenuTab[] = [
+    { id: 'channel', label: 'This channel', short: 'Channel', sub: existing ? 'A match is running' : 'Start the voice channel\'s match', icon: '◉' },
+    { id: 'rooms', label: 'Rooms', short: 'Rooms', sub: 'Other open matches', icon: '◇', ...(others !== undefined ? { count: others } : {}) },
+    { id: 'leaderboard', label: 'Leaderboard', short: 'Ranks', sub: 'This server and everyone', icon: '★' },
   ];
 
-  return (
-    <section id="lobby" className="screen">
-      <div className="card lobby-tabs-card discord">
-        <header className="lobby-top">
-          <Brand />
-          {discord && (
-            <div className="lobby-profile">
-              <span className="muted">Playing as</span>
-              <strong title="Your Discord name">{discord.name}</strong>
-              <button type="button" className="icon-button" aria-label="Settings" title="Settings" onClick={() => setSettingsOpen(true)}>⚙</button>
-            </div>
-          )}
-        </header>
-
-        {!discord ? (
-          <div className="name-setup discord-connect">
+  if (!discord) {
+    return (
+      <MenuFrame discord>
+        <div className="menu-welcome">
+          <div className="name-setup discord-connect" role="status">
             <h2>{error ? 'Could not connect to Discord' : <><span className="spinner" aria-hidden="true" />Connecting to Discord…</>}</h2>
             {error && (
               <>
@@ -161,99 +155,103 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
               </>
             )}
           </div>
-        ) : (
-          <>
-            <nav className="tabs" role="tablist" aria-label="Lobby">
-              {tabs.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  role="tab"
-                  id={`tab-${t.id}`}
-                  aria-selected={tab === t.id}
-                  aria-controls={`panel-${t.id}`}
-                  className={tab === t.id ? 'tab selected' : 'tab'}
-                  onClick={() => setTab(t.id)}
-                >
-                  {t.label}{t.count !== undefined && <span className="count">{t.count}</span>}
-                </button>
-              ))}
-            </nav>
+        </div>
+      </MenuFrame>
+    );
+  }
 
-            {tab === 'channel' && (
-              <section id="panel-channel" role="tabpanel" aria-labelledby="tab-channel" className="tab-panel create-panel">
-                {existing ? (
-                  // A match is already running in this voice channel: one big way in.
-                  <div className="channel-match">
-                    <div className="match-info">
-                      <span className={`mode-badge ${existing.rules.base}`}>{existing.rules.short}</span>
-                      <div>
-                        <strong>{existing.rules.name}</strong> on <strong>{mapLabel(existing.map)}</strong>
-                        <p className="muted">A match is running in this voice channel.</p>
-                      </div>
-                    </div>
-                    {isPlayableSpec(existing.map) ? (
-                      <button className="primary create-button" disabled={busy} onClick={() => void play()}>
-                        {busy ? <><span className="spinner" aria-hidden="true" />Joining…</> : 'Join match'}
-                      </button>
-                    ) : (
-                      <div className="warning version-notice" role="alert">
-                        {versionMessage(existing.map.gen)}
-                        {existing.map.gen > GENERATOR_VERSION && <button type="button" className="primary" onClick={() => location.reload()}>Restart</button>}
-                      </div>
-                    )}
-                    <p className="error">{error}</p>
-                  </div>
-                ) : (
-                  <div className="create-grid">
-                    <div className="field">
-                      <span>Game mode</span>
-                      <ModePicker value={rules} onChange={setRules} />
-                    </div>
-                    <div className="create-side">
-                      <div className="field">
-                        <span>Map</span>
-                        <MapPicker choice={mapChoice} mode={rules.base} hint="Same seed, same map." />
-                      </div>
-                      <button className="primary create-button" disabled={busy} onClick={() => void play()}>
-                        {busy ? <><span className="spinner" aria-hidden="true" />Starting…</> : `Start ${rules.name}`}
-                      </button>
-                      <p className="muted hint">Everyone in this voice channel plays in the same match.</p>
-                      <p className="error">{error}</p>
-                    </div>
-                  </div>
-                )}
-              </section>
-            )}
-
-            {tab === 'rooms' && (
-              <section id="panel-rooms" role="tabpanel" aria-labelledby="tab-rooms" className="tab-panel">
-                <RoomBrowser
-                  rooms={rooms}
-                  failed={roomsFailed}
-                  retry={retryRooms}
-                  hide={roomCode}
-                  busy={busy}
-                  joiningCode={joiningCode}
-                  disabled={busy}
-                  error={error}
-                  onJoin={(c) => void joinOther(c)}
-                  onCreate={() => setTab('channel')}
-                />
-              </section>
-            )}
-
-            {tab === 'leaderboard' && (
-              <section id="panel-leaderboard" role="tabpanel" aria-labelledby="tab-leaderboard" className="tab-panel">
-                <Leaderboard limit={20} me={discordProfileId(discord.userId)} guildId={discord.guildId} />
-              </section>
-            )}
-          </>
+  const playable = !existing || isPlayableSpec(existing.map);
+  return (
+    <MenuFrame discord profile={<ProfileChip name={discord.name} title="Your Discord name" />} onSettings={() => setSettingsOpen(true)}>
+      <MenuRail
+        hero={(
+          <div className="menu-play-wrap">
+            <button
+              type="button"
+              className="menu-play"
+              disabled={busy || !playable}
+              onClick={() => (existing ? void play() : setTab('channel'))}
+            >
+              <span className="label">{busy && !joiningCode ? <><span className="spinner" aria-hidden="true" />Joining…</> : existing ? <>▶ Join the match</> : <>▶ Start a match</>}</span>
+              <span className="sub">{existing ? `${existing.rules.name} on ${mapLabel(existing.map)}` : 'Everyone in this voice channel plays together'}</span>
+            </button>
+          </div>
         )}
+        tabs={tabs}
+        active={tab}
+        onSelect={(id) => setTab(id as Tab)}
+        extra={(
+          <CodeJoin busy={busy} joiningCode={joiningCode} disabled={busy} error={joinError} onJoin={(c) => void joinOther(c)} />
+        )}
+      />
 
-        <p className="legal muted"><a href="/terms.html" target="_blank" rel="noreferrer">Terms</a> · <a href="/privacy.html" target="_blank" rel="noreferrer">Privacy</a> · <a href="/credits.html" target="_blank" rel="noreferrer">Credits</a></p>
-      </div>
+      {tab === 'channel' && (
+        <MenuPanel id="channel" title={existing ? 'This channel\'s match' : 'Start this channel\'s match'}>
+          {existing ? (
+            // A match is already running in this voice channel: one big way in.
+            <div className="channel-match">
+              <div className="match-info">
+                <MapThumb spec={existing.map} mode={existing.rules.base} size={96} />
+                <div>
+                  <span className={`mode-badge ${existing.rules.base}`}>{existing.rules.short}</span>
+                  <strong>{existing.rules.name}</strong> on <strong>{mapLabel(existing.map)}</strong>
+                  <p className="muted">A match is running in this voice channel. Jump in — everyone here plays together.</p>
+                </div>
+              </div>
+              {playable ? (
+                <button className="primary create-button" disabled={busy} onClick={() => void play()}>
+                  {busy ? <><span className="spinner" aria-hidden="true" />Joining…</> : 'Join match'}
+                </button>
+              ) : (
+                <div className="warning version-notice" role="alert">
+                  {versionMessage(existing.map.gen)}
+                  {existing.map.gen > GENERATOR_VERSION && <button type="button" className="primary" onClick={() => location.reload()}>Restart</button>}
+                </div>
+              )}
+              <p className="error">{error}</p>
+            </div>
+          ) : (
+            <CreateWizard
+              rules={rules}
+              onRules={setRules}
+              mapChoice={mapChoice}
+              launchLabel={`Start ${rules.name}`}
+              busyLabel="Starting…"
+              busy={busy}
+              disabled={busy}
+              onLaunch={() => void play()}
+              error={error}
+              note="Everyone in this voice channel plays in the same match."
+              onExit={() => setTab('rooms')}
+            />
+          )}
+        </MenuPanel>
+      )}
+
+      {tab === 'rooms' && (
+        <MenuPanel id="rooms" title="Other open rooms" aside={<RoomSearch value={search} onChange={setSearch} />}>
+          <RoomList
+            rooms={rooms}
+            failed={roomsFailed}
+            retry={retryRooms}
+            hide={roomCode}
+            search={search}
+            onClearSearch={() => setSearch('')}
+            busy={busy}
+            joiningCode={joiningCode}
+            disabled={busy}
+            onJoin={(c) => void joinOther(c)}
+            onCreate={() => setTab('channel')}
+          />
+        </MenuPanel>
+      )}
+
+      {tab === 'leaderboard' && (
+        <MenuPanel id="leaderboard">
+          <Leaderboard limit={20} me={discordProfileId(discord.userId)} guildId={discord.guildId} />
+        </MenuPanel>
+      )}
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
-    </section>
+    </MenuFrame>
   );
 }

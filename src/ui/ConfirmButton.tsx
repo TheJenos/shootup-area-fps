@@ -11,7 +11,7 @@ interface Props {
   no: string;
   onConfirm(): void;
   className?: string;
-  /** Class for the yes button (defaults to the danger style) */
+  /** Class for the yes button (defaults to the solid danger style) */
   yesClassName?: string;
   disabled?: boolean;
   'aria-label'?: string;
@@ -23,7 +23,7 @@ interface Props {
  * press swaps it for a question with yes / no in the same spot, so a stray tap on a crowded phone
  * row does nothing yet.
  */
-export function ConfirmButton({ children, question, yes, no, onConfirm, className, yesClassName = 'danger', disabled, title, ...rest }: Props) {
+export function ConfirmButton({ children, question, yes, no, onConfirm, className, yesClassName = 'danger solid', disabled, title, ...rest }: Props) {
   const [asking, setAsking] = useState(false);
   const button = useRef<HTMLButtonElement>(null);
   const wasAsking = useRef(false);

@@ -1,6 +1,5 @@
 import { db, dropPlaceholder, waitForValue, type RoomRules } from './support/db';
 import { expect, rules, test } from './support/fixtures';
-import { setRange } from './support/ui';
 import type { Player } from './support/player';
 
 /*
@@ -33,11 +32,11 @@ async function ownedRoom(
   return { code, alice };
 }
 
-/** The pause menu's Bots panel (owner only) */
+/** The pause menu's Bots view (owner only) */
 async function openBots(p: Player) {
   await p.openPauseMenu();
-  await p.page.getByRole('button', { name: 'Bots', exact: true }).click();
-  const panel = p.page.locator('#bots-panel');
+  await p.page.getByRole('tab', { name: 'Bots', exact: true }).click();
+  const panel = p.page.locator('#pause-panel-bots');
   await expect(panel).toBeVisible();
   return panel;
 }
@@ -72,7 +71,7 @@ test.describe('bots', () => {
     await panel.getByLabel('New bot team').selectOption('');
     await panel.getByRole('button', { name: 'Add bot' }).click();
     await expect(panel.locator('.bots-list li')).toHaveCount(2);
-    await expect(panel.locator('h3 .count')).toHaveText('2 / 12');
+    await expect(panel.locator('.menu-panel-head .count')).toHaveText('2 / 12');
 
     // They join straight away, as players, with their level in their name.
     const two = await waitForValue<Players>(`rooms/${code}/players`, (p) => botsIn(p).length === 2, 30_000);
@@ -97,7 +96,7 @@ test.describe('bots', () => {
     await waitForValue<Players>(`rooms/${code}/players`, (p) => botsIn(p).length === 1, 20_000);
     await expect.poll(() => db.get(`lobby/${code}/members/${expert![0]}`)).toBeNull();
     await expect(panel.locator('.bots-list li')).toHaveCount(1);
-    await panel.getByRole('button', { name: 'Back' }).click();
+    await alice.page.getByRole('tab', { name: 'Match', exact: true }).click();
     await expect(panel).toBeHidden();
 
     // Someone joins: the bot stays.
@@ -108,9 +107,9 @@ test.describe('bots', () => {
     await expect.poll(async () => (await bob.page.evaluate(() => (window as any).game.test.remoteIds())).filter((id: string) => id.startsWith('b_')).length).toBe(1);
     await bob.page.waitForTimeout(2_000);
     expect(botNames(await db.get<Players>(`rooms/${code}/players`))).toEqual([`${base} [Hard]`]);
-    // Only the owner gets the Bots button.
+    // Only the owner gets the Bots view.
     await bob.openPauseMenu();
-    await expect(bob.page.getByRole('button', { name: 'Bots', exact: true })).toHaveCount(0);
+    await expect(bob.page.getByRole('tab', { name: 'Bots', exact: true })).toHaveCount(0);
   });
 
   test('bots can be shot, and the next owner brings them back when the owner leaves', async ({ players, rooms }) => {
@@ -152,9 +151,9 @@ test.describe('bots', () => {
     await p.gotoLobby();
     await p.page.getByRole('tab', { name: 'Create room' }).click();
     await p.page.getByRole('radio', { name: /Team Deathmatch/ }).first().click();
-    await setRange(p.page.getByLabel('Start with bots'), 3);
+    await p.createStep('Launch');
     await p.page.getByLabel('Bot skill').selectOption('expert');
-    const code = rooms.track(await p.createRoom());
+    const code = rooms.track(await p.createRoom({ bots: 3 }));
     const list = (await db.get<Record<string, Slot>>(`lobby/${code}/bots`)) ?? {};
     expect(Object.values(list).map((b) => b.skill)).toEqual(['expert', 'expert', 'expert']);
     await p.play();

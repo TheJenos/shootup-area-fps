@@ -3,6 +3,7 @@ import {
   CLASSIC_SEED, GENERATOR_VERSION, MAP_SIZES, SEED_MAX_LENGTH, SIZE_LABEL, isMapSize, mapName, normalizeSeed, randomSeed, specForMode,
   type MapSize, type MapSpec,
 } from '../game/mapgen';
+import { SIZE_PARAMS } from '../game/mapgen/spec';
 import type { GameMode } from '../types';
 import { MapPreview } from './MapPreview';
 import { useMapData } from './useMapData';
@@ -50,17 +51,23 @@ interface Props {
   mode: GameMode;
   /** Line under the seed box */
   hint: ReactNode;
+  /** 'large': a big preview filling its stage, and each size's crossing time (the lobby's create steps) */
+  variant?: 'compact' | 'large';
 }
 
 /** Map seed, size and a live preview, for creating a room. */
-export function MapPicker({ choice, mode, hint }: Props) {
+export function MapPicker({ choice, mode, hint, variant = 'compact' }: Props) {
   const { seed, setSeed, size, setSize } = choice;
   const classic = seed === CLASSIC_SEED;
+  const large = variant === 'large';
   // The preview is the map the room will play: asymmetric unless the mode is Capture the Flag.
   const { map, pending } = useMapData(seed ? specForMode({ seed, size, gen: GENERATOR_VERSION }, mode) : null);
+  const preview = map
+    ? <MapPreview map={map} mode={mode} size={large ? 'fill' : undefined} />
+    : <div className={large ? 'map-preview empty fill' : 'map-preview empty'}>{seed ? <><span className="spinner" aria-hidden="true" />Building map…</> : 'Random map'}</div>;
   return (
-    <div className="map-picker stacked">
-      {map ? <MapPreview map={map} mode={mode} /> : <div className="map-preview empty">{seed ? <><span className="spinner" aria-hidden="true" />Building map…</> : 'Random map'}</div>}
+    <div className={large ? 'map-picker large' : 'map-picker stacked'}>
+      {large ? <div className="map-stage">{preview}<span className="map-stage-hint" aria-hidden="true">Drag to turn</span></div> : preview}
       <div className="map-controls">
         <strong aria-live="polite">{seed ? mapName(seed) : 'Surprise me'}{pending && map ? '…' : ''}</strong>
         <div className="row">
@@ -88,6 +95,7 @@ export function MapPicker({ choice, mode, hint }: Props) {
               onClick={() => setSize(s)}
             >
               {SIZE_LABEL[s]}
+              {large && <small>~{SIZE_PARAMS[s].crossTime} s across</small>}
             </button>
           ))}
         </div>

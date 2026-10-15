@@ -8,19 +8,22 @@ test.describe('room owner', () => {
     const hostId = await waitForValue(`lobby/${code}/hostId`, (id) => id === aliceId || id === bobId);
     const [owner, other] = hostId === aliceId ? [alice, bob] : [bob, alice];
 
-    // Only the owner gets the button; everyone sees who it is.
+    // Only the owner gets the view; everyone sees who it is.
     await other.openPauseMenu();
     await expect(other.page.locator('#pause-overlay .owner')).toContainText(owner.name);
-    await expect(other.page.getByRole('button', { name: 'Change match' })).toHaveCount(0);
+    await expect(other.page.getByRole('tab', { name: 'Change match' })).toHaveCount(0);
 
     await owner.openPauseMenu();
     await expect(owner.page.locator('#pause-overlay .owner')).toContainText('You own this room');
-    await owner.page.getByRole('button', { name: 'Change match' }).click();
-    const setup = owner.page.locator('#match-setup');
+    await owner.page.getByRole('tab', { name: 'Change match' }).click();
+    // The same steps as making a room: mode, map, then the restart.
+    const setup = owner.page.locator('#pause-panel-setup');
     await setup.getByRole('radio', { name: /Team Deathmatch/ }).click();
+    await owner.createStep('Map');
     await setup.getByLabel('Map seed').fill('OWNERTEST');
+    await owner.createStep('Restart');
     await setup.getByRole('button', { name: 'End round & restart' }).click();
-    await setup.getByRole('button', { name: 'Restart', exact: true }).click();
+    await setup.getByRole('button', { name: 'Yes, restart' }).click();
     await expect(setup).toBeHidden();
 
     const game = await waitForValue(`rooms/${code}/game`, (g) => g?.round === 1);
@@ -45,6 +48,6 @@ test.describe('room owner', () => {
     await owner.leave();
     await waitForValue(`lobby/${code}/hostId`, (id) => id === heirId);
     await heir.openPauseMenu();
-    await expect(heir.page.getByRole('button', { name: 'Change match' })).toBeVisible();
+    await expect(heir.page.getByRole('tab', { name: 'Change match' })).toBeVisible();
   });
 });

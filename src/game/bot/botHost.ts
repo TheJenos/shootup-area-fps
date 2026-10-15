@@ -24,7 +24,7 @@ import { goalFor, newPatrol, type Patrol, type Point, type SndGoalView } from '.
 import {
   BOMB_PICKUP_RADIUS, DEFUSE_RADIUS, DEFUSE_TIME, PLANT_TIME, bombPlacement, canJoin, decide, phaseOf, siteAt,
 } from '../snd';
-import { Gear, type PickupRules } from './gear';
+import { Gear, kitGunFor, type PickupRules } from './gear';
 import { callOut, hear } from './team';
 import {
   CLOAK_DURATION, DASH_SPEED, FIRE_DAMAGE, FIRE_TICK, FLASH_MAX, FLASH_RANGE, LIFESTEAL_DURATION, LIFESTEAL_FRACTION, MEDKIT_HEAL,
@@ -36,7 +36,7 @@ import {
 } from './limits';
 import type { PhysicsWorld } from '../physics';
 import type { MapData } from '../mapgen';
-import type { ModeRules } from '../rules';
+import { loadoutGuns, rouletteGun, type ModeRules } from '../rules';
 import type { NavBlock } from './nav';
 import type {
   AbilityType, GameEvent, GameState, GunKind, PickupType, PlayerState, SiteId, SndRecord, Stance, Team, Vec3Tuple, WeaponKind,
@@ -94,6 +94,9 @@ const BODY_TIME = 3;
 const PICKUP_RADIUS = 1.1;
 /** A throw is only made if it can land this close to where it's meant to (m) */
 const THROW_TOLERANCE = 4;
+/** A two-gun loadout: switching guns takes this long (s), and a bot holds the new one at least this long */
+const KIT_SWITCH = 0.45;
+const KIT_HOLD = 1.5;
 const POLICY_URL = `${import.meta.env.BASE_URL}bots/policy.json`;
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -183,6 +186,11 @@ interface HostedBot {
   respawnIn: number;
   gun: GunKind;
   ammo: number;
+  /** Roulette: this life's gun */
+  roulette: GunKind;
+  /** A two-gun loadout: the magazine each gun was left with, and when it last switched (host clock) */
+  kitMags: Partial<Record<GunKind, number>>;
+  kitSince: number;
   reloadLeft: number;
   cooldown: number;
   burst: number;
@@ -420,7 +428,8 @@ export class BotHost {
     mover.setTerrain((x, z) => this.api.terrainAt(x, z));
     return {
       id, slot, skill, name, team, mover, attached: null, brain: new BotBrain(policy, SKILLS[skill]),
-      yaw: 0, pitch: 0, hp: this.api.rules().health, alive: true, respawnIn: 0, gun: 'rifle', ammo: 0, reloadLeft: 0, cooldown: 0, burst: 0,
+      yaw: 0, pitch: 0, hp: this.api.rules().health, alive: true, respawnIn: 0, gun: 'rifle', ammo: 0,
+      roulette: rouletteGun(), kitMags: {}, kitSince: -Infinity, reloadLeft: 0, cooldown: 0, burst: 0,
       meleeCooldown: 0, deaths: 0, captures: 0, decideIn: Math.random() * DECISION_DT, lastPose: null, fullAt: 0, jumpUntil: 0, flagBusy: false, channel: 0, patrol: newPatrol(), gear: new Gear(), detour: null, goal: null, walk: null, goalDist: 0, spawnedAt: 0,
       stats: { damage: 0, shots: 0, hits: 0, headshots: 0, streak: 0, best: 0 }, seenKills: 0, statsKey: '', statsAt: 0,
       infected: false, prey: null, heading: null, npc: null, diedAt: 0,
@@ -587,7 +596,9 @@ export class BotHost {
       p.x = Math.max(-edge, Math.min(edge, p.x));
       p.z = Math.max(-edge, Math.min(edge, p.z));
 
-      bot.gun = this.gunFor(bot);
+      const gun = this.gunFor(bot);
+      if (gun !== bot.gun && loadoutGuns(rules.loadout).length > 1) this.switchKitGun(bot, gun);
+      else bot.gun = gun;
       bot.cooldown = Math.max(0, bot.cooldown - dt);
       bot.meleeCooldown = Math.max(0, bot.meleeCooldown - dt);
       if (bot.reloadLeft > 0) {
@@ -659,7 +670,35 @@ export class BotHost {
     const { loadout } = this.api.rules();
     if (loadout === 'standard') return bot.gear.special?.kind ?? 'rifle';
     if (loadout === 'gungame') return gunGameGun(this.api.players()[bot.id]?.kills ?? 0);
-    return loadout;
+    if (loadout === 'random') return bot.roulette;
+    const guns = loadoutGuns(loadout);
+    if (guns.length < 2) return guns[0] ?? 'rifle';
+    // Two guns: whichever suits the nearest enemy it knows of, holding each a moment before switching back.
+    const current = guns.includes(bot.gun) ? bot.gun : guns[0]!;
+    if (this.clock - bot.kitSince < KIT_HOLD) return current;
+    return kitGunFor(guns, this.nearestKnown(bot), current);
+  }
+
+  /** Switch hands in a two-gun loadout: each gun keeps its own magazine, and the switch takes a moment. */
+  private switchKitGun(bot: HostedBot, gun: GunKind): void {
+    bot.kitMags[bot.gun] = bot.ammo;
+    bot.ammo = bot.kitMags[gun] ?? GUNS[gun].mag;
+    bot.gun = gun;
+    bot.kitSince = this.clock;
+    bot.reloadLeft = 0;
+    bot.cooldown = Math.max(bot.cooldown, KIT_SWITCH);
+  }
+
+  /** How far the nearest enemy it knows of (seen lately) is, or null */
+  private nearestKnown(bot: HostedBot): number | null {
+    const p = bot.mover.position;
+    let best: number | null = null;
+    for (const m of bot.brain.memory.seen.values()) {
+      if (this.clock - m.t > MEMORY_TIME) continue;
+      const d = Math.hypot(m.x - p.x, m.y - p.y, m.z - p.z);
+      if (best === null || d < best) best = d;
+    }
+    return best;
   }
 
   private isEnemyOf(bot: HostedBot, id: string): boolean {
@@ -819,7 +858,7 @@ export class BotHost {
     const targets: Target[] = this.others(bot)
       .filter((b) => b.alive && this.isEnemyOf(bot, b.id))
       .map((b) => ({ id: b.id, x: b.x, y: b.y, z: b.z, stance: b.stance }));
-    const headshotsOnly = api.rules().headshotsOnly;
+    const { headshotsOnly, headSize } = api.rules();
     const ends: Vec3Tuple[] = [];
     const damageTo = new Map<string, number>();
     let anyHead = false;
@@ -829,7 +868,7 @@ export class BotHost {
       let dist = api.wallDistance(eye.x, eye.y, eye.z, d[0], d[1], d[2], def.range);
       let hit: { id: string; head: boolean } | null = null;
       for (const t of targets) {
-        const h = hitPlayer(ray, t, dist);
+        const h = hitPlayer(ray, t, dist, headSize);
         if (h) {
           dist = h.dist;
           hit = { id: t.id, head: h.head };
@@ -1030,6 +1069,10 @@ export class BotHost {
     bot.mover.setSolid(true);
     bot.spawnedAt = this.clock;
     bot.detour = null;
+    // A new life: Roulette spins again, and a two-gun loadout's magazines are full.
+    bot.roulette = rouletteGun();
+    bot.kitMags = {};
+    bot.kitSince = -Infinity;
     bot.gun = this.gunFor(bot);
     bot.ammo = GUNS[bot.gun].mag;
     // Spare rifle rounds as a player gets them: 90, or endless where the mode hands everyone one gun.

@@ -79,8 +79,10 @@ export class Weapon {
   aim = 0;
 
   private readonly slots: [Held, Held | null] = [{ kind: 'rifle', mag: GUNS.rifle.mag, reserve: GUNS.rifle.reserve }, null];
-  /** Gun Game: one fixed gun with endless ammo, no pickups */
+  /** Modes that fix the guns (Gun Game, Sniper Only, …): the first, with endless ammo, no pickups */
   private forced: GunKind | null = null;
+  /** A two-gun loadout's second gun: in the second slot like a picked-up one, but the mode's (never dropped) */
+  private forcedSecond: GunKind | null = null;
   private slot: 0 | 1 = 0;
   private readonly views = new Map<GunKind, View>();
   private cooldown = 0;
@@ -130,9 +132,19 @@ export class Weapon {
     return this.held.kind;
   }
 
-  /** The picked-up gun, if any (whether or not it's in hand) */
+  /** The gun in the second slot, if any (whether or not it's in hand): a picked-up one, or a two-gun loadout's */
   get special(): GunKind | null {
     return this.slots[1]?.kind ?? null;
+  }
+
+  /** The gun in the first slot: the rifle, or the mode's gun */
+  get primary(): GunKind {
+    return this.slots[0].kind;
+  }
+
+  /** The second slot is the mode's (a two-gun loadout), not a pickup: it can't be dropped or swapped */
+  get kit(): boolean {
+    return this.forcedSecond !== null;
   }
 
   get ammo(): number {
@@ -176,12 +188,16 @@ export class Weapon {
     return true;
   }
 
-  /** Gun Game: hold only `kind`, with endless spare rounds. Null goes back to the normal loadout. */
-  setForcedGun(kind: GunKind | null): void {
+  /**
+   * Modes that fix the guns: hold only `kind` (and, in a two-gun loadout, `second` a switch away), both
+   * with endless spare rounds. Null goes back to the normal loadout.
+   */
+  setForcedGun(kind: GunKind | null, second: GunKind | null = null): void {
     this.forced = kind;
+    this.forcedSecond = kind ? second : null;
     if (kind) {
       this.slots[0] = { kind, mag: GUNS[kind].mag, reserve: Infinity };
-      this.slots[1] = null;
+      this.slots[1] = second ? { kind: second, mag: GUNS[second].mag, reserve: Infinity } : null;
       this.slot = 0;
       this.reloadTimer = 0;
       this.switchTimer = SWITCH_TIME;
@@ -227,6 +243,7 @@ export class Weapon {
    * carry, just take its ammo. Returns false when the slot holds a different gun (drop it first).
    */
   giveGun(kind: GunKind, rounds: number): boolean {
+    if (this.forcedSecond) return false;
     const def = GUNS[kind];
     const old = this.slots[1];
     if (old?.kind === kind) {
@@ -240,10 +257,10 @@ export class Weapon {
     return true;
   }
 
-  /** Rounds left in the picked-up gun (magazine + spare), or null without one. */
+  /** Rounds left in the picked-up gun (magazine + spare), or null without one (a two-gun loadout's isn't one). */
   get specialRounds(): number | null {
     const held = this.slots[1];
-    return held ? held.mag + held.reserve : null;
+    return held && !this.forcedSecond ? held.mag + held.reserve : null;
   }
 
   /** Rifle <-> picked-up gun. Returns false when there's nothing to switch to. */
@@ -256,13 +273,14 @@ export class Weapon {
   /** Takes the picked-up gun out of our hands with its rounds left (to drop it), or null. */
   takeSpecial(): { kind: GunKind; rounds: number } | null {
     const held = this.slots[1];
-    if (!held) return null;
+    if (!held || this.forcedSecond) return null;
     this.removeSpecial();
     return { kind: held.kind, rounds: held.mag + held.reserve };
   }
 
   /** Lose the picked-up gun (new round). */
   removeSpecial(): void {
+    if (this.forcedSecond) return;
     this.slots[1] = null;
     if (this.slot === 1) this.selectSlot(0);
   }
@@ -417,11 +435,12 @@ export class Weapon {
     this.triggerLatched = false;
   }
 
-  /** Respawn: full rifle (or the Gun Game gun), no picked-up gun. */
+  /** Respawn: full rifle (or the mode's guns), no picked-up gun. */
   reset(): void {
     const kind = this.forced ?? 'rifle';
     this.slots[0] = { kind, mag: GUNS[kind].mag, reserve: this.forced ? Infinity : GUNS.rifle.reserve };
-    this.slots[1] = null;
+    const second = this.forcedSecond;
+    this.slots[1] = second ? { kind: second, mag: GUNS[second].mag, reserve: Infinity } : null;
     this.slot = 0;
     this.reloadTimer = 0;
     this.cooldown = 0;

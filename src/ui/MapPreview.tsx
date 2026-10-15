@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { buildWorld } from '../game/world';
-import { PAINT, insideOutline, type MapData } from '../game/mapgen';
+import { PAINT, insideOutline, isPlayableSpec, type MapData, type MapSpec } from '../game/mapgen';
+import { useMapData } from './useMapData';
 import { TEAM_INFO } from '../game/modes';
 import { bombSites, SITE_IDS } from '../game/snd';
 import { reducedMotion, settings } from '../game/settings';
@@ -21,20 +22,23 @@ const GROUND_COLORS: Record<MapData['patches'][number]['kind'], string> = {
   road: '#3e4046', sidewalk: '#8f8d88', grass: '#567e3e', dirt: '#78603f', concrete: '#8a8a86', hazard: '#b8962a',
 };
 
-/** Top-down drawing of a generated map; taller cover is drawn brighter. The fallback when WebGL isn't available. */
-function draw2D(canvas: HTMLCanvasElement, map: MapData, mode: GameMode): void {
+/**
+ * Top-down drawing of a generated map, `side` pixels square; taller cover is drawn brighter. The fallback
+ * when WebGL isn't available, and the room list's thumbnails.
+ */
+export function draw2D(canvas: HTMLCanvasElement, map: MapData, mode: GameMode, side = SIZE): void {
   const g = canvas.getContext('2d');
   if (!g) return;
   const ratio = window.devicePixelRatio || 1;
-  canvas.width = SIZE * ratio;
-  canvas.height = SIZE * ratio;
+  canvas.width = side * ratio;
+  canvas.height = side * ratio;
   g.setTransform(ratio, 0, 0, ratio, 0, 0);
 
-  const scale = SIZE / (map.half * 2 + 1);
+  const scale = side / (map.half * 2 + 1);
   const px = (v: number) => (v + map.half + 0.5) * scale;
 
   g.fillStyle = map.theme.floor;
-  g.fillRect(0, 0, SIZE, SIZE);
+  g.fillRect(0, 0, side, side);
 
   // The land: higher is lighter, lanes painted, slopes lit from the north-west so they read as relief.
   const t = map.ground;
@@ -65,7 +69,7 @@ function draw2D(canvas: HTMLCanvasElement, map: MapData, mode: GameMode): void {
   } else {
     g.strokeStyle = hex(map.theme.wall);
     g.lineWidth = scale * 1.5;
-    g.strokeRect(g.lineWidth / 2, g.lineWidth / 2, SIZE - g.lineWidth, SIZE - g.lineWidth);
+    g.strokeRect(g.lineWidth / 2, g.lineWidth / 2, side - g.lineWidth, side - g.lineWidth);
   }
 
   // Yards and plazas under everything; roads get a dashed centre line.
@@ -208,7 +212,8 @@ function siteMarkers(map: MapData): THREE.Group {
  * own, unless motion is reduced. Otherwise (the pause menu, over a running game) it draws only when
  * something changes: on open, on a drag and on a resize, so it doesn't run a second render loop.
  */
-export function MapPreview({ map, mode, spin = true }: { map: MapData; mode: GameMode; spin?: boolean }) {
+/** @param size its width and height (px); 'fill' fits whatever box the page gives it */
+export function MapPreview({ map, mode, spin = true, size = SIZE }: { map: MapData; mode: GameMode; spin?: boolean; size?: number | 'fill' }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [flat, setFlat] = useState(false);
@@ -319,8 +324,20 @@ export function MapPreview({ map, mode, spin = true }: { map: MapData; mode: Gam
   }, [map, mode, flat]);
 
   const label = `Map preview: ${map.name}${mode === 'ctf' ? ', flag bases marked' : mode === 'snd' ? ', bomb sites A and B marked' : ''}`;
+  const box = size === 'fill' ? undefined : { width: size, height: size };
+  const className = size === 'fill' ? ' fill' : '';
   if (flat) {
-    return <canvas ref={canvasRef} className="map-preview" role="img" aria-label={label} style={{ width: SIZE, height: SIZE }} />;
+    return <canvas ref={canvasRef} className={`map-preview${className}`} role="img" aria-label={label} style={box} />;
   }
-  return <div ref={hostRef} className="map-preview gl" role="img" aria-label={`${label}. Drag to turn it.`} style={{ width: SIZE, height: SIZE }} />;
+  return <div ref={hostRef} className={`map-preview gl${className}`} role="img" aria-label={`${label}. Drag to turn it.`} style={box} />;
+}
+
+/** A map from above, small and still (room cards, the launch card); drawn once the worker has built it */
+export function MapThumb({ spec, mode, size = 64 }: { spec: MapSpec | null; mode: GameMode; size?: number }) {
+  const { map } = useMapData(spec && isPlayableSpec(spec) ? spec : null);
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    if (map && ref.current) draw2D(ref.current, map, mode, size);
+  }, [map, mode, size]);
+  return <canvas ref={ref} className={map ? 'map-thumb' : 'map-thumb loading'} style={{ width: size, height: size }} aria-hidden="true" />;
 }

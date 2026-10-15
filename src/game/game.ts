@@ -8,7 +8,7 @@ import { prefetchMap } from './mapgen/client';
 import { roomMap } from '../net/network';
 import { LocalPlayer } from './player';
 import { EYE_HEIGHT } from './playerDims';
-import { RemotePlayer, type HitboxData } from './remotePlayer';
+import { RemotePlayer, setHeadSize, type HitboxData } from './remotePlayer';
 import { loadCharacter, type CharacterAsset } from './character';
 import { Weapon, Effects } from './weapon';
 import {
@@ -59,7 +59,7 @@ import type { BotSkill } from './bot/brain';
 import { RemoteBodies, type BodyPose } from './bodies';
 import { hitPlayer, scatter } from './bot/hitscan';
 import { recordRound } from '../net/leaderboard';
-import { baseRules, goalOf, normalizeRules, sameRules, type ModeRules } from './rules';
+import { baseRules, goalOf, loadoutGuns, normalizeRules, rouletteGun, sameRules, type ModeRules } from './rules';
 import * as sfx from './audio';
 import { actionFor, keyFor, keyLabel, settings, type Action, type Quality } from './settings';
 import { IN_DISCORD } from '../discord/patch';
@@ -1655,20 +1655,34 @@ export class Game {
     }
   }
 
-  /** Modes that decide what you hold: the Gun Game ladder starts on its first gun, Sniper Only is snipers. */
+  /**
+   * Modes that decide what you hold: the Gun Game ladder starts on its first gun, Sniper Only is snipers,
+   * a two-gun loadout puts its second a switch away, and Roulette spins for a gun (again each life).
+   */
   private applyLoadout(): void {
     const { loadout } = this.rules;
+    const [first, second] = loadoutGuns(loadout);
     if (loadout === 'gungame') this.weapon.setForcedGun(gunGameGun(0));
-    else if (loadout !== 'standard') this.weapon.setForcedGun(loadout);
+    else if (loadout === 'random') this.weapon.setForcedGun(rouletteGun());
+    else if (first) this.weapon.setForcedGun(first, second ?? null);
   }
 
   /** The mode's movement, gravity and health (custom mode rules). */
   private applyRules(): void {
     this.player.gravityScale = this.rules.gravity;
     setThrowGravity(this.rules.gravity);
+    // Everyone else's head, as big as the mode makes it (each remote player picks it up on its next frame).
+    setHeadSize(this.rules.headSize);
     this.applyTraits();
     this.hp = this.maxHp;
     this.hud.update({ hp: this.hp });
+  }
+
+  /** Roulette: a new life, a new gun (said out loud when it's a change). */
+  private spinRoulette(): void {
+    const before = this.weapon.gun;
+    this.weapon.setForcedGun(rouletteGun());
+    if (this.weapon.gun !== before) this.hud.toast(`Roulette: ${GUNS[this.weapon.gun].name}`);
   }
 
   /** Gun Game: a kill hands us the next gun on the ladder. */
@@ -3581,6 +3595,7 @@ export class Game {
     this.hp = this.maxHp;
     this.alive = true;
     this.weapon.reset();
+    if (this.rules.loadout === 'random') this.spinRoulette();
     this.hitSources.clear();
     const wasDead = !!this.hud.get().death;
     this.hud.update({ hp: this.hp, death: null });
@@ -3773,8 +3788,8 @@ export class Game {
     for (const end of ends) this.effects.tracer(muzzle, end);
     sfx.playShot(0.7, gun);
     // The kick: up, and sideways along the gun's pattern (automatics; a single shot just wanders a
-    // little). It settles back on its own once the firing stops (see LocalPlayer.kick).
-    const recoil = def.recoil * (1 - 0.45 * this.weapon.aim);
+    // little), as hard as the mode says. It settles back on its own once the firing stops (see LocalPlayer.kick).
+    const recoil = def.recoil * (1 - 0.45 * this.weapon.aim) * this.rules.recoil;
     const pattern = def.auto ? RECOIL_PATTERN[(this.weapon.shotsInBurst - 1) % RECOIL_PATTERN.length]! * 0.6 : 0;
     this.player.kick((pattern + (Math.random() - 0.5) * (def.auto ? 0.3 : 0.5)) * recoil, recoil);
 
@@ -4668,15 +4683,17 @@ export class Game {
     if (!this.isLeader() || this.roundOver) return;
     this.spawnTimer -= dt;
     if (this.spawnTimer > 0) return;
-    // What spawns is up to the mode (a fixed-gun loadout already switched guns and ammo off).
-    const { guns, abilities, ammo } = this.rules;
+    // What spawns is up to the mode (a fixed-gun loadout already switched guns and ammo off), and how
+    // often: a higher spawn rate also leaves more lying about (up to twice as many).
+    const { guns, abilities, ammo, pickupRate } = this.rules;
+    const more = Math.min(2, Math.max(1, pickupRate));
     const stock: { kind: PickupKind; have: number; max: number }[] = [
-      { kind: 'ability', have: this.pickups.countOf('ability'), max: abilities ? MAX_PICKUPS : 0 },
-      { kind: 'gun', have: this.pickups.countOf('gun'), max: guns ? MAX_GUN_PICKUPS : 0 },
-      { kind: 'ammo', have: this.pickups.countOf('ammo'), max: ammo ? MAX_AMMO_PICKUPS : 0 },
+      { kind: 'ability', have: this.pickups.countOf('ability'), max: abilities ? Math.round(MAX_PICKUPS * more) : 0 },
+      { kind: 'gun', have: this.pickups.countOf('gun'), max: guns ? Math.round(MAX_GUN_PICKUPS * more) : 0 },
+      { kind: 'ammo', have: this.pickups.countOf('ammo'), max: ammo ? Math.round(MAX_AMMO_PICKUPS * more) : 0 },
     ];
     // Fill up quickly when the map is bare, then trickle in.
-    this.spawnTimer = stock.some((s) => s.have < s.max / 2) ? 1.5 : 7;
+    this.spawnTimer = (stock.some((s) => s.have < s.max / 2) ? 1.5 : 7) / pickupRate;
     // Top up whichever kind is furthest below its target (each is stocked separately).
     const short = stock.filter((s) => s.have < s.max).sort((a, b) => a.have / a.max - b.have / b.max)[0];
     if (!short) return;
@@ -4889,6 +4906,7 @@ export class Game {
     const w = this.weapon;
     const hud = this.hud.get();
     if (hud.ammo !== w.ammo || hud.magSize !== w.magSize || hud.reserve !== w.reserve || hud.gun !== w.gun || hud.special !== w.special
+      || hud.primary !== w.primary || hud.kit !== w.kit
       || hud.specialRounds !== w.specialRounds || hud.melee !== melee || hud.reloading !== w.reloading) {
       this.hud.update({
         ammo: w.ammo,
@@ -4896,6 +4914,8 @@ export class Game {
         reserve: w.reserve,
         gun: w.gun,
         special: w.special,
+        primary: w.primary,
+        kit: w.kit,
         specialRounds: w.specialRounds,
         melee,
         reloading: w.reloading,

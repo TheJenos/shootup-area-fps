@@ -1,5 +1,17 @@
 import { dropPlaceholder } from './support/db';
 import { expect, rules, test, uniqueName } from './support/fixtures';
+import type { Player } from './support/player';
+
+/**
+ * Open an invite link in a browser that has loaded the game once already: these tests race the invite's
+ * two-second countdown, and a cold first load (a fresh dev server, several browsers starting at once) can
+ * take longer than that. (A different query string, so the link is a real page load, not a hash change.)
+ */
+async function openWarm(p: Player, path: string): Promise<void> {
+  await p.page.goto('/?warm');
+  await expect(p.page.locator('#lobby')).toBeVisible();
+  await p.page.goto(path);
+}
 
 test.describe('invite links', () => {
   test('#CODE joins automatically after a short countdown', async ({ players, rooms }) => {
@@ -14,7 +26,7 @@ test.describe('invite links', () => {
   test('?room=CODE works too, and "Join now" skips the wait', async ({ players, rooms }) => {
     const code = await rooms.seed(rules('ffa'));
     const p = await players.open('Eager');
-    await p.page.goto(`/?room=${code.toLowerCase()}`);
+    await openWarm(p, `/?room=${code.toLowerCase()}`);
     await p.page.getByRole('button', { name: 'Join now' }).click();
     await p.waitJoined();
     expect(await p.roomCode()).toBe(code);
@@ -23,7 +35,7 @@ test.describe('invite links', () => {
   test('"Stay in the lobby" cancels it', async ({ players, rooms }) => {
     const code = await rooms.seed(rules('ffa'));
     const p = await players.open('Stayer');
-    await p.page.goto(`/#${code}`);
+    await openWarm(p, `/#${code}`);
     await p.page.getByRole('button', { name: 'Stay in the lobby' }).click();
     await p.page.waitForTimeout(3_000);
     await expect(p.page.locator('#lobby')).toBeVisible();

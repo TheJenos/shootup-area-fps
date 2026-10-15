@@ -5,6 +5,10 @@ import { rangeIn, setRange } from './support/ui';
 
 const customModes = (p: Player) => p.page.evaluate(() => JSON.parse(localStorage.getItem('fps-custom-modes') || '[]'));
 
+/** In the custom mode editor, go to step `name` (every step can be gone to straight away) */
+const editorStep = (p: Player, name: 'Mode' | 'Loadout' | 'Rules' | 'Players') =>
+  p.page.locator('#mode-editor').getByRole('list', { name: 'Custom mode steps' }).getByRole('button', { name, exact: true }).click();
+
 async function openCreate(p: Player) {
   await p.gotoLobby();
   await p.page.getByRole('tab', { name: 'Create room' }).click();
@@ -20,30 +24,48 @@ test.describe('custom modes', () => {
     await expect(editor).toBeVisible();
     await expect(editor.getByLabel('Mode name')).toHaveValue('Custom mode');
 
+    const tab = (name: 'Mode' | 'Loadout' | 'Rules' | 'Players') => editorStep(p, name);
+    // A step at a time: Next walks them in order, and Back goes back
+    await editor.getByRole('button', { name: 'Next: Loadout ▸' }).click();
+    await expect(editor.getByRole('list', { name: 'Custom mode steps' }).getByRole('button', { name: 'Loadout', exact: true })).toHaveAttribute('aria-current', 'step');
+    await expect(editor.getByRole('button', { name: 'Save & use' })).toHaveCount(0);
+    await editor.getByRole('button', { name: '◂ Back' }).click();
+
     // Base: switching resets the score limit to that base's
     await editor.getByRole('radio', { name: 'Team Deathmatch' }).click();
     await expect(editor.getByRole('radio', { name: 'Team Deathmatch' })).toHaveAttribute('aria-checked', 'true');
-    await expect(editor.locator('label.setting', { hasText: 'Team kills to win' })).toContainText('50');
     await expect(editor.locator('.mode-preview')).toContainText('first team to 50 wins');
+    await tab('Rules');
+    await expect(editor.locator('label.setting', { hasText: 'Team kills to win' })).toContainText('50');
     // Gun Game is only offered for free-for-all
-    await expect(editor.locator('select option', { hasText: 'Gun Game' })).toHaveCount(0);
+    await tab('Loadout');
+    await expect(editor.getByRole('radio', { name: 'Gun Game ladder' })).toHaveCount(0);
+    await tab('Mode');
     await editor.getByRole('radio', { name: 'Free-for-all' }).click();
-    await expect(editor.locator('select option', { hasText: 'Gun Game' })).toHaveCount(1);
+    await tab('Loadout');
+    await expect(editor.getByRole('radio', { name: 'Gun Game ladder' })).toHaveCount(1);
 
+    await tab('Mode');
     await editor.getByLabel('Mode name').fill('Pistol Party');
     await editor.getByLabel('Badge (up to 4 letters)').fill('pp');
     await expect(editor.getByLabel('Badge (up to 4 letters)')).toHaveValue('PP');
 
-    // One gun for everyone turns gun and ammo pickups off
-    await editor.locator('label.setting', { hasText: 'Loadout' }).locator('select').selectOption('deagle');
+    // Guns from the mode (one for everyone, or two) turn gun and ammo pickups off
+    await tab('Loadout');
+    await editor.getByRole('radio', { name: 'Sniper + Deagle' }).click();
+    await expect(editor.locator('.mode-preview')).toContainText('Sniper + Deagle, endless ammo');
+    await editor.getByRole('radio', { name: 'Deagles' }).click();
+    await expect(editor.getByRole('radio', { name: 'Deagles' })).toHaveAttribute('aria-checked', 'true');
     await expect(editor.getByLabel('Gun pickups')).toBeDisabled();
     await expect(editor.getByLabel('Ammo boxes')).toBeDisabled();
     await expect(editor).toContainText('ammo is endless');
 
     await editor.getByLabel('Headshots only (body hits do nothing)').check();
+    await tab('Rules');
     await setRange(rangeIn(editor, 'Kills to win'), 10);
     await setRange(rangeIn(editor, 'Time limit'), 5);
     await setRange(rangeIn(editor, 'Respawn'), 1);
+    await tab('Players');
     await setRange(rangeIn(editor, 'Health'), 150);
     await setRange(rangeIn(editor, 'Speed'), 1.2);
     await setRange(rangeIn(editor, 'Gravity'), 0.5);
@@ -54,6 +76,7 @@ test.describe('custom modes', () => {
     await expect(editor.locator('.mode-preview')).toContainText('first to 10 wins');
 
     // Sliders can't go past the limits
+    await tab('Rules');
     await setRange(rangeIn(editor, 'Kills to win'), 999);
     await expect(editor.locator('label.setting', { hasText: 'Kills to win' })).toContainText('60');
   });
@@ -84,11 +107,13 @@ test.describe('custom modes', () => {
     const page = p.page;
     await page.getByRole('button', { name: '＋ New mode' }).click();
     await page.getByLabel('Mode name').fill('One Off');
+    await editorStep(p, 'Players');
     await setRange(rangeIn(page.locator('#mode-editor'), 'Health'), 75);
     await page.getByRole('button', { name: 'Use once' }).click();
     await expect(page.locator('.mode-detail strong')).toHaveText('One Off');
     await expect(page.locator('.mode-detail small')).toContainText('custom (not saved)');
     expect(await customModes(p)).toEqual([]);
+    await p.createStep('Launch');
     await expect(page.locator('button.create-button')).toHaveText('Create One Off room');
 
     const code = rooms.track(await p.createRoom({ seed: 'classic' }));
@@ -107,6 +132,7 @@ test.describe('custom modes', () => {
     await page.getByRole('button', { name: 'Customize' }).click();
     await expect(page.getByLabel('Mode name')).toHaveValue('Moon Gravity (custom)');
     await page.getByLabel('Mode name').fill('Low Grav');
+    await editorStep(p, 'Players');
     await page.getByRole('button', { name: 'Save & use' }).click();
 
     const chip = page.getByRole('radiogroup', { name: 'Your modes' }).getByRole('radio', { name: /Low Grav/ });
@@ -123,6 +149,7 @@ test.describe('custom modes', () => {
 
     // Editing with the same name replaces it
     await page.getByRole('button', { name: 'Edit' }).click();
+    await editorStep(p, 'Players');
     await setRange(rangeIn(page.locator('#mode-editor'), 'Gravity'), 0.6);
     await page.getByRole('button', { name: 'Save & use' }).click();
     saved = await customModes(p);
@@ -143,6 +170,7 @@ test.describe('custom modes', () => {
     for (let i = 1; i <= 13; i++) {
       await page.getByRole('button', { name: '＋ New mode' }).click();
       await page.getByLabel('Mode name').fill(`Mode ${i}`);
+      await editorStep(p, 'Players');
       await page.getByRole('button', { name: 'Save & use' }).click();
     }
     const saved = await customModes(p);

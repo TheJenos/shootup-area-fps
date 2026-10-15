@@ -3,11 +3,12 @@ import { expect, test, uniqueName } from './support/fixtures';
 import { GENERATOR_VERSION } from '../src/game/mapgen/index';
 
 test.describe('lobby', () => {
-  test('tabs switch between rooms, create and leaderboard', async ({ players }) => {
+  test('the menu switches between rooms, create and leaderboard, by mouse and by keyboard', async ({ players }) => {
     const p = await players.open('Tabby');
     await p.gotoLobby();
     const page = p.page;
-    await expect(page.getByRole('tab', { name: /Open rooms/ })).toHaveAttribute('aria-selected', 'true');
+    const rooms = page.getByRole('tab', { name: /^Rooms/ });
+    await expect(rooms).toHaveAttribute('aria-selected', 'true');
     await expect(page.locator('#panel-rooms')).toBeVisible();
 
     await page.getByRole('tab', { name: 'Create room' }).click();
@@ -17,10 +18,21 @@ test.describe('lobby', () => {
     await page.getByRole('tab', { name: 'Leaderboard' }).click();
     await expect(page.locator('#panel-leaderboard')).toBeVisible();
 
-    // ＋ Create room on the rooms tab jumps to the create tab
-    await page.getByRole('tab', { name: /Open rooms/ }).click();
-    await page.getByRole('button', { name: /Create room/ }).first().click();
-    await expect(page.locator('#panel-create')).toBeVisible();
+    // Arrow keys move along the menu, wrapping round the ends.
+    await page.keyboard.press('ArrowDown');
+    await expect(rooms).toBeFocused();
+    await expect(page.locator('#panel-rooms')).toBeVisible();
+    await page.keyboard.press('ArrowUp');
+    await expect(page.locator('#panel-leaderboard')).toBeVisible();
+
+    // Making a room goes a step at a time; Esc steps back, and out of it from the first step.
+    await page.getByRole('tab', { name: 'Create room' }).click();
+    await p.createStep('Launch');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('list', { name: 'Steps' }).getByRole('button', { name: 'Map', exact: true })).toHaveAttribute('aria-current', 'step');
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#panel-rooms')).toBeVisible();
   });
 
   test('lists open rooms with their mode, map, code and players', async ({ players, rooms }) => {
@@ -98,10 +110,10 @@ test.describe('lobby', () => {
     await page.getByLabel('Room code').fill('nope!9');
     await expect(page.getByLabel('Room code')).toHaveValue('NOPE9');
     await page.locator('form.code-join').getByRole('button', { name: 'Join' }).click();
-    await expect(page.locator('#panel-rooms p.error')).toHaveText("Room NOPE9 doesn't exist.");
+    await expect(page.locator('.code-join-box p.error')).toHaveText("Room NOPE9 doesn't exist.");
 
     await p.joinByCode(code);
-    await expect(page.locator('#room-tag strong')).toHaveText(code);
+    expect(await p.roomCode()).toBe(code);
     await expect(page).toHaveURL(new RegExp(`#${code}$`));
   });
 
@@ -129,7 +141,7 @@ test.describe('lobby', () => {
   test('Quick play starts a free-for-all against bots straight away', async ({ players, rooms }) => {
     const p = await players.open(uniqueName('Quick'));
     await p.gotoLobby();
-    await p.page.getByRole('button', { name: 'Quick play' }).click();
+    await p.page.getByRole('button', { name: /Play now/ }).click();
     await p.waitJoined();
     const code = rooms.track(await p.roomCode());
     const { db } = await import('./support/db');

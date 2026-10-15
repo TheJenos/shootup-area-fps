@@ -22,6 +22,30 @@ export interface PickupRules {
   ammo: boolean;
 }
 
+/**
+ * How well each gun suits a fight at a distance (m): 3 its best, 0 a poor choice. The shotgun is for
+ * doorways, the Deagle up to mid-range, the rifle everywhere short of the long lanes, the sniper those.
+ */
+function suits(gun: GunKind, distance: number): number {
+  switch (gun) {
+    case 'shotgun': return distance <= 8 ? 3 : distance <= 14 ? 1 : 0;
+    case 'deagle': return distance <= 25 ? 2 : distance <= 40 ? 1 : 0;
+    case 'rifle': return distance <= 30 ? 2 : distance <= 55 ? 1 : 0;
+    case 'sniper': return distance <= 10 ? 0 : distance <= 20 ? 1 : 2;
+  }
+}
+
+/**
+ * Which gun of a two-gun loadout to hold for an enemy `distance` away (null: nobody known; keep the
+ * one in hand). A tie keeps `current`, so a bot doesn't flick between equals.
+ */
+export function kitGunFor(guns: GunKind[], distance: number | null, current: GunKind): GunKind {
+  if (distance === null) return current;
+  let best = current;
+  for (const gun of guns) if (suits(gun, distance) > suits(best, distance)) best = gun;
+  return best;
+}
+
 export class Gear {
   readonly inventory = new Inventory();
   special: SpecialGun | null = null;

@@ -63,7 +63,7 @@
             ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 4"
           },
           "loadout": {
-            ".validate": "newData.val() === 'standard' || newData.val() === 'gungame' || newData.val() === 'rifle' || newData.val() === 'shotgun' || newData.val() === 'sniper' || newData.val() === 'deagle'"
+            ".validate": "newData.val() === 'standard' || newData.val() === 'gungame' || newData.val() === 'random' || newData.val() === 'rifle' || newData.val() === 'shotgun' || newData.val() === 'sniper' || newData.val() === 'deagle' || newData.val() === 'sniper-deagle' || newData.val() === 'shotgun-deagle' || newData.val() === 'rifle-shotgun' || newData.val() === 'rifle-sniper' || newData.val() === 'rifle-deagle' || newData.val() === 'sniper-shotgun'"
           },
           "guns": {
             ".validate": "newData.isBoolean()"
@@ -94,6 +94,15 @@
           },
           "gravity": {
             ".validate": "newData.isNumber() && newData.val() >= 0.3 && newData.val() <= 1.5"
+          },
+          "pickupRate": {
+            ".validate": "newData.isNumber() && newData.val() >= 0.25 && newData.val() <= 3"
+          },
+          "recoil": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 2"
+          },
+          "headSize": {
+            ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 3"
           },
           "bots": {
             ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 12"

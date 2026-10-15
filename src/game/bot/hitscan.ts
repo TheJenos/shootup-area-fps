@@ -15,6 +15,8 @@ const BODY_TOP: Record<Stance, number> = { stand: 1.2, crouch: 0.8, slide: 0.6 }
 const HEAD_R = 0.17;
 /** Centre of the head above the feet */
 export const HEAD_Y: Record<Stance, number> = { stand: 1.62, crouch: 1.15, slide: 0.95 };
+/** How far the head's centre sits above the neck, which a bigger head grows from (remotePlayer.ts' HEAD_HIT_OFFSET) */
+const HEAD_LIFT = 0.18;
 /** Where to aim at someone's body, above their feet */
 export const CHEST_Y: Record<Stance, number> = { stand: 1.15, crouch: 0.8, slide: 0.65 };
 
@@ -64,8 +66,8 @@ function rayCapsule(r: Ray, x: number, z: number, y0: number, y1: number, radius
   return Math.min(best, raySphere(r, x, y0, z, radius), raySphere(r, x, y1, z, radius));
 }
 
-/** Where the ray first hits the player, if it does within `max` */
-export function hitPlayer(r: Ray, t: Target, max: number): { dist: number; head: boolean } | null {
+/** Where the ray first hits the player, if it does within `max`. `headSize`: big-head modes' heads (rules.ts) */
+export function hitPlayer(r: Ray, t: Target, max: number, headSize = 1): { dist: number; head: boolean } | null {
   // Cheap reject: too far from the ray to touch anything.
   const cx = t.x - r.ox;
   const cy = t.y + 0.9 - r.oy;
@@ -75,9 +77,10 @@ export function hitPlayer(r: Ray, t: Target, max: number): { dist: number; head:
   const px = cx - r.dx * along;
   const py = cy - r.dy * along;
   const pz = cz - r.dz * along;
-  if (px * px + py * py + pz * pz > 1.6 * 1.6) return null;
+  const reach = 1.6 + 0.4 * (headSize - 1);
+  if (px * px + py * py + pz * pz > reach * reach) return null;
 
-  const head = raySphere(r, t.x, t.y + HEAD_Y[t.stance], t.z, HEAD_R);
+  const head = raySphere(r, t.x, t.y + HEAD_Y[t.stance] + HEAD_LIFT * (headSize - 1), t.z, HEAD_R * headSize);
   const body = rayCapsule(r, t.x, t.z, t.y + BODY_BOTTOM, t.y + BODY_TOP[t.stance], BODY_R);
   const dist = Math.min(head, body);
   if (dist > max) return null;

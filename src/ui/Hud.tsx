@@ -13,8 +13,6 @@ import { InventoryPanel } from './InventoryPanel';
 import { TouchControls, TouchTopButtons } from './TouchControls';
 import { TouchIntro } from './TouchIntro';
 import { PauseMenu, controls } from './PauseMenu';
-import { MatchSetup } from './MatchSetup';
-import { BotsPanel } from './BotsPanel';
 import { GUNS } from '../game/guns';
 import type { GunKind } from '../types';
 import { safeColor } from './colors';
@@ -113,8 +111,6 @@ export function Hud({ game, roomCode, onLeave }: Props) {
   const touchAbility = useCallback((i: number) => game.touchAbility(i), [game]);
   const useTouchAbility = game.touch ? touchAbility : undefined;
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [setupOpen, setSetupOpen] = useState(false);
-  const [botsOpen, setBotsOpen] = useState(false);
   // Phones: the controls guide, once.
   const [intro, setIntro] = useState(() => game.touch && !readFlag(TOUCH_INTRO_KEY));
   // "Connecting…" that drags on gets a way out.
@@ -206,7 +202,6 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       </div>
       {hud.damageIndicators.length > 0 && !hud.death && <DamageDirections indicators={hud.damageIndicators} />}
 
-      <div id="room-tag">Room <strong>{roomCode}</strong></div>
       {/* The radar and the objective markers draw themselves (game/minimap.ts, game/objectiveMarkers.ts); these are their places. */}
       {showMinimap && (hud.watched || (!hud.death && !hud.spectate && !hud.matchEnd)) && <div id="minimap" ref={mountMinimap} />}
       {!hud.death && !hud.spectate && !hud.killcam && !hud.matchEnd && !hud.paused && <div id="objective-layer" ref={mountMarkers} />}
@@ -261,7 +256,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
         </div>
       )}
 
-      {hud.inventoryOpen && <InventoryPanel game={game} slots={hud.slots} gun={hud.special} gunRounds={hud.specialRounds} />}
+      {hud.inventoryOpen && <InventoryPanel game={game} slots={hud.slots} gun={hud.special} gunRounds={hud.specialRounds} kit={hud.kit ? [hud.primary, hud.special!] : null} />}
 
       {hud.scoreboardOpen && !hud.paused && (
         <MatchSummary
@@ -290,24 +285,21 @@ export function Hud({ game, roomCode, onLeave }: Props) {
         <TouchIntro hasSpecial={!!hud.special} onDone={() => { writeFlag(TOUCH_INTRO_KEY); setIntro(false); }} />
       )}
 
-      {hud.paused && !intro && (settingsOpen
-        ? <SettingsPanel onClose={() => setSettingsOpen(false)} />
-        : setupOpen && hud.owner?.me
-          ? <MatchSetup game={game} hud={hud} onClose={() => setSetupOpen(false)} />
-          : botsOpen && hud.owner?.me
-            ? <BotsPanel game={game} hud={hud} onClose={() => setBotsOpen(false)} />
-            : (
+      {/* Settings opens over the menu, as it does over the lobby. */}
+      {hud.paused && !intro && (
+        <>
           <PauseMenu
             game={game}
             hud={hud}
             roomCode={roomCode}
             onLeave={onLeave}
             onSettings={() => setSettingsOpen(true)}
-            onMatchSetup={() => setSetupOpen(true)}
-            onBots={() => setBotsOpen(true)}
+            covered={settingsOpen}
             onIntro={game.touch ? () => setIntro(true) : undefined}
           />
-        ))}
+          {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
+        </>
+      )}
 
       {hud.connecting && (
         <div id="connecting-overlay" className="overlay" role="status">
@@ -759,7 +751,7 @@ const HealthPanel = memo(function HealthPanel({ hp, max, heal }: { hp: number; m
 });
 
 function AmmoPanel({ hud, touch }: { hud: HudState; touch: boolean }) {
-  const { ammo, magSize: max, reloading, gun, reserve, special } = hud;
+  const { ammo, magSize: max, reloading, gun, reserve, special, primary } = hud;
   const { bindings } = useSettings();
   if (hud.claws) {
     return (
@@ -793,8 +785,8 @@ function AmmoPanel({ hud, touch }: { hud: HudState; touch: boolean }) {
   return (
     <div id="ammo" className={`panel ${classes}`}>
       <div className="gun-slots">
-        {/* First slot: the gun you always carry (the rifle, or the mode's gun in Sniper Only / Gun Game). */}
-        {slot(special && gun === special ? 'rifle' : gun)}
+        {/* First slot: the gun you always carry (the rifle, or the mode's gun in Sniper Only / Gun Game / a two-gun loadout). */}
+        {slot(primary)}
         {special ? slot(special) : <span className="gun-slot empty">—</span>}
       </div>
       <span id="ammo-value">{ammo}</span>

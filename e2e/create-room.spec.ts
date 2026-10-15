@@ -26,9 +26,11 @@ test.describe('create room', () => {
       await p.gotoLobby();
       const page = p.page;
       await page.getByRole('tab', { name: 'Create room' }).click();
-      const chip = page.getByRole('radio', { name: new RegExp(`^${preset.short}\\s*${preset.name}$`) });
-      await chip.click();
-      await expect(chip).toHaveAttribute('aria-checked', 'true');
+      const card = page.getByRole('radio', { name: preset.name, exact: true });
+      await card.click();
+      await expect(card).toHaveAttribute('aria-checked', 'true');
+      await expect(card.locator('.mode-badge')).toHaveText(preset.short);
+      await p.createStep('Launch');
       await expect(page.locator('button.create-button')).toHaveText(`Create ${preset.name} room`);
 
       const roomName = uniqueName('Room ');
@@ -62,6 +64,7 @@ test.describe('create room', () => {
     await p.gotoLobby();
     const page = p.page;
     await page.getByRole('tab', { name: 'Create room' }).click();
+    await p.createStep('Map');
     const seed = page.getByLabel('Map seed');
     const mapName = page.locator('.map-controls strong');
 
@@ -89,6 +92,7 @@ test.describe('create room', () => {
     const p = await players.open(uniqueName('Sizer'));
     await p.gotoLobby();
     await p.page.getByRole('tab', { name: 'Create room' }).click();
+    await p.createStep('Map');
     const sizes = p.page.getByRole('radiogroup', { name: 'Map size' });
     // The classic arena has one size.
     await p.page.getByLabel('Map seed').fill('classic');
@@ -111,7 +115,7 @@ test.describe('create room', () => {
   });
 
   test('only Capture the Flag plays on a symmetric map; every other mode on an asymmetric one', async ({ players, rooms }) => {
-    for (const [mode, asym] of [[/^FFA/, true], [/^TDM/, true], [/^CTF/, null]] as const) {
+    for (const [mode, asym] of [[/^Free-for-all$/, true], [/^Team Deathmatch$/, true], [/^Capture the Flag$/, null]] as const) {
       const p = await players.open(uniqueName('Shaper'));
       await p.gotoLobby();
       const code = rooms.track(await p.createRoom({ mode, seed: 'E2EASYM', size: 'Small' }));
@@ -129,8 +133,10 @@ test.describe('create room', () => {
     const p = await players.open(uniqueName('Blank'));
     await p.gotoLobby();
     await p.page.getByRole('tab', { name: 'Create room' }).click();
-    await expect(p.page.getByLabel('Room name')).toHaveAttribute('placeholder', `${p.name}'s room`);
+    await p.createStep('Map');
     await p.page.getByLabel('Map seed').fill('');
+    await p.createStep('Launch');
+    await expect(p.page.getByLabel('Room name')).toHaveAttribute('placeholder', `${p.name}'s room`);
     await p.page.locator('button.create-button').click();
     await p.waitJoined();
     const code = rooms.track(await p.roomCode());

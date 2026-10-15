@@ -23,8 +23,9 @@ export function useDialogFocus(ref: RefObject<HTMLElement | null>, restore = tru
     if (!root.contains(document.activeElement)) focusables(root)[0]?.focus();
 
     const onKey = (e: KeyboardEvent) => {
-      // A panel opened on top of this one (inside it in the page) has handled the key already.
-      if (e.key !== 'Tab' || e.defaultPrevented) return;
+      // A panel opened on top of this one (inside it in the page) has handled the key already; one
+      // opened beside it makes this one inert while it's up (the pause menu under Settings).
+      if (e.key !== 'Tab' || e.defaultPrevented || root.closest('[inert]')) return;
       const items = focusables(root);
       if (items.length === 0) return;
       const first = items[0]!;

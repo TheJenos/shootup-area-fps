@@ -203,10 +203,14 @@ export interface HudState {
   rules: ModeRules;
   ammo: number;
   magSize: number;
-  /** The gun in hand, its spare rounds (null = endless), and the picked-up gun if any */
+  /** The gun in hand, its spare rounds (null = endless), and the gun in the second slot if any */
   gun: GunKind;
   reserve: number | null;
   special: GunKind | null;
+  /** The gun in the first slot (the rifle, or the mode's) */
+  primary: GunKind;
+  /** The second slot is the mode's (a two-gun loadout), not a picked-up gun */
+  kit: boolean;
   /** Rounds left in the picked-up gun (shown in the inventory) */
   specialRounds: number | null;
   /** Looking through the sniper scope */
@@ -318,6 +322,8 @@ const initialState: HudState = {
   gun: 'rifle',
   reserve: null,
   special: null,
+  primary: 'rifle',
+  kit: false,
   specialRounds: null,
   scoped: false,
   melee: false,

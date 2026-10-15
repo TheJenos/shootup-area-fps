@@ -1,4 +1,5 @@
 import { expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { setRange } from './ui';
 
 /*
  * One player: a browser context of their own (own localStorage, so own name and profile) with a page
@@ -116,29 +117,48 @@ export class Player {
     await expect(this.page.locator('#lobby')).toBeVisible();
   }
 
-  /** Join a room with the code box on the Open rooms tab, and wait until we're in the match. */
+  /** Join a room with the code box in the menu, and wait until we're in the match. */
   async joinByCode(code: string): Promise<void> {
-    await this.page.getByRole('tab', { name: /Open rooms/ }).click();
     await this.page.getByLabel('Room code').fill(code);
     await this.page.locator('form.code-join').getByRole('button', { name: 'Join' }).click();
     await this.waitJoined();
   }
 
-  /** Create a room from the Create room tab with a preset mode (by its name) and return its code. */
-  async createRoom(opts: { mode?: string | RegExp; seed?: string; size?: 'Small' | 'Medium' | 'Large'; roomName?: string } = {}): Promise<string> {
+  /** In Create room (or Change match: its last step is Restart), go to step `name`: by the step bar if it's been reached, else Next until it is. */
+  async createStep(name: 'Mode' | 'Map' | 'Launch' | 'Restart'): Promise<void> {
+    const target = this.page.getByRole('list', { name: 'Steps' }).getByRole('button', { name, exact: true });
+    while (!(await target.isEnabled())) await this.page.getByRole('button', { name: /^Next:/ }).click();
+    if ((await target.getAttribute('aria-current')) !== 'step') await target.click();
+    await expect(target).toHaveAttribute('aria-current', 'step');
+  }
+
+  /**
+   * Create a room through the Create room steps (a preset mode by its name, then the map, then the room) and
+   * return its code.
+   */
+  /** `bots`: how many the room starts with (0 unless asked: the lobby's own default depends on what else is open) */
+  async createRoom(opts: { mode?: string | RegExp; seed?: string; size?: 'Small' | 'Medium' | 'Large'; roomName?: string; bots?: number } = {}): Promise<string> {
     const page = this.page;
     await page.getByRole('tab', { name: 'Create room' }).click();
-    if (opts.mode) await page.getByRole('radio', { name: opts.mode }).first().click();
+    if (opts.mode) {
+      await this.createStep('Mode');
+      await page.getByRole('radio', { name: opts.mode }).first().click();
+    }
+    await this.createStep('Map');
     await page.getByLabel('Map seed').fill(opts.seed ?? 'classic');
     if (opts.size) await page.getByRole('radiogroup', { name: 'Map size' }).getByRole('radio', { name: opts.size }).click();
+    await this.createStep('Launch');
     if (opts.roomName !== undefined) await page.getByLabel('Room name').fill(opts.roomName);
+    // The room list loaded first: with nothing else open, the lobby sets a few bots when it does.
+    await expect(page.locator('#tab-rooms .count')).toBeVisible();
+    await setRange(page.getByLabel('Start with bots'), opts.bots ?? 0);
     await page.locator('button.create-button').click();
     await this.waitJoined();
     return this.roomCode();
   }
 
   async roomCode(): Promise<string> {
-    return (await this.page.locator('#room-tag strong').innerText()).trim();
+    return this.page.evaluate(() => (window as any).game.roomCode as string);
   }
 
   // ---------------------------------------------------------------- match
@@ -287,8 +307,6 @@ export class Player {
   async leave(): Promise<void> {
     if (!(await this.page.locator('#pause-overlay').isVisible())) await this.openPauseMenu();
     await this.page.getByRole('button', { name: 'Leave room' }).click();
-    // Leaving asks first (a stray tap on a phone shouldn't drop you out of the match).
-    await this.page.getByRole('button', { name: 'Leave', exact: true }).click();
     await expect(this.page.locator('#lobby')).toBeVisible();
   }
 

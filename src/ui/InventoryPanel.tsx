@@ -12,6 +12,8 @@ interface Props {
   /** The picked-up gun and its rounds left, if any */
   gun: GunKind | null;
   gunRounds: number | null;
+  /** A two-gun loadout's guns: the mode's, so there's nothing to pick up or drop */
+  kit: [GunKind, GunKind] | null;
 }
 
 function CooldownLabel({ readyAt }: { readyAt: number }) {
@@ -19,14 +21,17 @@ function CooldownLabel({ readyAt }: { readyAt: number }) {
   return <span className={left > 0 ? 'cooling' : 'ready'}>{left > 0 ? `Cooldown ${left.toFixed(1)}s` : 'Ready'}</span>;
 }
 
-/** Opened with I: shows the picked-up gun and each ability slot, and lets the player drop them. */
-export function InventoryPanel({ game, slots, gun, gunRounds }: Props) {
+/**
+ * Opened with I: the picked-up gun and each ability slot as cards, in the menus' look, and a Drop on
+ * each. The match carries on behind it, so it stays light: a glance, a drop, back to it.
+ */
+export function InventoryPanel({ game, slots, gun, gunRounds, kit }: Props) {
   const { bindings } = useSettings();
   const slotKeys = [bindings.ability1, bindings.ability2, bindings.ability3].map(keyLabel);
   return (
     <div id="inventory" className="overlay">
-      <div className="panel-box" role="dialog" aria-modal="true" aria-labelledby="inventory-title" tabIndex={-1} ref={(el) => el?.focus()}>
-        <header>
+      <div className="panel-box inventory-box" role="dialog" aria-modal="true" aria-labelledby="inventory-title" tabIndex={-1} ref={(el) => el?.focus()}>
+        <header className="inventory-head">
           <h3 id="inventory-title">Inventory</h3>
           {game.touch ? (
             <button type="button" onClick={() => game.closeInventory(true)}>Close</button>
@@ -35,21 +40,34 @@ export function InventoryPanel({ game, slots, gun, gunRounds }: Props) {
           )}
         </header>
 
-        <div className={`gun-row ${gun ? '' : 'empty'}`}>
-          {gun ? (
-            <>
-              <span className="icon">{GUNS[gun].icon}</span>
-              <div>
-                <strong>{GUNS[gun].name}</strong>
-                <span className="muted desc">{GUNS[gun].description} · {gunRounds ?? 0} rounds left</span>
-              </div>
-            </>
-          ) : (
-            <p className="muted">No picked-up gun — stand on one on the map and press <kbd>{keyLabel(bindings.interact)}</kbd> to take it.</p>
-          )}
-          <button className="danger" disabled={!gun} onClick={() => game.dropGun()}>Drop</button>
-        </div>
+        <h4>{kit ? 'Loadout' : 'Picked-up gun'}</h4>
+        {kit ? (
+          <div className="gun-row kit">
+            <span className="icon">{GUNS[kit[0]].icon}</span>
+            <div>
+              <strong>{GUNS[kit[0]].name} + {GUNS[kit[1]].name}</strong>
+              <span className="muted desc">The mode's guns, endless ammo · <kbd>{keyLabel(bindings.swap)}</kbd> switches between them</span>
+            </div>
+            <span className="icon">{GUNS[kit[1]].icon}</span>
+          </div>
+        ) : (
+          <div className={`gun-row ${gun ? '' : 'empty'}`}>
+            {gun ? (
+              <>
+                <span className="icon">{GUNS[gun].icon}</span>
+                <div>
+                  <strong>{GUNS[gun].name}</strong>
+                  <span className="muted desc">{GUNS[gun].description} · {gunRounds ?? 0} rounds left</span>
+                </div>
+              </>
+            ) : (
+              <p className="muted">No picked-up gun — stand on one on the map and press <kbd>{keyLabel(bindings.interact)}</kbd> to take it.</p>
+            )}
+            <button className="danger" disabled={!gun} onClick={() => game.dropGun()}>Drop</button>
+          </div>
+        )}
 
+        <h4>Abilities</h4>
         <div className="items">
           {slots.map((slot, i) => (
             <div key={i} className={`item ${slot ? '' : 'empty'}`}>
@@ -62,8 +80,11 @@ export function InventoryPanel({ game, slots, gun, gunRounds }: Props) {
           ))}
         </div>
 
-        <p className="muted hint">You can carry one picked-up gun: drop it to take a different one. Dropped items keep their ammo or
-          uses, and anyone can pick them up.</p>
+        <p className="muted hint">
+          {kit
+            ? 'Dropped abilities keep their uses, and anyone can pick them up.'
+            : 'You can carry one picked-up gun: drop it to take a different one. Dropped items keep their ammo or uses, and anyone can pick them up.'}
+        </p>
       </div>
     </div>
   );
