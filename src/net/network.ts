@@ -165,7 +165,7 @@ export class RoomConnection {
    * each one's record as last written, so it can be put back whole after a reconnect (onDisconnect
    * removed it meanwhile; a partial update would leave a record with no name or kills).
    */
-  private readonly bots = new Map<string, { player: DatabaseReference; member: DatabaseReference; state: PlayerState; ready: boolean }>();
+  private readonly bots = new Map<string, { player: DatabaseReference; member: DatabaseReference | null; state: PlayerState; ready: boolean }>();
   /** leave() was called: a join() still under way must not register anything more */
   private left = false;
   /** Server clock minus ours, in ms, kept up to date by Firebase */
@@ -293,7 +293,7 @@ export class RoomConnection {
     await this.armDisconnect(this.ownRefs(bots));
     await set(this.playerRef, state);
     await set(this.memberRef, state.name);
-    await Promise.all(bots.flatMap((b) => [set(b.player, b.state), set(b.member, b.state.name)]));
+    await Promise.all(bots.flatMap((b) => [set(b.player, b.state), ...(b.member ? [set(b.member, b.state.name)] : [])]));
   }
 
   /** Queue the deletion of `refs` for when we drop. */
@@ -302,33 +302,43 @@ export class RoomConnection {
   }
 
   /** Our own records and those of the given bots: everything that leaves with us */
-  private ownRefs(bots: { player: DatabaseReference; member: DatabaseReference }[]): DatabaseReference[] {
-    return [this.playerRef, this.memberRef, ...bots.flatMap((b) => [b.player, b.member])];
+  private ownRefs(bots: { player: DatabaseReference; member: DatabaseReference | null }[]): DatabaseReference[] {
+    return [this.playerRef, this.memberRef, ...bots.flatMap((b) => (b.member ? [b.player, b.member] : [b.player]))];
+  }
+
+  /** A bot's records: its player record, and its entry in the lobby's members (if it's listed there) */
+  private static refsOf(refs: { player: DatabaseReference; member: DatabaseReference | null }): DatabaseReference[] {
+    return refs.member ? [refs.player, refs.member] : [refs.player];
   }
 
   // ---------------------------------------------------------------- bots
 
-  /** Put a bot in the room, played by this client; it leaves when we disconnect. */
-  async addBot(id: string, state: PlayerState): Promise<void> {
+  /**
+   * Put a bot in the room, played by this client; it leaves when we disconnect. `member`: listed among the
+   * room's members, as players are (not Horde's zombies: the lobby would count them as players).
+   */
+  async addBot(id: string, state: PlayerState, { member = true }: { member?: boolean } = {}): Promise<void> {
     // Not `ready` until its whole record is on its way: an update sent before it (while the removal
     // below is being queued) would create a partial record, with no name for anyone to see.
-    const refs = { player: ref(db(), `rooms/${this.code}/players/${id}`), member: ref(db(), `lobby/${this.code}/members/${id}`), state, ready: false };
+    const refs = {
+      player: ref(db(), `rooms/${this.code}/players/${id}`), member: member ? ref(db(), `lobby/${this.code}/members/${id}`) : null, state, ready: false,
+    };
     this.bots.set(id, refs);
-    await this.armDisconnect([refs.player, refs.member]);
+    await this.armDisconnect(RoomConnection.refsOf(refs));
     countNet('up', refs.state);
-    const written = Promise.all([set(refs.player, refs.state), set(refs.member, refs.state.name)]);
+    const written = Promise.all([set(refs.player, refs.state), ...(refs.member ? [set(refs.member, refs.state.name)] : [])]);
     refs.ready = true;
     await written;
     // Removed (or we left) while those writes were on their way: they mustn't leave an orphan behind.
-    if (this.bots.get(id) !== refs) await Promise.all([remove(refs.player), remove(refs.member)]);
+    if (this.bots.get(id) !== refs) await Promise.all(RoomConnection.refsOf(refs).map((r) => remove(r)));
   }
 
   async removeBot(id: string): Promise<void> {
     const refs = this.bots.get(id);
     if (!refs) return;
     this.bots.delete(id);
-    await Promise.all([onDisconnect(refs.player).cancel(), onDisconnect(refs.member).cancel()]);
-    await Promise.all([remove(refs.player), remove(refs.member)]);
+    await Promise.all(RoomConnection.refsOf(refs).map((r) => onDisconnect(r).cancel()));
+    await Promise.all(RoomConnection.refsOf(refs).map((r) => remove(r)));
   }
 
   /** Add or change an entry in the room's bot list (the owner's to edit) */
@@ -351,7 +361,7 @@ export class RoomConnection {
     refs.state = { ...refs.state, name };
     // Still being added: the record goes out with the new name.
     if (!refs.ready) return;
-    await Promise.all([update(refs.player, { name }), set(refs.member, name)]);
+    await Promise.all([update(refs.player, { name }), ...(refs.member ? [set(refs.member, name)] : [])]);
   }
 
   /** Partial update of one of our bots' records */
@@ -509,6 +519,8 @@ export class RoomConnection {
       g.score = {};
       g.flags = {};
       delete g.snd;
+      delete g.inf;
+      delete g.horde;
       return true;
     });
     if (committed) {

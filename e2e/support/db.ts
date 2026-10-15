@@ -29,7 +29,7 @@ export const db = {
 export const serverNow = () => Date.now();
 
 export interface RoomRules {
-  base: 'ffa' | 'tdm' | 'ctf' | 'snd';
+  base: 'ffa' | 'tdm' | 'ctf' | 'snd' | 'inf' | 'hrd';
   name: string;
   short: string;
   loadout: 'standard' | 'gungame' | 'rifle' | 'shotgun' | 'sniper' | 'deagle';
@@ -52,6 +52,8 @@ const BASE: Record<RoomRules['base'], RoomRules> = {
   tdm: { base: 'tdm', name: 'Team Deathmatch', short: 'TDM', loadout: 'standard', guns: true, abilities: true, ammo: true, limit: 50, minutes: 10, health: 100, headshotsOnly: false, respawn: 3, speed: 1, gravity: 1 },
   ctf: { base: 'ctf', name: 'Capture the Flag', short: 'CTF', loadout: 'standard', guns: true, abilities: true, ammo: true, limit: 3, minutes: 12, health: 100, headshotsOnly: false, respawn: 3, speed: 1, gravity: 1 },
   snd: { base: 'snd', name: 'Search & Destroy', short: 'S&D', loadout: 'standard', guns: true, abilities: true, ammo: true, limit: 5, minutes: 20, health: 100, headshotsOnly: false, respawn: 3, speed: 1, gravity: 1 },
+  inf: { base: 'inf', name: 'Infection', short: 'INF', loadout: 'standard', guns: true, abilities: true, ammo: true, limit: 1, minutes: 5, health: 100, headshotsOnly: false, respawn: 3, speed: 1, gravity: 1 },
+  hrd: { base: 'hrd', name: 'Horde', short: 'HRD', loadout: 'standard', guns: true, abilities: true, ammo: true, limit: 10, minutes: 20, health: 100, headshotsOnly: false, respawn: 3, speed: 1, gravity: 1 },
 };
 
 /**

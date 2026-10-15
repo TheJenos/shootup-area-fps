@@ -98,7 +98,8 @@ export class BotBrain {
   private readonly input: MoveInput = { forward: 0, strafe: 0, analog: false, sprint: false, crouch: false, jump: false };
 
   constructor(
-    private readonly policy: Policy, private skill: SkillDef, readonly personality: Personality = rollPersonality(),
+    /** Null for a bot that never asks it (Horde's zombies steer themselves): it only ever walks its route */
+    private readonly policy: Policy | null, private skill: SkillDef, readonly personality: Personality = rollPersonality(),
     private readonly rand: () => number = Math.random,
   ) {
     this.aim = new AimController(skill.aim, rand);
@@ -118,7 +119,7 @@ export class BotBrain {
   /** @param way which way to walk along the route (the observation's info.walk), for the feet */
   decide(obs: Float32Array, ctf = false, at?: { x: number; z: number }, way: Walk | null = null): BotAction {
     this.time += DECISION_DT;
-    if (shouldTravel(obs)) {
+    if (!this.policy || shouldTravel(obs)) {
       // (No position: it can't move just now, e.g. S&D's freeze. Then not moving isn't being stuck.)
       if (!at) this.unstuck.reset();
       const walk = at ? this.unstuck.act(travelAction(obs, way), at.x, at.z, this.time) : travelAction(obs, way);
@@ -126,7 +127,8 @@ export class BotBrain {
       this.action = walk;
       return walk;
     }
-    const sampled = this.policy.sample(this.policy.normalize(obs), { temperature: this.skill.temperature }, this.rand).action;
+    const policy = this.policy;
+    const sampled = policy.sample(policy.normalize(obs), { temperature: this.skill.temperature }, this.rand).action;
     const action = ctf && shouldPush(obs) ? pushAction(sampled, obs, way) : sampled;
     this.steering.set(action.aimYaw * MAX_TURN.yaw, action.aimPitch * MAX_TURN.pitch);
     this.action = action;

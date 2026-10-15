@@ -58,6 +58,8 @@ const _z = new THREE.Vector3();
 const _fq = new THREE.Quaternion();
 const _roll = new THREE.Quaternion();
 const FLIP = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+const ORIGIN = new THREE.Vector3();
+const _tint = new THREE.Color();
 
 type Arm = [THREE.Object3D, THREE.Object3D, THREE.Object3D];
 
@@ -79,6 +81,8 @@ export class FpArms {
   readonly root: THREE.Object3D;
   private readonly right: Arm;
   private readonly left: Arm;
+  /** Our own copies (a zombie's arms are tinted, and the other view's arms aren't) */
+  private readonly materials: THREE.MeshStandardMaterial[] = [];
 
   constructor(asset: THREE.Object3D) {
     this.root = SkeletonUtils.clone(asset);
@@ -88,6 +92,10 @@ export class FpArms {
       if (!mesh.isSkinnedMesh) return;
       mesh.frustumCulled = false;
       mesh.castShadow = false;
+      const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
+      mat.userData.baseColor = mat.color.clone();
+      mesh.material = mat;
+      this.materials.push(mat);
     });
     this.right = [bone(this.root, 'UpperArmR001'), bone(this.root, 'LowerArmR001'), bone(this.root, 'HandR001')];
     this.left = [bone(this.root, 'UpperArmL'), bone(this.root, 'LowerArmL'), bone(this.root, 'HandL')];
@@ -112,6 +120,27 @@ export class FpArms {
     gun.getWorldQuaternion(_hold);
     this.hand(this.right, gun, grip, RIGHT_HOLD, _hold, RIGHT_POLE, FOREARM_ROLL.right);
     if (!pistol) this.hand(this.left, gun, support, LEFT_HOLD, _hold, LEFT_POLE, FOREARM_ROLL.left);
+  }
+
+  /** Tint the arms (a zombie's: `color` multiplied in), or back to their own colours with null. */
+  setTint(color: string | null): void {
+    for (const mat of this.materials) {
+      mat.color.copy(mat.userData.baseColor as THREE.Color);
+      if (color) mat.color.multiply(_tint.set(color));
+    }
+  }
+
+  /**
+   * A zombie's hands, out in front with nothing in them: each wrist at its hold's offset from the origin of
+   * `right` / `left` (camera space), turned as that object is, as if each held a gun pointing its way.
+   */
+  holdClaws(right: THREE.Object3D, left: THREE.Object3D): void {
+    this.showLeft(true);
+    this.root.updateMatrixWorld(true);
+    placeJoint(this.right[0], SHOULDER.right.hip);
+    placeJoint(this.left[0], SHOULDER.left.hip);
+    this.hand(this.right, right, ORIGIN, RIGHT_HOLD, right.getWorldQuaternion(_hold), RIGHT_POLE, FOREARM_ROLL.right);
+    this.hand(this.left, left, ORIGIN, LEFT_HOLD, left.getWorldQuaternion(_flipped), LEFT_POLE, FOREARM_ROLL.left);
   }
 
   /** Show or hide the left arm (collapsing its upper-arm bone takes the whole arm with it). */

@@ -1,7 +1,7 @@
 import { useRef, type MouseEvent } from 'react';
 import type { Game } from '../game/game';
 import type { HudState } from '../game/hudStore';
-import { TEAM_INFO, otherTeam } from '../game/modes';
+import { MODES, otherTeam, teamInfo, zombieMode } from '../game/modes';
 import { GUNS } from '../game/guns';
 import { SIZE_LABEL, cachedMap, isClassic } from '../game/mapgen';
 import { goalOf } from '../game/rules';
@@ -73,18 +73,42 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onMatchSet
   else if (hud.matchEnd) {
     const next = hud.matchEnd.phase === 'results' && hud.matchEnd.mvp ? 'MVP replay' : 'next map';
     status = `Round over — ${hud.matchEnd.title} · ${next} in ${hud.matchEnd.nextIn}`;
-  } else if (hud.death) status = `Dead — respawning in ${hud.death.respawnIn}`;
+  } else if (hud.death) {
+    status = hud.death.untilWave ? 'Down — back when your team clears the wave'
+      : hud.death.infected ? `Infected — rising as a zombie in ${hud.death.respawnIn}` : `Dead — respawning in ${hud.death.respawnIn}`;
+  }
   else if (hud.offline) status = 'Connection lost — reconnecting…';
   else status = "You're alive — the match is still running";
 
+  const info = (t: 'red' | 'blue') => teamInfo(t, hud.mode);
   const score = () => {
+    if (hud.horde) {
+      const h = hud.horde;
+      return (
+        <span className="score">
+          <strong>Wave {h.wave}</strong><span className="muted">/{h.waves}</span>
+          <span className="muted"> · </span>
+          {h.phase === 'break' ? <span className="muted">starts in {h.startsIn}</span> : <strong style={{ color: info('red').color }}>{h.left} zombies left</strong>}
+          <span className="muted"> · {h.standing}/{h.players} standing</span>
+        </span>
+      );
+    }
+    if (hud.inf) {
+      return (
+        <span className="score">
+          <strong style={{ color: info('blue').color }}>{hud.inf.survivors} {info('blue').name.toLowerCase()}</strong>
+          <span className="muted"> · </span>
+          <strong style={{ color: info('red').color }}>{hud.inf.zombies} {info('red').name.toLowerCase()}</strong>
+        </span>
+      );
+    }
     if (team) {
       return (
         <span className="score">
-          <strong style={{ color: TEAM_INFO.red.color }}>Red {hud.score.red}</strong>
+          <strong style={{ color: info('red').color }}>{info('red').name} {hud.score.red}</strong>
           {hud.flags && <FlagIcon status={hud.flags.red} />}
           <span className="muted"> – </span>
-          <strong style={{ color: TEAM_INFO.blue.color }}>{hud.score.blue} Blue</strong>
+          <strong style={{ color: info('blue').color }}>{hud.score.blue} {info('blue').name}</strong>
           {hud.flags && <FlagIcon status={hud.flags.blue} />}
         </span>
       );
@@ -120,7 +144,8 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onMatchSet
           {hud.toast && <p key={`toast-${hud.toast.n}`} className="menu-toast" role="status">{hud.toast.text}</p>}
           {team && (
             <p className="muted">
-              You're on <strong style={{ color: TEAM_INFO[team].color }}>{TEAM_INFO[team].name}</strong>
+              {zombieMode(hud.mode) ? "You're one of the " : "You're on "}
+              <strong style={{ color: info(team).color }}>{zombieMode(hud.mode) ? info(team).name.toLowerCase() : info(team).name}</strong>
             </p>
           )}
           {hud.map && (
@@ -175,8 +200,8 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onMatchSet
           <button type="button" onClick={() => (game.isSpectating ? game.stopSpectating() : game.startSpectating())}>
             {game.isSpectating ? 'Back to the fight' : 'Spectate'}
           </button>
-          {team && (
-            <button type="button" onClick={() => game.switchTeam()}>Switch to {TEAM_INFO[otherTeam(team)].name}</button>
+          {team && MODES[hud.mode].chooseTeams && (
+            <button type="button" onClick={() => game.switchTeam()}>Switch to {info(otherTeam(team)).name}</button>
           )}
           <button type="button" className="primary" onClick={() => game.requestPointerLock()} autoFocus>
             {game.touch ? 'Tap to play' : 'Resume'}

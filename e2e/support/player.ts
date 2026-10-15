@@ -35,6 +35,9 @@ export interface GameStateView {
   channel: { kind: 'plant' | 'defuse'; t: number } | null;
   sites: Record<'a' | 'b', { x: number; y: number; z: number }> | null;
   shield: number;
+  /** Full health (a zombie's is more), and whether our hands are a zombie's claws */
+  maxHp: number;
+  claws: boolean;
   slots: (string | null)[];
   mapSeed: string;
   mapSize: 's' | 'm' | 'l';
@@ -55,6 +58,8 @@ export interface GameStateView {
       bomb: { by?: string; x?: number; y?: number; z?: number; site?: 'a' | 'b'; plantedAt?: number; planter?: string };
       over?: { winner: 'red' | 'blue'; why: 'elim' | 'bomb' | 'defuse' | 'time'; at: number };
     };
+    /** Infection: the round's first zombies */
+    inf?: { alpha: Record<string, true>; t: number };
   };
   rules: Record<string, unknown>;
 }

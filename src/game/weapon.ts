@@ -44,6 +44,12 @@ const FLAG_GRIP = { upper: 0.6, lower: 0.35 };
 const FLAG_FIST = { right: new THREE.Vector3(-0.004, 0, 0.07), left: new THREE.Vector3(0.003, 0, -0.09) };
 /** The cloth is turned back and out to the right (the hands follow the pole, not the cloth) */
 const FLAG_CLOTH_YAW = 0.7;
+/** A zombie's swipe of the claws, start to finish (s) */
+const CLAW_TIME = 0.38;
+/** A zombie's hands, camera space: reaching out low in front, and the right one's swipe (high on the right, raked down to the left) */
+const CLAW_HOLD = { x: 0.17, y: -0.19, z: -0.42 };
+const CLAW_FROM = { x: 0.26, y: 0.02, z: -0.36 };
+const CLAW_TO = { x: -0.12, y: -0.3, z: -0.48 };
 
 interface Held {
   kind: GunKind;
@@ -98,6 +104,12 @@ export class Weapon {
   private knifeTimer = 0;
   private knifeCooldown = 0;
   private knifeView: THREE.Group | null = null;
+  /** A zombie: no guns, the hands are claws (each swipe runs clawTimer down) */
+  private claws = false;
+  private clawTimer = 0;
+  private clawCooldown = 0;
+  /** Where each hand is (camera space), made on first need */
+  private clawHands: [THREE.Object3D, THREE.Object3D] | null = null;
 
   constructor(aspect: number) {
     this.camera = new THREE.PerspectiveCamera(VIEW_FOV, aspect, 0.01, 10);
@@ -190,7 +202,7 @@ export class Weapon {
    * through someone else's eyes, whose rounds aren't this weapon's. Their client plays the sound.
    */
   showReload(): void {
-    if (this.melee || this.knifing || this.reloading) return;
+    if (this.melee || this.claws || this.knifing || this.reloading) return;
     this.reloadTimer = GUNS[this.held.kind].reloadTime;
   }
 
@@ -257,7 +269,7 @@ export class Weapon {
 
   reload(): void {
     const held = this.held;
-    if (this.melee || this.knifing) return;
+    if (this.melee || this.claws || this.knifing) return;
     if (this.reloading || this.switching || held.mag === GUNS[held.kind].mag || held.reserve <= 0) return;
     this.reloadTimer = GUNS[held.kind].reloadTime;
     playReload(1, held.kind);
@@ -270,7 +282,7 @@ export class Weapon {
 
   /** The knife can slash again */
   get knifeReady(): boolean {
-    return !this.melee && this.knifeTimer <= 0 && this.knifeCooldown <= 0;
+    return !this.melee && !this.claws && this.knifeTimer <= 0 && this.knifeCooldown <= 0;
   }
 
   /**
@@ -279,6 +291,8 @@ export class Weapon {
    * holding the flag. `cooldown`: seconds before the next one (0 when just showing someone else's).
    */
   startKnife(cooldown: number): boolean {
+    // A zombie's slash is a swipe of the claws (someone else's, watched through their eyes, too).
+    if (this.claws) return this.tryClaw(cooldown);
     if (this.melee || this.knifeTimer > 0 || this.knifeCooldown > 0) return false;
     this.knifeTimer = KNIFE_TIME;
     this.knifeCooldown = cooldown;
@@ -326,8 +340,40 @@ export class Weapon {
     else this.showModel();
   }
 
+  /** No guns in hand: carrying the flag, or a zombie's claws */
   get meleeMode(): boolean {
-    return this.melee;
+    return this.melee || this.claws;
+  }
+
+  get clawsMode(): boolean {
+    return this.claws;
+  }
+
+  /**
+   * Turn into a zombie (guns gone, hands out as claws, the arms in `tint`), or back. Picked-up guns aren't
+   * kept: the game drops them when someone turns.
+   */
+  setClaws(on: boolean, tint: string | null = null): void {
+    if (on === this.claws) return;
+    this.claws = on;
+    this.aim = 0;
+    this.reloadTimer = 0;
+    this.knifeTimer = 0;
+    this.clawTimer = 0;
+    this.clawCooldown = 0;
+    this.triggerLatched = false;
+    this.switchTimer = SWITCH_TIME;
+    if (this.knifeView) this.knifeView.visible = false;
+    this.arms?.setTint(on ? tint : null);
+    this.showModel();
+  }
+
+  /** Start a swipe of the claws if the last one has finished. True when it starts. */
+  tryClaw(cooldown: number): boolean {
+    if (!this.claws || this.clawCooldown > 0 || this.switching) return false;
+    this.clawTimer = CLAW_TIME;
+    this.clawCooldown = cooldown;
+    return true;
   }
 
   /** Start a swing if the last one has finished. Returns true when it starts. */
@@ -341,7 +387,7 @@ export class Weapon {
   /** Returns true if a shot should be fired this frame (the trigger is held). */
   tryFire(): boolean {
     const def = GUNS[this.gun];
-    if (this.melee || this.knifing || this.reloading || this.switching || this.cooldown > 0 || this.raiseLeft > 0) return false;
+    if (this.melee || this.claws || this.knifing || this.reloading || this.switching || this.cooldown > 0 || this.raiseLeft > 0) return false;
     if (!def.auto && this.triggerLatched) return false;
     if (this.held.mag <= 0) {
       playEmpty();
@@ -383,6 +429,8 @@ export class Weapon {
     this.kick = 0;
     this.knifeTimer = 0;
     this.knifeCooldown = 0;
+    this.clawTimer = 0;
+    this.clawCooldown = 0;
     if (this.knifeView) this.knifeView.visible = false;
     this.showModel();
   }
@@ -392,6 +440,10 @@ export class Weapon {
     this.knifeCooldown = Math.max(0, this.knifeCooldown - dt);
     // Sprinting carries the gun low: it takes a moment to bring it up before it can fire.
     this.raiseLeft = sprinting ? SPRINT_RAISE : Math.max(0, this.raiseLeft - dt);
+    if (this.claws) {
+      this.updateClaws(dt, speed, sprinting);
+      return;
+    }
     if (this.melee) {
       this.updateFlag(dt, speed, sprinting);
       return;
@@ -487,6 +539,56 @@ export class Weapon {
       g.updateMatrixWorld(true);
       this.arms.holdPole(g, _upper.copy(FLAG_FIST.right).setY(FLAG_GRIP.upper), _lower.copy(FLAG_FIST.left).setY(FLAG_GRIP.lower));
     }
+  }
+
+  /**
+   * A zombie's hands: reaching out low in front, bobbing as it runs. A swipe raises the right one high and
+   * wide, then rakes it down and across to the left while the left one lunges.
+   */
+  private updateClaws(dt: number, speed: number, sprinting: boolean): void {
+    this.switchTimer = Math.max(0, this.switchTimer - dt);
+    this.clawTimer = Math.max(0, this.clawTimer - dt);
+    this.clawCooldown = Math.max(0, this.clawCooldown - dt);
+    this.aim = 0;
+    this.bobTime += dt * (speed > 0.5 ? speed * 1.6 : 0);
+    const bob = Math.min(speed / 9, 1);
+    const raise = this.switchTimer > 0 ? Math.sin((this.switchTimer / SWITCH_TIME) * Math.PI) : 0;
+    const k = this.clawTimer > 0 ? 1 - this.clawTimer / CLAW_TIME : 0;
+    // 0..0.3 up into the wind-up, 0.3..0.7 the rake, then back.
+    const rake = k === 0 ? 0 : k < 0.3 ? 0 : k < 0.7 ? easeInOut((k - 0.3) / 0.4) : 1;
+    const swing = k === 0 ? 0 : Math.min(1, k / 0.3, (1 - k) / 0.25);
+    const [right, left] = this.claw();
+    const lerp = THREE.MathUtils.lerp;
+    for (const [hand, side] of [[right, 1], [left, -1]] as const) {
+      const sway = Math.sin(this.bobTime + (side > 0 ? 0 : Math.PI)) * 0.02 * bob;
+      hand.position.set(
+        CLAW_HOLD.x * side + sway,
+        CLAW_HOLD.y - Math.abs(Math.sin(this.bobTime)) * 0.02 * bob - raise * 0.35 - (sprinting ? 0.04 : 0),
+        CLAW_HOLD.z,
+      );
+      hand.rotation.set(0.25, 0, -0.35 * side);
+    }
+    if (swing > 0) {
+      const from = new THREE.Vector3(lerp(CLAW_FROM.x, CLAW_TO.x, rake), lerp(CLAW_FROM.y, CLAW_TO.y, rake), lerp(CLAW_FROM.z, CLAW_TO.z, rake));
+      right.position.lerp(from, swing);
+      right.rotation.z = lerp(-0.35, lerp(-1.1, 0.4, rake), swing);
+      left.position.z -= 0.08 * swing * rake;
+    }
+    if (this.arms) {
+      this.arms.visible = true;
+      right.updateMatrixWorld(true);
+      left.updateMatrixWorld(true);
+      this.arms.holdClaws(right, left);
+    }
+  }
+
+  private claw(): [THREE.Object3D, THREE.Object3D] {
+    if (this.clawHands) return this.clawHands;
+    const right = new THREE.Object3D();
+    const left = new THREE.Object3D();
+    this.camera.add(right, left);
+    this.clawHands = [right, left];
+    return this.clawHands;
   }
 
   /**
@@ -590,7 +692,7 @@ export class Weapon {
 
   private showModel(): void {
     const current = this.view();
-    for (const v of this.views.values()) v.group.visible = v === current && !this.melee;
+    for (const v of this.views.values()) v.group.visible = v === current && !this.melee && !this.claws;
   }
 }
 

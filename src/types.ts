@@ -46,6 +46,8 @@ export interface PlayerState {
   spec?: boolean;
   /** A bot, played by the room owner's client */
   bot?: boolean;
+  /** One of Horde's zombies: a bot the game brings on, not a player (left out of the standings and the lobby) */
+  npc?: boolean;
   /** Team in TDM / CTF; absent in free-for-all */
   team?: Team;
   /** Match stats, reported by each player about themselves */
@@ -133,8 +135,11 @@ export interface ShotEvent {
 /** Guns a player can hold. The rifle is always carried; the others are picked up on the map. */
 export type GunKind = 'rifle' | 'shotgun' | 'sniper' | 'deagle';
 
-/** What can kill: a gun, the knife, a grenade, the enemy flag swung as a club (CTF carriers) or the bomb going off (S&D) */
-export type WeaponKind = GunKind | 'knife' | 'grenade' | 'flag' | 'molotov' | 'turret' | 'mine' | 'bomb';
+/**
+ * What can kill: a gun, the knife, a grenade, the enemy flag swung as a club (CTF carriers), the bomb going off (S&D)
+ * or a zombie's claws (Infection)
+ */
+export type WeaponKind = GunKind | 'knife' | 'grenade' | 'flag' | 'molotov' | 'turret' | 'mine' | 'bomb' | 'claw';
 
 export interface KillEvent {
   type: 'kill';
@@ -152,11 +157,11 @@ export interface GrenadeEvent {
   v: Vec3Tuple;
 }
 
-/** A flag carrier swung the flag, or someone slashed with the knife (`w`); `hit` took `dmg` (melee range only). */
+/** A flag carrier swung the flag, someone slashed with the knife or a zombie clawed (`w`); `hit` took `dmg` (melee range only). */
 export interface MeleeEvent {
   type: 'melee';
-  /** Set for the knife (missing: the flag) */
-  w?: 'knife';
+  /** Set for the knife and for claws (missing: the flag) */
+  w?: 'knife' | 'claw';
   /** Where the swing came from (the swinger's eyes) */
   o: Vec3Tuple;
   hit: string | null;
@@ -284,7 +289,7 @@ export interface LobbyRecord {
 }
 
 /** Base mode types; prebuilt and custom modes are rule sets on top (see game/rules.ts). */
-export type GameMode = 'ffa' | 'tdm' | 'ctf' | 'snd';
+export type GameMode = 'ffa' | 'tdm' | 'ctf' | 'snd' | 'inf' | 'hrd';
 
 export type Team = 'red' | 'blue';
 
@@ -335,6 +340,26 @@ export interface SndRecord {
   over?: { winner: Team; why: 'elim' | 'bomb' | 'defuse' | 'time'; at: number; x?: number; y?: number; z?: number };
 }
 
+/**
+ * Infection: who was picked to turn first this round (`alpha`, by id) and when (server ms). Missing until the
+ * head start is over. Who's a zombie after that is each player's own record (team), as teams always are.
+ * At game/inf.
+ */
+export interface InfRecord {
+  alpha: Record<string, true>;
+  t: number;
+}
+
+/**
+ * Horde: the wave being fought (from 1), when it starts (server ms: the break before it until then) and how
+ * many of its zombies are still to be killed (spawned or not). At game/horde; missing before wave 1 is set up.
+ */
+export interface HordeRecord {
+  wave: number;
+  at: number;
+  left: number;
+}
+
 /** Round state at rooms/{code}/game, changed only through transactions. */
 export interface GameRecord {
   /** Increments every time a new round starts */
@@ -359,6 +384,12 @@ export interface GameRecord {
   flags?: Partial<Record<Team, FlagRecord>>;
   /** Search & Destroy's round; missing until the first one is set up */
   snd?: SndRecord;
+  /** Infection: the first zombies; missing until they're picked */
+  inf?: InfRecord;
+  /** Horde: the waves; missing until the first is set up */
+  horde?: HordeRecord;
+  /** Horde: the furthest wave this room has reached, kept from round to round */
+  hordeBest?: number;
   /** The mode rules, once the owner has changed them mid-room; missing means the lobby's */
   rules?: ModeRules;
 }

@@ -3,8 +3,16 @@ import { Mover } from '../movement';
 import { pickRespawn } from '../spawnPlan';
 import { GUNS, shotDamage } from '../gunStats';
 import {
-  FLAG_BASES, FLAG_RADIUS, KNIFE_COOLDOWN, KNIFE_DAMAGE, KNIFE_RANGE, MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_RANGE, MODES, TEAM_INFO, gunGameGun, otherTeam,
+  FLAG_BASES, FLAG_RADIUS, KNIFE_COOLDOWN, KNIFE_DAMAGE, KNIFE_RANGE, MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_RANGE, MODES, TEAM_INFO, gunGameGun, otherTeam, teamInfo,
+  zombieMode,
 } from '../modes';
+import { SURVIVORS, ZOMBIES, deathInfects, isAlpha, phaseOf as infPhaseOf } from '../infection';
+import { CLAW_COOLDOWN, CLAW_DAMAGE, CLAW_RANGE, ZOMBIE_COLOR, ZOMBIE_SPEED, zombieHealth } from '../zombies';
+import { CLAW_COOLDOWN as HORDE_CLAW_COOLDOWN, MAX_ALIVE, maxAlive, pickSpawn, spawnInterval, zombieFor, zombieName, type HordeZombie } from '../horde';
+import {
+  CHARGE_RANGE, CHARGE_TURN, CLAW_PACE, RUNNER_SPEED, WALKER_SPEED, ZOMBIE_DECISION, anchorFor, pickPrey, turnToward, zombieAction,
+} from './zombie';
+import { MAX_TURN } from './policy';
 import { placementOf } from '../flags';
 import { BOT_PREFIX, randomId, type RoomConnection } from '../../net/network';
 import { DECISION_DT, Policy, type PolicyJson } from './policy';
@@ -78,6 +86,10 @@ const DETOUR_RANGE = 14;
 const MEDKIT_DETOUR = 25;
 /** CTF: the flags come first, so only a pickup this close (practically on the way) is worth a detour */
 const CTF_DETOUR_RANGE = 6;
+/** Horde: the most zombie records kept (those on the map, and bodies waiting to be brought on again) */
+const NPC_RECORDS = MAX_ALIVE + 6;
+/** Horde: a fallen zombie's body lies this long before it may be brought back on as another (s) */
+const BODY_TIME = 3;
 /** Touching a pickup: as the player's (pickups.ts) */
 const PICKUP_RADIUS = 1.1;
 /** A throw is only made if it can land this close to where it's meant to (m) */
@@ -203,6 +215,15 @@ interface HostedBot {
   stats: { damage: number; shots: number; hits: number; headshots: number; streak: number; best: number };
   /** Kills as last seen in its record (victims credit them), to count streaks */
   seenKills: number;
+  /** Infection: it died a survivor once the zombies were out, and comes back as one */
+  infected: boolean;
+  /** As a zombie: who it's hunting, and which way its route goes now (null: no way known) */
+  prey: string | null;
+  heading: number | null;
+  /** One of Horde's zombies (not on the room's bot list: the game brings it on and takes it off) */
+  npc: HordeZombie | null;
+  /** When it last died (bot host clock) */
+  diedAt: number;
   /** The stats as last sent, and when */
   statsKey: string;
   statsAt: number;
@@ -242,6 +263,14 @@ export class BotHost {
   /** Flashbangs in the air: when and where they go off */
   private flashes: { at: number; p: THREE.Vector3 }[] = [];
   private patrolList: (Point & { team: Team | null })[] = [];
+  /** Survivors standing this frame, the zombies' prey (zombie modes only) */
+  private prey: BodyView[] = [];
+  /** Where the zombies' routes lead for each survivor (see anchorFor) */
+  private readonly anchors = new Map<string, Point>();
+  /** Horde: the wave record as last seen, how many of its zombies we know are left, and when the next comes on (s) */
+  private hordeSeen = { wave: 0, left: 0 };
+  private hordeLeft = 0;
+  private spawnIn = 0;
 
   constructor(private readonly api: BotHostApi) {}
 
@@ -295,9 +324,10 @@ export class BotHost {
       return;
     }
     const slots = new Map(want);
-    // Removed from the list (or we're not the owner any more): they go.
-    for (const bot of [...this.bots.values()]) if (!slots.has(bot.slot)) this.remove(bot);
-    const playing = new Map([...this.bots.values()].map((b) => [b.slot, b]));
+    // Removed from the list (or we're not the owner any more): they go. (Horde's zombies aren't on it: see updateHorde.)
+    const listed = [...this.bots.values()].filter((b) => !b.npc);
+    for (const bot of listed) if (!slots.has(bot.slot)) this.remove(bot);
+    const playing = new Map(listed.filter((b) => this.bots.has(b.id)).map((b) => [b.slot, b]));
     for (const [slotId, slot] of want) {
       const bot = playing.get(slotId);
       if (!bot) {
@@ -320,8 +350,8 @@ export class BotHost {
       bot.name = name;
       void this.api.net.renameBot(bot.id, name).catch((err: unknown) => console.warn('Could not rename a bot', err));
     }
-    const teams = MODES[this.api.rules().base].teams;
-    if (teams && slot.team && slot.team !== bot.team) {
+    const { teams, chooseTeams } = MODES[this.api.rules().base];
+    if (teams && chooseTeams && slot.team && slot.team !== bot.team) {
       void this.dropFlag(bot);
       bot.team = slot.team;
       void this.api.net.sendStateAs(bot.id, { team: bot.team, color: TEAM_INFO[bot.team].color });
@@ -346,7 +376,13 @@ export class BotHost {
     const id = `${BOT_PREFIX}${randomId(8)}`;
     const name = botName(slot);
     let team: Team | null = null;
-    if (MODES[rules.base].teams) {
+    if (rules.base === 'inf') {
+      // Infection: a survivor until the zombies are out, then one of them.
+      team = this.infLive() ? ZOMBIES : SURVIVORS;
+    } else if (rules.base === 'hrd') {
+      // Horde: everyone's a survivor (the zombies are the game's own).
+      team = SURVIVORS;
+    } else if (MODES[rules.base].teams) {
       if (slot.team) {
         team = slot.team;
       } else {
@@ -354,14 +390,7 @@ export class BotHost {
         team = counts.red === counts.blue ? (Math.random() < 0.5 ? 'red' : 'blue') : counts.red < counts.blue ? 'red' : 'blue';
       }
     }
-    const mover = new Mover();
-    mover.setTerrain((x, z) => api.terrainAt(x, z));
-    const bot: HostedBot = {
-      id, slot: slotId, skill: slot.skill, name, team, mover, attached: null, brain: new BotBrain(policy, SKILLS[slot.skill]),
-      yaw: 0, pitch: 0, hp: rules.health, alive: true, respawnIn: 0, gun: 'rifle', ammo: 0, reloadLeft: 0, cooldown: 0, burst: 0,
-      meleeCooldown: 0, deaths: 0, captures: 0, decideIn: Math.random() * DECISION_DT, lastPose: null, fullAt: 0, jumpUntil: 0, flagBusy: false, channel: 0, patrol: newPatrol(), gear: new Gear(), detour: null, goal: null, walk: null, goalDist: 0, spawnedAt: 0,
-      stats: { damage: 0, shots: 0, hits: 0, headshots: 0, streak: 0, best: 0 }, seenKills: 0, statsKey: '', statsAt: 0,
-    };
+    const bot = this.newBot(id, slotId, slot.skill, name, team, policy);
     this.bots.set(id, bot);
     this.placeAtSpawn(bot);
     // S&D: a bot added mid-round plays from the next one, like a player who joins then.
@@ -374,7 +403,7 @@ export class BotHost {
     }
     this.pending++;
     api.net.addBot(id, {
-      name, color: team ? TEAM_INFO[team].color : api.colorFor(id), ...(team ? { team } : {}), bot: true,
+      name, color: team ? teamInfo(team, rules.base).color : api.colorFor(id), ...(team ? { team } : {}), bot: true,
       ...this.pose(bot), gun: bot.gun, hp: bot.hp, alive: bot.alive, kills: 0, deaths: 0,
       damage: 0, shots: 0, hits: 0, headshots: 0, streak: 0, best: 0, captures: 0,
     })
@@ -383,6 +412,19 @@ export class BotHost {
         this.drop(bot);
       })
       .finally(() => { this.pending--; });
+  }
+
+  /** A bot's state before it first spawns. `slot`: its entry on the room's bot list ('' for Horde's zombies) */
+  private newBot(id: string, slot: string, skill: BotSkill, name: string, team: Team | null, policy: Policy | null): HostedBot {
+    const mover = new Mover();
+    mover.setTerrain((x, z) => this.api.terrainAt(x, z));
+    return {
+      id, slot, skill, name, team, mover, attached: null, brain: new BotBrain(policy, SKILLS[skill]),
+      yaw: 0, pitch: 0, hp: this.api.rules().health, alive: true, respawnIn: 0, gun: 'rifle', ammo: 0, reloadLeft: 0, cooldown: 0, burst: 0,
+      meleeCooldown: 0, deaths: 0, captures: 0, decideIn: Math.random() * DECISION_DT, lastPose: null, fullAt: 0, jumpUntil: 0, flagBusy: false, channel: 0, patrol: newPatrol(), gear: new Gear(), detour: null, goal: null, walk: null, goalDist: 0, spawnedAt: 0,
+      stats: { damage: 0, shots: 0, hits: 0, headshots: 0, streak: 0, best: 0 }, seenKills: 0, statsKey: '', statsAt: 0,
+      infected: false, prey: null, heading: null, npc: null, diedAt: 0,
+    };
   }
 
   private remove(bot: HostedBot): void {
@@ -414,7 +456,19 @@ export class BotHost {
 
   /** A new round: every bot's score is back to zero, and they respawn. */
   startRound(): void {
+    const base = this.api.rules().base;
+    const zombies = zombieMode(base);
+    // Horde: last round's zombies go (the new round's waves bring their own).
+    this.removeNpcs();
+    this.anchors.clear();
+    this.hordeSeen = { wave: 0, left: 0 };
+    this.hordeLeft = 0;
     for (const bot of this.bots.values()) {
+      // Infection and Horde: every round starts with everyone a survivor.
+      const side = zombies ? { team: SURVIVORS, color: teamInfo(SURVIVORS, base).color } : {};
+      if (zombies) bot.team = SURVIVORS;
+      bot.infected = false;
+      bot.prey = null;
       bot.deaths = 0;
       bot.captures = 0;
       bot.brain.reset();
@@ -423,7 +477,7 @@ export class BotHost {
       bot.seenKills = 0;
       bot.statsKey = '';
       bot.mover.speedMultiplier = 1;
-      this.respawn(bot, { kills: 0, deaths: 0, captures: 0, streak: 0, best: 0, damage: 0, shots: 0, hits: 0, headshots: 0, shield: false, cloak: false }, this.api.roundSpawn(bot.id, bot.team));
+      this.respawn(bot, { kills: 0, deaths: 0, captures: 0, streak: 0, best: 0, damage: 0, shots: 0, hits: 0, headshots: 0, shield: false, cloak: false, ...side }, this.api.roundSpawn(bot.id, bot.team));
     }
   }
 
@@ -464,6 +518,7 @@ export class BotHost {
       this.syncIn = SYNC_INTERVAL;
       this.sync();
     }
+    this.updateHorde(dt);
     if (!this.bots.size) return;
     const physics = api.physics();
     const map = api.map();
@@ -481,6 +536,9 @@ export class BotHost {
     const snd = rules.base === 'snd' ? api.game().snd ?? null : null;
     // S&D holds everyone at their spawn until the round's fight starts.
     const frozen = !!snd && phaseOf(snd, api.net.serverNow()) === 'freeze';
+    const outbreak = rules.base === 'inf' && this.infLive();
+    // Who the zombies can go for this frame (worked out once for all of them)
+    this.prey = zombieMode(rules.base) ? this.survivorsInPlay() : [];
     this.updateFlashes();
 
     for (const bot of this.bots.values()) {
@@ -488,11 +546,17 @@ export class BotHost {
         bot.mover.attachPhysics(physics, false);
         bot.attached = physics;
       }
-      bot.mover.speedScale = rules.speed;
+      bot.mover.speedScale = rules.speed * this.speedOf(bot);
       bot.mover.gravityScale = rules.gravity;
       if (!bot.alive) {
         bot.respawnIn -= dt;
         if (bot.respawnIn <= 0 && !roundOver) this.respawn(bot);
+        continue;
+      }
+      // Infection: picked to start the outbreak, it turns where it stands.
+      if (outbreak && !roundOver && bot.team === SURVIVORS && isAlpha(api.game().inf, bot.id)) this.turn(bot, true);
+      if (this.isZombie(bot)) {
+        this.hunt(bot, dt, roundOver, map.half - 0.9);
         continue;
       }
       bot.decideIn -= dt;
@@ -560,7 +624,8 @@ export class BotHost {
       }
       bot.seenKills = kills;
       const key = JSON.stringify(bot.stats);
-      const stats = key !== bot.statsKey && this.clock - bot.statsAt >= STATS_INTERVAL ? { ...bot.stats } : null;
+      // (Horde's zombies have no stats worth showing anyone.)
+      const stats = !bot.npc && key !== bot.statsKey && this.clock - bot.statsAt >= STATS_INTERVAL ? { ...bot.stats } : null;
       if (stats) {
         bot.statsKey = key;
         bot.statsAt = this.clock;
@@ -607,7 +672,6 @@ export class BotHost {
   /** Everyone else in play, as the bot's senses need them */
   private others(bot: HostedBot): BodyView[] {
     const { api } = this;
-    const maxHp = api.rules().health;
     const carriers = new Set(Object.values(api.game().flags).map((f) => f?.by).filter(Boolean));
     const out: BodyView[] = [];
     for (const [id, p] of Object.entries(api.players())) {
@@ -619,8 +683,10 @@ export class BotHost {
       if (!body) continue;
       // Health only roughly (in quarters), as a player reads a name tag's bar, not the exact number.
       const hp = mine ? mine.hp : p.hp;
+      const team = mine ? mine.team : p.team ?? null;
+      const maxHp = this.maxHpOf(id, team);
       out.push({
-        id, ...body, hp: roughHp(hp, maxHp), maxHp, team: mine ? mine.team : p.team ?? null, carrying: carriers.has(id), human: !mine && !p.bot,
+        id, ...body, hp: roughHp(hp, maxHp), maxHp, team, carrying: carriers.has(id), human: !mine && !p.bot,
       });
     }
     return out;
@@ -686,24 +752,26 @@ export class BotHost {
     const map = this.api.map();
     const known = [...bot.brain.memory.seen.values()].filter((m) => this.clock - m.t <= MEMORY_TIME);
     const snd = this.sndView(bot);
-    const objective = map ? goalFor({
+    // A zombie's goal is its prey (see hunt), and it fetches nothing on the way.
+    const prey = this.isZombie(bot) && bot.prey ? others.find((o) => o.id === bot.prey) ?? null : null;
+    const objective = !map ? null : this.isZombie(bot) ? prey : goalFor({
       self: { id: bot.id, team: bot.team, x: p.x, y: p.y, z: p.z, carrying: carrying || !!snd?.carrying },
       others, mode: rules.base, ctf, snd, patrolPoints: this.patrolPoints(map), patrol: bot.patrol, now: this.clock,
-      hp: bot.hp / rules.health, known, aggression: bot.brain.personality.aggression,
-    }) : null;
+      hp: bot.hp / this.maxHp(bot), known, aggression: bot.brain.personality.aggression,
+    });
     // Something worth picking up close by: fetch it first.
-    const goal = objective ? this.detourFor(bot, ctf) ?? objective : null;
+    const goal = objective ? (this.isZombie(bot) ? objective : this.detourFor(bot, ctf) ?? objective) : null;
     bot.goal = goal;
     bot.goalDist = goal ? Math.hypot(goal.x - p.x, goal.z - p.z) : 0;
     const obs = observe({
       self: {
         x: p.x, y: p.y, z: p.z, vx: v.x, vy: v.y, vz: v.z, yaw: bot.yaw, pitch: bot.pitch, onGround: bot.mover.onGround, stance: bot.mover.stance,
-        hp: bot.hp, maxHp: rules.health, team: bot.team, gun: bot.gun, ammo: this.magOf(bot), mag: GUNS[bot.gun].mag, reloading: bot.reloadLeft > 0,
+        hp: bot.hp, maxHp: this.maxHp(bot), team: bot.team, gun: bot.gun, ammo: this.magOf(bot), mag: GUNS[bot.gun].mag, reloading: bot.reloadLeft > 0,
         carrying,
       },
       others, mode: rules.base, ctf, now: this.clock, memory: bot.brain.memory, senses: this.senses!,
-      // The observation has no S&D slot: its fights are shown as TDM, here and in training alike (sim/arena.ts).
-      goal, asMode: rules.base === 'snd' || (goal && rules.base === 'ctf') ? 'tdm' : undefined,
+      // The observation has no S&D or Infection slot: their fights are shown as TDM, here and in training alike (sim/arena.ts).
+      goal, asMode: rules.base === 'snd' || zombieMode(rules.base) || (goal && rules.base === 'ctf') ? 'tdm' : undefined,
       sight: (b, eyeY) => this.canSee(bot, b, eyeY),
       info: this.obsInfo,
     }, this.obs);
@@ -874,7 +942,7 @@ export class BotHost {
       }
     } else if (evt.type === 'melee' && evt.hit) {
       const bot = this.bots.get(evt.hit);
-      if (bot) this.hurt(bot, evt.dmg, evt.from, !!evt.head, evt.w === 'knife' ? 'knife' : 'flag', evt.o);
+      if (bot) this.hurt(bot, evt.dmg, evt.from, !!evt.head, evt.w === 'claw' ? 'claw' : evt.w === 'knife' ? 'knife' : 'flag', evt.o);
     } else if (evt.type === 'blast' && evt.hits) {
       for (const bot of this.bots.values()) {
         const dmg = evt.hits[bot.id];
@@ -888,7 +956,7 @@ export class BotHost {
     if (!bot.alive || api.roundOver()) return;
     // Teammates can't hurt each other (and a bot can't shoot itself).
     if (fromId === bot.id || (bot.team && !this.isEnemyOf(bot, fromId))) return;
-    if (api.rules().headshotsOnly && !head && weapon !== 'flag' && weapon !== 'knife') return;
+    if (api.rules().headshotsOnly && !head && weapon !== 'flag' && weapon !== 'knife' && weapon !== 'claw') return;
     let amount = Math.min(Math.max(Number(dmg) || 0, 0), api.maxDamage(weapon));
     if (!amount) return;
     // A shield soaks it up first.
@@ -915,8 +983,14 @@ export class BotHost {
     bot.mover.setSolid(false);
     bot.hp = 0;
     bot.deaths++;
-    // S&D: no respawns, the next round brings everyone back (startSndRound).
-    bot.respawnIn = api.rules().base === 'snd' ? Infinity : api.rules().respawn;
+    // S&D: no respawns, the next round brings everyone back (startSndRound). Horde: the next break does (hordeBreak),
+    // and its zombies are brought on again by the spawner (updateHorde).
+    bot.respawnIn = api.rules().base === 'snd' || api.rules().base === 'hrd' ? Infinity : api.rules().respawn;
+    bot.diedAt = this.clock;
+    if (bot.npc) this.countKill();
+    // Infection: a survivor that dies once the zombies are out comes back as one (see respawn).
+    const g = api.game();
+    bot.infected = api.rules().base === 'inf' && bot.team === SURVIVORS && deathInfects(g.inf, g.startedAt, api.net.serverNow());
     bot.brain.reset();
     this.dropLoot(bot);
     bot.gear.reset();
@@ -932,16 +1006,17 @@ export class BotHost {
     const { api } = this;
     const others = this.others(bot).filter((b) => b.alive);
     const enemies = others.filter((b) => this.isEnemyOf(bot, b.id));
-    // Free-for-all: the pickup spots too (all over the map), as for players (game.ts pickSpawn).
+    // Free-for-all (and Infection): the pickup spots too (all over the map), as for players (game.ts pickSpawn).
     const spots = (api.map()?.pickupSpots ?? []).map((p) => new THREE.Vector3(p.x, p.y, p.z));
-    const all = bot.team ? api.spawns().filter((s) => s.team === bot.team).map((s) => s.pos) : [...api.spawns().map((s) => s.pos), ...spots];
+    const spread = !bot.team || api.rules().base === 'inf';
+    const all = !spread ? api.spawns().filter((s) => s.team === bot.team).map((s) => s.pos) : [...api.spawns().map((s) => s.pos), ...spots];
     // Never onto someone (bodies are solid).
     const free = all.filter((p) => others.every((o) => Math.hypot(o.x - p.x, o.z - p.z) > SPAWN_CLEARANCE));
     const points = free.length ? free : all;
     const safety = (p: THREE.Vector3) => (enemies.length ? Math.min(...enemies.map((e) => Math.hypot(e.x - p.x, e.z - p.z))) : Infinity);
     let pick: THREE.Vector3;
     if (at) pick = at;
-    else if (!bot.team) pick = points[pickRespawn(points.length, (k) => safety(points[k]!))] ?? new THREE.Vector3();
+    else if (spread) pick = points[pickRespawn(points.length, (k) => safety(points[k]!))] ?? new THREE.Vector3();
     else {
       const scored = points.map((p) => ({ p, d: enemies.length ? safety(p) : Math.random() * 100 }));
       scored.sort((a, b) => b.d - a.d);
@@ -950,7 +1025,7 @@ export class BotHost {
     bot.mover.teleport(at ? at.clone() : pick.clone().add(new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5)));
     bot.yaw = Math.atan2(pick.x, pick.z);
     bot.pitch = 0;
-    bot.hp = api.rules().health;
+    bot.hp = this.maxHp(bot);
     bot.alive = true;
     bot.mover.setSolid(true);
     bot.spawnedAt = this.clock;
@@ -966,6 +1041,13 @@ export class BotHost {
   }
 
   private respawn(bot: HostedBot, extra: Partial<PlayerState> = {}, at: THREE.Vector3 | null = null): void {
+    if (bot.infected) {
+      bot.infected = false;
+      if (this.api.rules().base === 'inf' && bot.team === SURVIVORS && !this.api.roundOver()) {
+        this.turn(bot, false);
+        extra = { ...extra, team: ZOMBIES, color: ZOMBIE_COLOR };
+      }
+    }
     this.placeAtSpawn(bot, at);
     void this.api.net.sendStateAs(bot.id, { ...this.pose(bot), gun: bot.gun, hp: bot.hp, alive: true, ...extra });
   }
@@ -981,7 +1063,7 @@ export class BotHost {
       ? this.others(bot).filter((o) => o.alive && inView.has(o.id) && this.isEnemyOf(bot, o.id))
       : [];
     const eye = this.eye(bot);
-    const hurt = 1 - bot.hp / this.api.rules().health;
+    const hurt = 1 - bot.hp / this.maxHp(bot);
     const aimed = bot.brain.aim.update(dt, this.clock, {
       x: eye.x, y: eye.y, z: eye.z, yaw: bot.yaw, pitch: bot.pitch, speed: bot.mover.horizontalSpeed, gun: bot.gun,
       shaky: bot.brain.personality.nerves * hurt, reloading: bot.reloadLeft > 0,
@@ -1016,7 +1098,7 @@ export class BotHost {
   }
 
   private heal(bot: HostedBot, amount: number): void {
-    const hp = Math.min(this.api.rules().health, bot.hp + amount);
+    const hp = Math.min(this.maxHp(bot), bot.hp + amount);
     if (hp <= bot.hp) return;
     bot.hp = hp;
     void this.api.net.sendStateAs(bot.id, { hp });
@@ -1076,7 +1158,7 @@ export class BotHost {
   /** Standing on something worth having: claim it (a transaction: only one player gets each). */
   private tryPickup(bot: HostedBot): void {
     const { gear } = bot;
-    if (gear.claiming || this.carrying(bot)) return;
+    if (gear.claiming || this.carrying(bot) || this.isZombie(bot)) return;
     const p = bot.mover.position;
     const rules = this.pickupRules();
     for (const k of this.api.pickups()) {
@@ -1115,7 +1197,7 @@ export class BotHost {
     let best: { id: string; x: number; y: number; z: number } | null = null;
     let bestD = ctf ? CTF_DETOUR_RANGE : DETOUR_RANGE;
     // Hurt with nothing to heal with: a medkit is worth going further for (and comes first), except in CTF.
-    const needsHealing = !ctf && bot.hp / this.api.rules().health < 0.5 && !bot.gear.has('medkit');
+    const needsHealing = !ctf && bot.hp / this.maxHp(bot) < 0.5 && !bot.gear.has('medkit');
     for (const k of this.api.pickups()) {
       if (taken.has(k.id) || Math.abs(k.y - p.y) > 3 || !bot.gear.wants(k.type, rules)) continue;
       const medkit = needsHealing && k.type === 'medkit';
@@ -1140,7 +1222,7 @@ export class BotHost {
     if (now < gear.nextAbility || !bot.alive) return;
     const nowMs = now * 1000;
     const rules = this.api.rules();
-    const hpFrac = bot.hp / rules.health;
+    const hpFrac = bot.hp / this.maxHp(bot);
     const eye = this.eye(bot);
     const memory = bot.brain.memory;
     // Enemies it knows about: seen this decision (visible) or in the last few seconds.
@@ -1255,7 +1337,7 @@ export class BotHost {
   private actor(bot: HostedBot): BotActor {
     return {
       id: bot.id, pos: bot.mover.position, yaw: bot.yaw, onGround: bot.mover.onGround,
-      color: bot.team ? TEAM_INFO[bot.team].color : this.api.colorFor(bot.id),
+      color: bot.team ? teamInfo(bot.team, this.api.rules().base).color : this.api.colorFor(bot.id),
     };
   }
 
@@ -1282,6 +1364,332 @@ export class BotHost {
         if (strength < 0.1) continue;
         bot.gear.blindUntil = Math.max(bot.gear.blindUntil, this.clock + 0.5 + FLASH_MAX * strength);
       }
+    }
+  }
+
+  // ---------------------------------------------------------------- zombies (Infection and Horde)
+
+  /** Infection: the zombies are out this round */
+  private infLive(): boolean {
+    const g = this.api.game();
+    return infPhaseOf(g.inf, g.startedAt, this.api.net.serverNow()) === 'live';
+  }
+
+  private isZombie(bot: HostedBot): boolean {
+    return bot.team === ZOMBIES && zombieMode(this.api.rules().base);
+  }
+
+  /** Full health for someone on `team`: a zombie's (see zombieHealth; Horde's by their wave), or the mode's */
+  private maxHpOf(id: string, team: Team | null): number {
+    const npc = this.bots.get(id)?.npc;
+    if (npc) return npc.hp;
+    const rules = this.api.rules();
+    return rules.base === 'inf' && team === ZOMBIES ? zombieHealth(rules.health, isAlpha(this.api.game().inf, id)) : rules.health;
+  }
+
+  private maxHp(bot: HostedBot): number {
+    return this.maxHpOf(bot.id, bot.team);
+  }
+
+  /** Movement speed against the mode's: Infection's zombies are quick, Horde's walkers slow and its runners flat out */
+  private speedOf(bot: HostedBot): number {
+    if (bot.npc) return bot.npc.runner ? RUNNER_SPEED : WALKER_SPEED;
+    return this.isZombie(bot) ? ZOMBIE_SPEED : 1;
+  }
+
+  /**
+   * Infection: turn a bot into a zombie, where it stands (it was picked to start the outbreak: what it carried
+   * falls to the floor), or as it comes back from the dead (respawn sends the rest of its record).
+   */
+  private turn(bot: HostedBot, inPlace: boolean): void {
+    if (inPlace) {
+      this.dropLoot(bot);
+      bot.gear.reset();
+    }
+    bot.team = ZOMBIES;
+    bot.prey = null;
+    bot.burst = bot.reloadLeft = 0;
+    bot.brain.reset();
+    bot.mover.speedMultiplier = 1;
+    bot.mover.aiming = false;
+    if (!inPlace) return;
+    bot.hp = this.maxHp(bot);
+    void this.api.net.sendStateAs(bot.id, { team: ZOMBIES, color: ZOMBIE_COLOR, hp: bot.hp, shield: false, cloak: false });
+  }
+
+  /** Survivors standing, as the zombies sense them (they always know where the living are) */
+  private survivorsInPlay(): BodyView[] {
+    const { api } = this;
+    const out: BodyView[] = [];
+    for (const [id, p] of Object.entries(api.players())) {
+      if (p.spec) continue;
+      const mine = this.bots.get(id);
+      const team = mine ? mine.team : p.team ?? null;
+      if (team !== SURVIVORS) continue;
+      const body = mine
+        ? { x: mine.mover.position.x, y: mine.mover.position.y, z: mine.mover.position.z, stance: mine.mover.stance, alive: mine.alive }
+        : api.bodyOf(id);
+      if (!body?.alive) continue;
+      out.push({ id, ...body, hp: mine ? mine.hp : p.hp, maxHp: api.rules().health, team, carrying: false, human: !mine && !p.bot });
+    }
+    return out;
+  }
+
+  /**
+   * A zombie bot's frame: now and then it picks its prey and the way there (see bot/zombie.ts); in between
+   * it steers along it, or, with its prey close and in plain sight, charges straight at them; and it claws
+   * whoever is in reach.
+   */
+  private hunt(bot: HostedBot, dt: number, roundOver: boolean, edge: number): void {
+    const p = bot.mover.position;
+    bot.decideIn -= dt;
+    if (bot.decideIn <= 0) {
+      bot.decideIn += ZOMBIE_DECISION;
+      const prey = pickPrey(p, this.prey, bot.prey);
+      bot.prey = prey?.id ?? null;
+      bot.goal = prey ? anchorFor(this.anchors, prey) : null;
+      bot.goalDist = bot.goal ? Math.hypot(bot.goal.x - p.x, bot.goal.z - p.z) : 0;
+      bot.heading = this.headingTo(bot, prey);
+      const action = zombieAction(this.sprints(bot), bot.brain.unstuck, p, this.clock);
+      bot.brain.action = action;
+      // Caught on something: Unstuck sidesteps and turns away for a moment.
+      if (action.move !== 1) bot.brain.steering.set(action.aimYaw * MAX_TURN.yaw, 0);
+      this.ledgeAhead(bot);
+    }
+    const prey = bot.prey ? this.prey.find((o) => o.id === bot.prey) ?? null : null;
+    const eye = this.eye(bot);
+    const charge = !!prey && Math.hypot(prey.x - p.x, prey.z - p.z) < CHARGE_RANGE && this.inPlainSight(eye, prey);
+    const escaping = bot.brain.action.move !== 1;
+    if (charge) {
+      const [yaw, pitch] = aimAngles(eye.x, eye.y, eye.z, prey!.x, prey!.y + 1, prey!.z);
+      bot.yaw = turnToward(bot.yaw, yaw, CHARGE_TURN * dt);
+      bot.pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, pitch));
+      bot.brain.steering.reset();
+    } else if (escaping || bot.heading === null) {
+      const [dYaw] = bot.brain.steering.step(dt);
+      bot.yaw += dYaw;
+      bot.pitch *= 1 - Math.min(1, 4 * dt);
+    } else {
+      bot.yaw = turnToward(bot.yaw, bot.heading, CHARGE_TURN * dt);
+      bot.pitch *= 1 - Math.min(1, 4 * dt);
+    }
+    const input = bot.brain.moveInput;
+    // Nowhere to go (nobody left to hunt): stand and sway.
+    if (!prey && !charge) input.forward = 0;
+    if (charge) {
+      input.forward = 1;
+      input.strafe = 0;
+      input.analog = false;
+      input.sprint = this.sprints(bot);
+      input.crouch = false;
+    }
+    if (this.clock < bot.jumpUntil) input.jump = true;
+    bot.mover.aiming = false;
+    bot.mover.step(dt, bot.yaw, roundOver ? null : input);
+    p.x = Math.max(-edge, Math.min(edge, p.x));
+    p.z = Math.max(-edge, Math.min(edge, p.z));
+    bot.meleeCooldown = Math.max(0, bot.meleeCooldown - dt);
+    if (roundOver) return;
+    // Fire underfoot still burns (that's all its gear does: zombies carry nothing).
+    this.updateGear(bot, dt, false);
+    if (!bot.alive || bot.meleeCooldown > 0) return;
+    const target = this.clawTarget(bot);
+    if (target) this.clawAt(bot, target);
+  }
+
+  /** Infection's zombies always run; Horde's walkers never do */
+  private sprints(bot: HostedBot): boolean {
+    return bot.npc ? bot.npc.runner : true;
+  }
+
+  /**
+   * Which way to walk for its route to its prey: toward the next stretch of the way to their anchor, or,
+   * once at the anchor (they've moved on less than its slack), straight at them. Null with no prey.
+   */
+  private headingTo(bot: HostedBot, prey: BodyView | null): number | null {
+    const goal = bot.goal;
+    if (!prey || !goal) return null;
+    const p = bot.mover.position;
+    let tx = prey.x;
+    let tz = prey.z;
+    if (Math.hypot(goal.x - p.x, goal.z - p.z) > 1.5) {
+      const w = this.senses?.nav.waypoint(p.x, p.y, p.z, goal.x, goal.y, goal.z);
+      tx = w ? w.walkX : goal.x;
+      tz = w ? w.walkZ : goal.z;
+    }
+    if (Math.hypot(tx - p.x, tz - p.z) < 1e-3) return null;
+    return Math.atan2(-(tx - p.x), -(tz - p.z));
+  }
+
+  /** Nothing in the way from `eye` to their chest: the map, a barrier or smoke */
+  private inPlainSight(eye: THREE.Vector3, b: BodyView): boolean {
+    const ty = b.y + CHEST_Y[b.stance];
+    const dx = b.x - eye.x;
+    const dy = ty - eye.y;
+    const dz = b.z - eye.z;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist < 1e-3) return true;
+    if (this.api.wallDistance(eye.x, eye.y, eye.z, dx / dist, dy / dist, dz / dist, dist) < dist - 0.3) return false;
+    return !this.api.sightBlocked(eye.x, eye.y, eye.z, b.x, ty, b.z);
+  }
+
+  /** The nearest survivor within a zombie's reach, roughly in front of it */
+  private clawTarget(bot: HostedBot): string | null {
+    const eye = this.eye(bot);
+    let best: string | null = null;
+    let bestD = CLAW_RANGE * 0.9;
+    for (const b of this.prey) {
+      const d = Math.hypot(b.x - eye.x, b.y + 1 - eye.y, b.z - eye.z);
+      if (d > bestD) continue;
+      const [yaw] = aimAngles(eye.x, eye.y, eye.z, b.x, b.y + 1, b.z);
+      if (Math.abs(Math.atan2(Math.sin(yaw - bot.yaw), Math.cos(yaw - bot.yaw))) > 0.6) continue;
+      best = b.id;
+      bestD = d;
+    }
+    return best;
+  }
+
+  /** A swipe of a zombie bot's claws at `target` (in reach, in front of it) */
+  private clawAt(bot: HostedBot, target: string): void {
+    bot.meleeCooldown = (bot.npc ? HORDE_CLAW_COOLDOWN : CLAW_COOLDOWN) * CLAW_PACE[bot.skill];
+    const dmg = bot.npc ? bot.npc.claw : CLAW_DAMAGE;
+    const eye = this.eye(bot);
+    bot.stats.shots++;
+    bot.stats.hits++;
+    bot.stats.damage += Math.min(dmg, this.api.players()[target]?.hp ?? dmg);
+    this.api.net.sendEventAs(bot.id, { type: 'melee', w: 'claw', o: arr(eye.x, eye.y, eye.z), hit: target, dmg, head: false });
+  }
+
+  // ---------------------------------------------------------------- horde
+
+  /** Horde's zombies (ours: the owner plays them), on the map or lying where they fell */
+  private npcs(): HostedBot[] {
+    return [...this.bots.values()].filter((b) => b.npc);
+  }
+
+  /** Take every one of Horde's zombies off (a new round, the mode changed, or the room isn't ours to run) */
+  private removeNpcs(): void {
+    for (const bot of this.npcs()) this.remove(bot);
+  }
+
+  /** Survivors playing, standing or not (how many the waves are sized for) */
+  private survivorCount(): number {
+    let n = 0;
+    for (const [id, p] of Object.entries(this.api.players())) {
+      if (p.spec || p.npc) continue;
+      if ((this.bots.get(id)?.team ?? p.team) === SURVIVORS) n++;
+    }
+    return n;
+  }
+
+  /**
+   * Every frame (owner only, in Horde): once a wave is on, bring its zombies on a few at a time (no more
+   * at once than the cap, nor than are left to kill), until every one of them is down.
+   */
+  private updateHorde(dt: number): void {
+    const { api } = this;
+    if (api.rules().base !== 'hrd' || !this.owner || !api.joined()) {
+      if (this.bots.size && this.npcs().length) this.removeNpcs();
+      return;
+    }
+    const rec = api.game().horde;
+    if (!rec || api.roundOver()) return;
+    // How many are left to kill: the record's, or fewer (our kills on their way to it). Only a new wave raises it.
+    if (rec.wave !== this.hordeSeen.wave) this.hordeLeft = rec.left;
+    else if (rec.left !== this.hordeSeen.left) this.hordeLeft = Math.min(this.hordeLeft, rec.left);
+    this.hordeSeen = { wave: rec.wave, left: rec.left };
+    if (api.net.serverNow() < rec.at || this.hordeLeft <= 0) return;
+    this.spawnIn -= dt;
+    if (this.spawnIn > 0) return;
+    const npcs = this.npcs();
+    const alive = npcs.filter((b) => b.alive).length;
+    if (alive >= Math.min(maxAlive(this.survivorCount()), this.hordeLeft)) return;
+    const at = this.zombieSpot();
+    if (!at) return;
+    this.spawnIn = spawnInterval(rec.wave);
+    const kind = zombieFor(rec.wave);
+    const body = npcs.find((b) => !b.alive && this.clock - b.diedAt >= BODY_TIME);
+    if (body) this.bringOn(body, kind, at);
+    else if (npcs.length < NPC_RECORDS) this.addNpc(kind, at);
+  }
+
+  /** Where the next zombie comes on: a spawn or pickup spot well away from every survivor (see pickSpawn) */
+  private zombieSpot(): THREE.Vector3 | null {
+    const map = this.api.map();
+    if (!map) return null;
+    const spots = [...map.spawns, ...map.pickupSpots];
+    const i = pickSpawn(spots, this.survivorsInPlay());
+    const s = spots[i];
+    return s ? new THREE.Vector3(s.x + (Math.random() - 0.5), s.y, s.z + (Math.random() - 0.5)) : null;
+  }
+
+  /** A new zombie record (none lying around to bring back on), on the map at `at` */
+  private addNpc(kind: HordeZombie, at: THREE.Vector3): void {
+    const { api } = this;
+    const id = `${BOT_PREFIX}${randomId(8)}`;
+    const skill = api.rules().botSkill;
+    const bot = this.newBot(id, '', skill, zombieName(kind.runner), ZOMBIES, null);
+    this.bots.set(id, bot);
+    this.bringOn(bot, kind, at, false);
+    api.net.addBot(id, {
+      name: bot.name, color: ZOMBIE_COLOR, team: ZOMBIES, bot: true, npc: true,
+      ...this.pose(bot), gun: bot.gun, hp: bot.hp, alive: true, kills: 0, deaths: 0,
+    }, { member: false })
+      .catch((err: unknown) => {
+        console.warn('Could not add a zombie', err);
+        this.drop(bot);
+      });
+  }
+
+  /** A zombie of this kind on the map at `at` (`send`: an existing record, brought back on as a new zombie) */
+  private bringOn(bot: HostedBot, kind: HordeZombie, at: THREE.Vector3, send = true): void {
+    bot.npc = kind;
+    bot.name = zombieName(kind.runner);
+    bot.brain.reset();
+    bot.prey = null;
+    bot.goal = null;
+    bot.heading = null;
+    bot.mover.teleport(at.clone());
+    bot.yaw = Math.random() * Math.PI * 2;
+    bot.pitch = 0;
+    bot.hp = kind.hp;
+    bot.alive = true;
+    bot.respawnIn = 0;
+    bot.mover.setSolid(true);
+    bot.spawnedAt = this.clock;
+    bot.decideIn = Math.random() * ZOMBIE_DECISION;
+    bot.meleeCooldown = CLAW_COOLDOWN;
+    if (send) void this.api.net.sendStateAs(bot.id, { ...this.pose(bot), name: bot.name, hp: bot.hp, alive: true });
+  }
+
+  /** One of the wave's zombies is down: one fewer left to kill (counted on the round's record) */
+  private countKill(): void {
+    const rec = this.api.game().horde;
+    if (!rec) return;
+    const wave = rec.wave;
+    this.hordeLeft = Math.max(0, this.hordeLeft - 1);
+    this.api.net.mutateGame((g) => {
+      if (!g.horde || g.horde.wave !== wave || g.horde.left <= 0) return false;
+      g.horde.left -= 1;
+      return true;
+    }).catch((err: unknown) => console.warn('Could not count the zombie', err));
+  }
+
+  /**
+   * Horde, a wave cleared: our bots that fell during it are back, and those standing are patched up and
+   * restocked (as the players are, in game.ts).
+   */
+  hordeBreak(): void {
+    this.anchors.clear();
+    for (const bot of this.bots.values()) {
+      if (bot.npc) continue;
+      if (!bot.alive) {
+        this.respawn(bot);
+        continue;
+      }
+      bot.hp = this.maxHp(bot);
+      if (this.api.rules().loadout === 'standard') bot.gear.rifleReserve = RIFLE_RESERVE;
+      void this.api.net.sendStateAs(bot.id, { hp: bot.hp });
     }
   }
 

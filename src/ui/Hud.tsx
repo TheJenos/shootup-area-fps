@@ -1,10 +1,10 @@
 import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useCountdown } from './useCountdown';
 import { LOW_HEALTH, type Game } from '../game/game';
-import type { FeedEntry, FlagStatus, HudState, MatchEnd, SndView, WatchedView } from '../game/hudStore';
+import type { FeedEntry, FlagStatus, HordeView, HudState, InfView, MatchEnd, SndView, WatchedView } from '../game/hudStore';
 import { ABILITIES, type SlotView } from '../game/abilities';
-import { MVP_TIME, TEAM_INFO, otherTeam } from '../game/modes';
-import type { Team, WeaponKind } from '../types';
+import { MVP_TIME, TEAM_INFO, otherTeam, teamInfo } from '../game/modes';
+import type { GameMode, Team, WeaponKind } from '../types';
 import { MatchSummary } from './MatchSummary';
 import { SettingsPanel, useSettings } from './SettingsPanel';
 import { keyLabel } from '../game/settings';
@@ -57,7 +57,8 @@ function ControlsCard() {
 
 /** The icon the kill feed and death screen use for a weapon. */
 export const weaponIcon = (w: WeaponKind): string =>
-  (w === 'bomb' ? '🧨' : w === 'grenade' ? '💣' : w === 'knife' ? '🔪' : w === 'flag' ? '⚑' : w === 'molotov' ? '🔥' : w === 'turret' ? '🤖' : w === 'mine' ? '💥' : GUNS[w]?.icon ?? '▸');
+  (w === 'bomb' ? '🧨' : w === 'grenade' ? '💣' : w === 'knife' ? '🔪' : w === 'flag' ? '⚑' : w === 'molotov' ? '🔥' : w === 'turret' ? '🤖' : w === 'mine' ? '💥'
+    : w === 'claw' ? '🧟' : GUNS[w]?.icon ?? '▸');
 
 /** Copy (or, on phones, share) the invite link for this room. */
 export function useCopyInvite(game: Game, roomCode: string): { copy(): void; copied: boolean } {
@@ -149,7 +150,8 @@ export function Hud({ game, roomCode, onLeave }: Props) {
     showFps && 'fps',
   ].filter(Boolean).join(' ');
   const inMatch = !hud.connecting && !hud.spectate;
-  const waitingAlone = hud.playerCount === 1 && inMatch && !hud.paused && !hud.matchEnd && !hud.offline;
+  // (Horde is fine to play alone.)
+  const waitingAlone = hud.playerCount === 1 && inMatch && !hud.paused && !hud.matchEnd && !hud.offline && !hud.horde;
 
   return (
     <div id="hud" className={classes || undefined} style={{ '--hud-scale': Math.min(hudScale, game.touch ? 1.2 : 1.4) } as React.CSSProperties}>
@@ -224,7 +226,7 @@ export function Hud({ game, roomCode, onLeave }: Props) {
         )}
       </ScoreBar>
       {(showFps || PERF_DEBUG) && <FpsCounter />}
-      <KillFeed entries={hud.feed} />
+      <KillFeed entries={hud.feed} mode={hud.mode} />
       {hud.watched ? (
         <WatchedPanels watched={hud.watched} />
       ) : !hud.spectate && (
@@ -239,8 +241,9 @@ export function Hud({ game, roomCode, onLeave }: Props) {
           />
         </>
       )}
-      {hud.spectate && !hud.paused && hud.matchEnd?.phase !== 'mvp' && (
-        <SpectateBanner spectate={hud.spectate} touch={game.touch} label={hud.snd?.watching ? 'Out until next round' : 'Spectating'} />
+      {hud.spectate && !hud.paused && !hud.matchEnd && (
+        <SpectateBanner spectate={hud.spectate} touch={game.touch}
+          label={hud.snd?.watching ? 'Out until next round' : hud.horde?.out ? 'Out until the wave is cleared' : 'Spectating'} />
       )}
       {game.touch && (!hud.paused || intro) && !hud.connecting && !hud.death && !hud.inventoryOpen && !hud.spectate
         && hud.matchEnd?.phase !== 'mvp' && (
@@ -335,9 +338,13 @@ export function Hud({ game, roomCode, onLeave }: Props) {
 }
 
 function DeathOverlay({ death }: { death: NonNullable<HudState['death']> }) {
+  const title = death.late ? (death.untilWave ? 'Wave in progress' : 'Round in progress')
+    : death.untilWave ? 'You went down'
+    : death.infected ? 'You were infected'
+      : death.weapon === 'bomb' ? 'Caught in the blast' : death.self ? 'You took yourself out' : 'You were eliminated';
   return (
-    <div id="death-overlay" className="overlay" role="status">
-      <h2>{death.late ? 'Round in progress' : death.weapon === 'bomb' ? 'Caught in the blast' : death.self ? 'You took yourself out' : 'You were eliminated'}</h2>
+    <div id="death-overlay" className={death.infected ? 'overlay infected' : 'overlay'} role="status">
+      <h2>{title}</h2>
       {!death.self && !death.late && (
         <p>
           by <strong>{death.killerName}</strong>
@@ -346,7 +353,10 @@ function DeathOverlay({ death }: { death: NonNullable<HudState['death']> }) {
         </p>
       )}
       {death.dropped && <p className="muted">Your gun and abilities dropped where you fell</p>}
-      <p className="muted">{death.respawnIn < 0 ? "You're in from the next round" : `Respawning in ${death.respawnIn}…`}</p>
+      <p className="muted">
+        {death.untilWave ? "You're back when your team clears this wave"
+          : death.respawnIn < 0 ? "You're in from the next round" : death.infected ? `Rising as a zombie in ${death.respawnIn}…` : `Respawning in ${death.respawnIn}…`}
+      </p>
     </div>
   );
 }
@@ -402,6 +412,8 @@ function SpectateBanner({ spectate, touch, label }: { spectate: NonNullable<HudS
 function ScoreBar({ hud, children }: { hud: HudState; children?: React.ReactNode }) {
   const { team, score, flags, rules } = hud;
   if (hud.snd) return <SndScoreBar hud={hud} snd={hud.snd}>{children}</SndScoreBar>;
+  if (hud.inf) return <InfScoreBar hud={hud} inf={hud.inf}>{children}</InfScoreBar>;
+  if (hud.horde) return <HordeScoreBar hud={hud} horde={hud.horde}>{children}</HordeScoreBar>;
   const { limit, short } = rules;
   /** Free-for-all: outright ahead of everyone else */
   const leading = score.mine > 0 && score.mine > (score.leader?.kills ?? 0);
@@ -517,6 +529,84 @@ function SndScoreBar({ hud, snd, children }: { hud: HudState; snd: SndView; chil
   );
 }
 
+/** Infection: who's left on each side, the round's clock, and the head start before the outbreak. */
+function InfScoreBar({ hud, inf, children }: { hud: HudState; inf: InfView; children?: React.ReactNode }) {
+  const { team, rules } = hud;
+  const side = (t: Team, count: number, label: string) => (
+    <div className={`team ${t}${t === team ? ' mine' : ''}`}>
+      <span className="name">{teamInfo(t, 'inf').name}{t === team && ' (you)'}</span>
+      <strong>{count}</strong>
+      <span className="muted">{label}</span>
+    </div>
+  );
+  const status = inf.phase === 'countdown' ? `Outbreak in ${inf.turnIn}`
+    : inf.phase === 'waiting' ? 'Waiting for another player'
+      : inf.zombie ? 'Infect them all' : 'Survive';
+  let banner: { text: string; tone: 'carrying' | 'alert' | 'subtle' } | null = null;
+  if (inf.phase === 'countdown') {
+    banner = { text: `Head start — find a spot to hold. Someone turns in ${inf.turnIn}…`, tone: 'subtle' };
+  } else if (inf.last === 'You') {
+    banner = { text: "You're the last survivor — hold out until the clock runs out!", tone: 'alert' };
+  } else if (inf.last) {
+    banner = inf.zombie
+      ? { text: `${inf.last} is the last survivor — hunt them down`, tone: 'carrying' }
+      : { text: `${inf.last} is the last survivor`, tone: 'subtle' };
+  }
+  return (
+    <div id="scorebar-wrap" className="inf">
+      <div id="scorebar">
+        {side('blue', inf.survivors, 'left')}
+        <div className="center">
+          <span className="mode">{rules.short}</span>
+          <RoundClock clock={hud.clock} />
+          <span className={inf.phase === 'countdown' ? 'phase planted' : 'phase muted'}>{status}</span>
+        </div>
+        {side('red', inf.zombies, inf.zombies === 1 ? 'zombie' : 'zombies')}
+      </div>
+      {banner && <div className={`flag-banner ${banner.tone}`}>{banner.text}</div>}
+      {children}
+    </div>
+  );
+}
+
+/** Horde: the wave, the survivors still standing, the zombies left in it, and the break before the next. */
+function HordeScoreBar({ hud, horde, children }: { hud: HudState; horde: HordeView; children?: React.ReactNode }) {
+  const { rules } = hud;
+  const status = horde.phase === 'break' ? `Wave ${horde.wave} in ${horde.startsIn}` : horde.phase === 'cleared' ? 'Wave cleared' : 'Hold them off';
+  let banner: { text: string; tone: 'carrying' | 'alert' | 'subtle' } | null = null;
+  if (horde.phase === 'break') {
+    banner = { text: horde.wave === 1 ? 'They\'re coming — find a spot you can hold together' : 'Regroup and restock: the next wave is bigger', tone: 'subtle' };
+  } else if (horde.phase === 'live' && horde.players > 1 && horde.standing === 1 && !horde.out) {
+    banner = { text: "You're the last one standing — clear the wave to bring everyone back", tone: 'alert' };
+  } else if (horde.phase === 'live' && horde.left > 0 && horde.left <= 3) {
+    banner = { text: `${horde.left} left — they're on your radar`, tone: 'carrying' };
+  }
+  return (
+    <div id="scorebar-wrap" className="horde">
+      <div id="scorebar">
+        <div className="team blue mine">
+          <span className="name">Survivors</span>
+          <strong>{horde.standing}<span className="muted">/{horde.players}</span></strong>
+          <span className="muted">standing</span>
+        </div>
+        <div className="center">
+          <span className="mode">{rules.short}</span>
+          <strong className="wave">Wave {horde.wave}<span className="muted">/{horde.waves}</span></strong>
+          <RoundClock clock={hud.clock} />
+          <span className={horde.phase === 'break' ? 'phase planted' : 'phase muted'}>{status}</span>
+        </div>
+        <div className="team red">
+          <span className="name">Zombies</span>
+          <strong>{horde.phase === 'break' ? '—' : horde.left}</strong>
+          <span className="muted">{horde.best > 0 ? `best: wave ${horde.best}` : 'left'}</span>
+        </div>
+      </div>
+      {banner && <div className={`flag-banner ${banner.tone}`}>{banner.text}</div>}
+      {children}
+    </div>
+  );
+}
+
 /** Planting or defusing: a bar that fills while the key is held. */
 function BombProgress({ channel, touch, onCancel }: { channel: NonNullable<SndView['channel']>; touch: boolean; onCancel(): void }) {
   const label = channel.kind === 'plant' ? 'Planting the bomb' : 'Defusing the bomb';
@@ -556,7 +646,7 @@ function RoundResults({ end, touch }: { end: MatchEnd; touch: boolean }) {
   const outcome = end.draw ? 'draw' : end.won ? 'won' : 'lost';
   return (
     <div id="round-over" className={`overlay ${outcome}`}>
-      <p className="muted">{end.reason === 'time' ? "Time's up" : 'Score limit reached'}</p>
+      <p className="muted">{end.headline ?? (end.reason === 'time' ? "Time's up" : 'Score limit reached')}</p>
       <h2>{end.title}</h2>
       {end.top.length > 0 && (
         <ol className="podium">
@@ -671,6 +761,15 @@ const HealthPanel = memo(function HealthPanel({ hp, max, heal }: { hp: number; m
 function AmmoPanel({ hud, touch }: { hud: HudState; touch: boolean }) {
   const { ammo, magSize: max, reloading, gun, reserve, special } = hud;
   const { bindings } = useSettings();
+  if (hud.claws) {
+    return (
+      <div id="ammo" className="panel melee claws">
+        <div className="gun-slots"><span className="gun-slot on">🧟 Claws</span></div>
+        <span id="ammo-value">ZOMBIE</span>
+        <div id="reload-hint" className="show">{touch ? '● TO SWIPE' : 'CLICK TO SWIPE'} · ONE HIT INFECTS</div>
+      </div>
+    );
+  }
   if (hud.melee) {
     return (
       <div id="ammo" className="panel melee">
@@ -781,9 +880,9 @@ function GunPrompt({ text, touch, onTap }: { text: string; touch: boolean; onTap
   return <div id="gun-prompt" role="status"><kbd>{keyLabel(bindings.interact)}</kbd> {text}</div>;
 }
 
-const KillFeed = memo(function KillFeed({ entries }: { entries: FeedEntry[] }) {
+const KillFeed = memo(function KillFeed({ entries, mode }: { entries: FeedEntry[]; mode: GameMode }) {
   const tag = (team: Team | null) => team && (
-    <span className={`tag ${team}`} title={`${TEAM_INFO[team].name} team`}>{TEAM_INFO[team].name[0]}</span>
+    <span className={`tag ${team} ${mode}`} title={`${teamInfo(team, mode).name}`}>{teamInfo(team, mode).name[0]}</span>
   );
   return (
     <ul id="killfeed">
@@ -793,14 +892,14 @@ const KillFeed = memo(function KillFeed({ entries }: { entries: FeedEntry[] }) {
         ) : (
           <li key={e.id} className={e.mine ? 'me' : undefined}>
             <span style={{ color: safeColor(e.killer.color) }}>
-              {tag(e.killerTeam)}{e.killer.bot && <span className="badge bot">BOT</span>}{e.killer.name}{e.me === 'killer' && <span className="you"> (you)</span>}
+              {tag(e.killerTeam)}{e.killer.bot && !e.killer.npc && <span className="badge bot">BOT</span>}{e.killer.name}{e.me === 'killer' && <span className="you"> (you)</span>}
             </span>
             <span className="weapon">
               {weaponIcon(e.weapon)}
               {e.weapon !== 'grenade' && e.head && <span className="head"> ⌖ headshot</span>}
             </span>
             <span style={{ color: safeColor(e.victim.color) }}>
-              {tag(e.victimTeam)}{e.victim.bot && <span className="badge bot">BOT</span>}{e.victim.name}{e.me === 'victim' && <span className="you"> (you)</span>}
+              {tag(e.victimTeam)}{e.victim.bot && !e.victim.npc && <span className="badge bot">BOT</span>}{e.victim.name}{e.me === 'victim' && <span className="you"> (you)</span>}
             </span>
           </li>
         ),

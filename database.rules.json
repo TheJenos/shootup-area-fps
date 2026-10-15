@@ -21,7 +21,7 @@
           ".validate": "newData.isBoolean()"
         },
         "mode": {
-          ".validate": "newData.val() === 'ffa' || newData.val() === 'tdm' || newData.val() === 'ctf' || newData.val() === 'snd' || newData.val() === 'gungame' || newData.val() === 'sniper' || newData.val() === 'snipertdm'"
+          ".validate": "newData.val() === 'ffa' || newData.val() === 'tdm' || newData.val() === 'ctf' || newData.val() === 'snd' || newData.val() === 'inf' || newData.val() === 'hrd' || newData.val() === 'gungame' || newData.val() === 'sniper' || newData.val() === 'snipertdm'"
         },
         "hostId": {
           ".validate": "newData.isString() && newData.val().length <= 16"
@@ -54,7 +54,7 @@
         "rules": {
           ".validate": "newData.hasChildren(['base', 'name', 'short', 'loadout', 'limit', 'minutes', 'health', 'respawn', 'speed', 'gravity']) && newData.child('base').val() === newData.parent().child('mode').val()",
           "base": {
-            ".validate": "newData.val() === 'ffa' || newData.val() === 'tdm' || newData.val() === 'ctf' || newData.val() === 'snd'"
+            ".validate": "newData.val() === 'ffa' || newData.val() === 'tdm' || newData.val() === 'ctf' || newData.val() === 'snd' || newData.val() === 'inf' || newData.val() === 'hrd'"
           },
           "name": {
             ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 24"

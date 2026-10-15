@@ -40,8 +40,15 @@ import {
 import {
   CLOCK_WARNING, FLAG_BASES, setFlagBases, FLAG_RADIUS, FLAG_RETURN_TIME, GUN_GAME_LADDER, KNIFE_COOLDOWN, KNIFE_DAMAGE, KNIFE_RANGE,
   MELEE_COOLDOWN, MELEE_DAMAGE, MELEE_HEAD_DAMAGE,
-  MELEE_RANGE, MODES, MVP_TIME, RESULTS_TIME, TEAMS, TEAM_INFO, gunGameGun, otherTeam, teamSpawns,
+  MELEE_RANGE, MODES, MVP_TIME, RESULTS_TIME, TEAMS, TEAM_INFO, gunGameGun, otherTeam, teamInfo, teamSpawns, zombieMode,
 } from './modes';
+import {
+  BREAK, newWave, phaseOf as hordePhaseOf, refereeCall as hordeRefereeCall, zombieHp, type Survivors,
+} from './horde';
+import {
+  SURVIVORS, ZOMBIES, alphaCount, deathInfects, infectAt, isAlpha, phaseOf as infPhaseOf, pickAlphas, refereeCall, timeUpWinner, type InfCount,
+} from './infection';
+import { CLAW_COOLDOWN, CLAW_DAMAGE, CLAW_RANGE, GROWL_INTERVAL, ZOMBIE_COLOR, ZOMBIE_SPEED, zombieHealth } from './zombies';
 import { MomentTracker } from './moments';
 import { pickRespawn, roundSpawn, spawnSalt } from './spawnPlan';
 import { ReplayDirector, ReplayRecorder, StandIns } from './replay';
@@ -64,8 +71,8 @@ import { hints, type HintId } from './hints';
 import { PERF_DEBUG, perfStats } from './perfStats';
 import { DynamicResolution } from './dynamicResolution';
 import type {
-  AbilityType, BombRecord, DeployableRecord, GameEvent, GameMode, GameState, GunKind, MvpInfo, PickupRecord, PlayerState, PlayerStats, Pose, SiteId, SndRecord, Team,
-  Vec3Tuple, WeaponKind,
+  AbilityType, BombRecord, DeployableRecord, GameEvent, GameMode, GameState, GunKind, HordeRecord, InfRecord, MvpInfo, PickupRecord, PlayerState, PlayerStats,
+  Pose, SiteId, SndRecord, Team, Vec3Tuple, WeaponKind,
 } from '../types';
 
 const SEND_INTERVAL = 1 / 15;
@@ -82,7 +89,7 @@ const STATS_INTERVAL = 1;
 /** Most damage one hit of each kind can deal; anything above that from another client is clamped. */
 const maxDamage = (weapon: WeaponKind) =>
   (weapon === 'bomb' ? 1000 : weapon === 'grenade' ? GRENADE_DAMAGE : weapon === 'mine' ? MINE_DAMAGE : weapon === 'flag' ? MELEE_HEAD_DAMAGE : weapon === 'knife' ? KNIFE_DAMAGE : weapon === 'molotov' ? FIRE_DAMAGE
-    : weapon === 'turret' ? TURRET_DAMAGE : maxShotDamage(weapon));
+    : weapon === 'turret' ? TURRET_DAMAGE : weapon === 'claw' ? CLAW_DAMAGE : maxShotDamage(weapon));
 /** One entry of the room's bot list, as the owner's panel shows it */
 export interface BotRow {
   slot: string;
@@ -177,7 +184,7 @@ function parseAmmo(am: string | undefined): { ammo: number | null; reserve: numb
   return { ammo: n(mag), reserve: n(reserve) };
 }
 /** How hard a killing hit shoves the body, per weapon (m/s at the chest) */
-const KNOCKBACK: Partial<Record<WeaponKind, number>> = { rifle: 3, deagle: 4, shotgun: 6, sniper: 6, grenade: 7, mine: 8, flag: 4.5, bomb: 12 };
+const KNOCKBACK: Partial<Record<WeaponKind, number>> = { rifle: 3, deagle: 4, shotgun: 6, sniper: 6, grenade: 7, mine: 8, flag: 4.5, bomb: 12, claw: 5 };
 
 /** Fraction of full health at or below which the screen darkens at the edges and the heart pounds */
 export const LOW_HEALTH = 0.3;
@@ -275,6 +282,8 @@ export class Game {
   private readonly remotes = new Map<string, RemotePlayer>();
   private readonly players: Record<string, PlayerState> = {};
   private hp = 100;
+  /** Our full health: the mode's, or a zombie's (see zombieHealth) */
+  private maxHp = 100;
   /** The room's mode rules (base type plus loadout, pickups, health, speed…) */
   private rules: ModeRules = baseRules('ffa');
   private alive = true;
@@ -405,6 +414,20 @@ export class Game {
   private channel: { kind: 'plant' | 'defuse'; site: SiteId; from: THREE.Vector3; since: number; t: number } | null = null;
   /** The interact key is held (planting and defusing need it held the whole time; on touch, a tap starts it) */
   private interactHeld = false;
+  // Infection
+  private infRefereeBusy = false;
+  /** We died as a survivor once the zombies were out: we come back as one of them */
+  private infected = false;
+  /** Banners already shown this round (so each shows once): the outbreak, the last survivor */
+  private infAnnounced = { outbreak: false, last: '' };
+  /** When each zombie we can hear next groans (performance.now ms) */
+  private readonly growlAt = new Map<string, number>();
+  /** The last whole second of the head start (Infection) or of a break (Horde) we ticked for */
+  private lastTick = -1;
+  // Horde
+  private hordeRefereeBusy = false;
+  /** The wave we last announced the start of ("round:wave"), so each is announced once */
+  private waveAnnounced = '';
 
   // MVP: our own highlights, everything we saw this round, and the replay when it's on
   private readonly moments = new MomentTracker();
@@ -769,6 +792,9 @@ export class Game {
         if (this.carryingFlag()) {
           fired = this.weapon.trySwing(MELEE_COOLDOWN);
           if (fired) this.swingFlag();
+        } else if (this.zombie) {
+          fired = this.weapon.tryClaw(CLAW_COOLDOWN);
+          if (fired) this.claw();
         } else {
           fired = this.weapon.tryFire();
           if (fired) this.shoot();
@@ -821,6 +847,8 @@ export class Game {
         channel: this.channel ? { kind: this.channel.kind, t: this.channel.t } : null,
         sites: this.siteSpots(),
         shield: this.shieldHp,
+        maxHp: this.maxHp,
+        claws: this.weapon.clawsMode,
         slots: this.inventory.view(performance.now()).map((s) => s?.type ?? null),
         mapSeed: this.mapSpec.seed,
         mapSize: this.mapSpec.size,
@@ -1074,8 +1102,9 @@ export class Game {
     this.saveSession();
   }
 
-  /** Join whichever team is smaller. */
+  /** Join whichever team is smaller (Infection: the survivors; the round's record may turn us once it's here). */
   private async pickTeam(): Promise<Team> {
+    if (zombieMode(this.mode)) return SURVIVORS;
     const players = Object.values(await this.net.players().catch(() => ({})));
     const count = (t: Team) => players.filter((p) => p.team === t).length;
     const red = count('red');
@@ -1086,9 +1115,47 @@ export class Game {
 
   private setTeam(team: Team): void {
     this.team = team;
-    this.color = TEAM_INFO[team].color;
+    this.color = teamInfo(team, this.mode).color;
     this.hud.update({ team });
+    this.applyTraits();
     this.saveSession();
+  }
+
+  /** Change team and tell everyone (our record's colour goes with it) */
+  private changeTeam(team: Team): void {
+    this.setTeam(team);
+    // (Still joining: our record is there already once the round's record can arrive and ask for this.)
+    if (this.joined || this.joining) void this.net.sendState({ team, color: this.color });
+  }
+
+  /** Whether `id` (us, or anyone else) is a zombie (Infection) */
+  private isZombie(id: string): boolean {
+    return this.mode === 'inf' && (id === this.playerId ? this.team : this.players[id]?.team) === ZOMBIES;
+  }
+
+  private get zombie(): boolean {
+    return this.isZombie(this.playerId);
+  }
+
+  /** Full health for `id`: the mode's, or a zombie's (more again for the round's first zombies) */
+  private maxHealthOf(id: string): number {
+    if (this.players[id]?.npc) return zombieHp(this.game.horde?.wave ?? 1);
+    return this.isZombie(id) ? zombieHealth(this.rules.health, isAlpha(this.game.inf, id)) : this.rules.health;
+  }
+
+  /** What our side gives us: a zombie's speed, claws and health, or everyone's usual. Health itself is set on (re)spawning. */
+  private applyTraits(): void {
+    const zombie = this.zombie;
+    this.player.speedScale = this.rules.speed * (zombie ? ZOMBIE_SPEED : 1);
+    this.weapon.setClaws(zombie, ZOMBIE_COLOR);
+    if (zombie) this.aimHeld = false;
+    this.maxHp = this.maxHealthOf(this.playerId);
+    this.hud.update({ maxHp: this.maxHp, claws: zombie });
+  }
+
+  /** Infection: the side someone joining the fight now plays on (once the zombies are out, theirs) */
+  private infSideNow(): Team {
+    return infPhaseOf(this.game.inf, this.game.startedAt, this.net.serverNow()) === 'live' ? ZOMBIES : SURVIVORS;
   }
 
   // ---------------------------------------------------------------- spectating
@@ -1131,16 +1198,20 @@ export class Game {
     this.pov = null;
     this.hud.update({ spectate: null });
     void this.net.sendState({ spec: false });
-    // Search & Destroy: back in at the start of the next round (straight away early in this one).
+    // Infection: back in as a zombie once they're out (a survivor can't hide in the stands).
+    if (this.mode === 'inf' && this.team !== this.infSideNow()) this.changeTeam(this.infSideNow());
+    // Search & Destroy: back in at the start of the next round (straight away early in this one). Horde: in a
+    // break straight away, mid-wave once it's cleared (or the stands would be a way back from the dead).
     const snd = this.snd;
     if (snd && !canJoin(snd, this.net.serverNow())) this.sitOut();
+    else if (this.mode === 'hrd' && hordePhaseOf(this.game.horde, this.net.serverNow()) === 'live') this.sitOut();
     else this.respawn();
   }
 
   /** The players we can follow: everyone alive who isn't spectating themselves. */
   private spectatable(): string[] {
     return [...this.remotes.entries()]
-      .filter(([id, r]) => r.alive && !this.players[id]?.spec && (!this.watchingTeam || this.isAlly(id)))
+      .filter(([id, r]) => r.alive && !this.players[id]?.spec && !this.players[id]?.npc && (!this.watchingTeam || this.isAlly(id)))
       .map(([id]) => id)
       .sort();
   }
@@ -1231,7 +1302,7 @@ export class Game {
 
   /** Move to the other team (pause menu). Respawns at the new team's side. */
   switchTeam(): void {
-    if (!this.team || !this.joined) return;
+    if (!this.team || !this.joined || !MODES[this.mode].chooseTeams) return;
     // Never onto the bigger side: that's how teams get stacked. (Equal sides may be switched between: in a
     // game of two or three, being able to swap at all matters more than a one-player difference.)
     const other = otherTeam(this.team);
@@ -1244,8 +1315,7 @@ export class Game {
     }
     void this.dropFlag();
     void this.dropBomb();
-    this.setTeam(otherTeam(this.team));
-    void this.net.sendState({ team: this.team, color: this.color });
+    this.changeTeam(otherTeam(this.team));
     this.hud.toast(`Joined ${TEAM_INFO[this.team].name} team`);
     // Search & Destroy: mid-round, the new team's next round is the first one to play.
     const snd = this.snd;
@@ -1384,8 +1454,9 @@ export class Game {
     this.remotes.get(id)?.dispose();
     const remote = new RemotePlayer(id, data, this.scene, this.character);
     remote.setVisible(!data.spec && !this.playback);
+    remote.setNpc(!!data.npc);
     this.remotes.set(id, remote);
-    if (this.joined && performance.now() - this.joinedAt > 1000) this.hud.pushInfo(`${data.name} joined`);
+    if (this.joined && performance.now() - this.joinedAt > 1000 && !data.npc) this.hud.pushInfo(`${data.name} joined`);
   }
 
   private onPlayerChanged(id: string, data: PlayerState): void {
@@ -1427,7 +1498,7 @@ export class Game {
     this.turrets.removeOwnedBy(id);
     this.mines.removeOwnedBy(id);
     if (remote) {
-      this.hud.pushInfo(`${this.players[id]?.name || 'Someone'} left`);
+      if (!this.players[id]?.npc) this.hud.pushInfo(`${this.players[id]?.name || 'Someone'} left`);
       remote.dispose();
       this.remotes.delete(id);
     }
@@ -1503,7 +1574,9 @@ export class Game {
     } else if (evt.type === 'melee') {
       if (evt.from === this.playerId || !evt.o) return;
       const origin = fromArr(evt.o);
-      const knife = evt.w === 'knife';
+      // A zombie's claws are a slash too, as far as the body and the replays go.
+      const claw = evt.w === 'claw';
+      const knife = evt.w === 'knife' || claw;
       const heard = this.seenThrough(evt.from) ? { volume: 0.6, at: undefined } : this.heardFrom(origin);
       if (heard && knife) sfx.playKnife(heard.volume * 1.6, 0, heard.at);
       else if (heard) sfx.playSwing(heard.volume * 1.6, 0, heard.at);
@@ -1512,9 +1585,10 @@ export class Game {
         this.recorder.event({ t, kind: 'knife', from: evt.from });
       }
       if (evt.hit === this.playerId) {
-        if (knife) sfx.playKnifeHit(0.9);
+        if (claw) sfx.playMeleeHit(1);
+        else if (knife) sfx.playKnifeHit(0.9);
         else sfx.playMeleeHit(0.9);
-        this.takeDamage(evt.dmg, evt.from, !!evt.head, knife ? 'knife' : 'flag', origin);
+        this.takeDamage(evt.dmg, evt.from, !!evt.head, claw ? 'claw' : knife ? 'knife' : 'flag', origin);
       }
     } else if (evt.type === 'smoke') {
       if (evt.from === this.playerId) return;
@@ -1560,7 +1634,8 @@ export class Game {
       const killer = evt.killer ? this.players[evt.killer] ?? UNKNOWN_PLAYER : victim;
       const mine = evt.killer === this.playerId || evt.victim === this.playerId;
       const teamOf = (id: string) => (id === this.playerId ? this.team : this.players[id]?.team) ?? null;
-      this.hud.pushKill(killer, victim, evt.head, mine, evt.weapon ?? 'rifle', {
+      // Horde's zombies go down by the dozen: only ours make the feed.
+      if (!this.players[evt.victim]?.npc || mine) this.hud.pushKill(killer, victim, evt.head, mine, evt.weapon ?? 'rifle', {
         killerTeam: teamOf(evt.killer),
         victimTeam: teamOf(evt.victim),
         me: evt.victim === this.playerId ? 'victim' : evt.killer === this.playerId ? 'killer' : null,
@@ -1568,7 +1643,8 @@ export class Game {
       if (evt.killer === this.playerId && evt.victim !== this.playerId) {
         sfx.playKill();
         this.hud.killConfirm(victim.name, !!evt.head);
-        this.healForKill();
+        // (Horde heals at the end of each wave instead: a kill a second would make everyone unkillable.)
+        if (this.mode !== 'hrd') this.healForKill();
         this.onOwnKill(evt.victim, evt.head, t);
       }
       // Gun Game: knifed, you go down a level (your kills are your level). Our record, so we do it.
@@ -1588,11 +1664,11 @@ export class Game {
 
   /** The mode's movement, gravity and health (custom mode rules). */
   private applyRules(): void {
-    this.player.speedScale = this.rules.speed;
     this.player.gravityScale = this.rules.gravity;
     setThrowGravity(this.rules.gravity);
-    this.hp = this.rules.health;
-    this.hud.update({ hp: this.hp, maxHp: this.rules.health });
+    this.applyTraits();
+    this.hp = this.maxHp;
+    this.hud.update({ hp: this.hp });
   }
 
   /** Gun Game: a kill hands us the next gun on the ladder. */
@@ -1643,7 +1719,7 @@ export class Game {
   /** Heal up to full health, with the green "+N" on the HUD. */
   private heal(amount: number): void {
     if (!this.alive || this.roundOver) return;
-    const gain = Math.min(amount, this.rules.health - this.hp);
+    const gain = Math.min(amount, this.maxHp - this.hp);
     if (gain <= 0) return;
     this.hp += gain;
     this.hud.update({ hp: this.hp, heal: { n: (this.hud.get().heal?.n ?? 0) + 1, amount: gain } });
@@ -1652,7 +1728,7 @@ export class Game {
 
   private healForKill(): void {
     if (!this.alive || this.roundOver) return;
-    const max = this.rules.health;
+    const max = this.maxHp;
     const amount = Math.min(Math.round(max * KILL_HEAL), max - this.hp);
     if (amount <= 0) return;
     this.hp += amount;
@@ -1693,10 +1769,11 @@ export class Game {
    * Back after a refresh, in the same round we left: pick the score up where it was. (The room
    * saw our old record go and this one arrive; to it we're the same player a moment later.)
    */
-  private restoreSession(round: number): void {
+  /** @returns whether we came back to the round we left */
+  private restoreSession(round: number): boolean {
     const s = this.resume;
     this.resume = null;
-    if (!s || s.round !== round) return;
+    if (!s || s.round !== round) return false;
     this.kills = s.kills;
     this.deaths = s.deaths;
     this.stats = { ...EMPTY_STATS, ...s.stats };
@@ -1704,6 +1781,7 @@ export class Game {
     this.hud.update({ myMatch: this.myMatch });
     this.net.sendState({ kills: this.kills, deaths: this.deaths, ...this.stats })
       .catch((err: unknown) => console.warn('Could not restore our score', err));
+    return true;
   }
 
   /** What a refresh of this tab should come back to (see game/session.ts) */
@@ -1721,7 +1799,7 @@ export class Game {
     const first = !this.gameLoaded;
     this.gameLoaded = true;
     const newRound = !first && next.round > prev.round;
-    if (first) this.restoreSession(next.round);
+    const resumed = first && this.restoreSession(next.round);
 
     // Every round has its own map. A late joiner may also find the room has moved on from the lobby's seed.
     if (next.seed) {
@@ -1774,6 +1852,8 @@ export class Game {
       }
     }
     if (this.mode === 'snd') this.onSnd(prev.snd, next.snd, first);
+    if (this.mode === 'inf' && first) this.joinInfection(resumed);
+    if (this.mode === 'hrd') this.onHorde(prev.horde, next.horde, first);
     this.refreshScore();
   }
 
@@ -1807,7 +1887,8 @@ export class Game {
     }
     const won = this.team ? ended.winner === this.team : ended.winner === this.playerId;
     sfx.playRoundEnd(won ? 'won' : 'lost');
-    this.hud.pushInfo(this.team ? `${ended.name} team wins the round` : `${ended.name} wins the round`);
+    this.hud.pushInfo(this.mode === 'hrd' ? (ended.winner === SURVIVORS ? 'The horde is beaten!' : `Overrun on wave ${this.game.horde?.wave ?? 0}`)
+      : this.mode === 'inf' ? `The ${ended.name.toLowerCase()} win the round` : this.team ? `${ended.name} team wins the round` : `${ended.name} wins the round`);
   }
 
   /** Feed messages for flags changing hands. */
@@ -1861,6 +1942,12 @@ export class Game {
     this.leadKnown = false;
     this.clearAbilities();
     this.hud.update({ myMatch: this.myMatch });
+    // Infection: everyone starts the round a survivor.
+    this.infected = false;
+    this.infAnnounced = { outbreak: false, last: '' };
+    this.lastTick = -1;
+    this.waveAnnounced = '';
+    if (zombieMode(this.mode) && this.team !== SURVIVORS) this.changeTeam(SURVIVORS);
     this.respawn(this.roundSpawnFor(this.playerId, this.team));
     this.bots.startRound();
     // Pickups were placed for the old walls. The leader clears them before its spawner (same client,
@@ -1876,7 +1963,7 @@ export class Game {
     this.hud.update({ cloaked: false });
     void this.net.sendState({ kills: 0, deaths: 0, shield: false, cloak: false, moment: null, ...this.stats });
     const map = this.hud.get().map;
-    this.hud.toast(`Round ${this.game.round + 1}${map ? ` · ${map.name}` : ''} — fight!`);
+    this.hud.toast(`Round ${this.game.round + 1}${map ? ` · ${map.name}` : ''} — ${zombieMode(this.mode) ? 'find a spot to hold' : 'fight!'}`);
     sfx.playRoundStart();
   }
 
@@ -1887,12 +1974,19 @@ export class Game {
    */
   private setRules(rules: ModeRules, announce: boolean): void {
     const wasCtf = this.mode === 'ctf';
+    /** Sides the mode decided (Infection, Horde): never even, so they're shared out afresh for another team mode */
+    const wasFixed = MODES[this.mode].teams && !MODES[this.mode].chooseTeams;
+    const wasSame = this.mode === rules.base;
     // Bots rejoin under the new rules (teams may have come or gone, the skill may differ).
     if (this.joined) this.bots.rulesChanged();
     this.rules = rules;
     this.mode = rules.base;
+    this.infected = false;
     this.applyRules();
-    if (MODES[this.mode].teams && !this.team) {
+    if (zombieMode(this.mode)) {
+      // Everyone starts as a survivor.
+      if (this.team !== SURVIVORS || !wasSame) this.changeTeam(SURVIVORS);
+    } else if (MODES[this.mode].teams && (!this.team || wasFixed)) {
       // Everyone picks at the same moment, so split by sorted id rather than by who's on which team now.
       const ids = Object.keys({ ...this.players, [this.playerId]: true }).sort();
       this.setTeam(ids.indexOf(this.playerId) % 2 === 0 ? 'red' : 'blue');
@@ -2020,6 +2114,8 @@ export class Game {
       g.score = {};
       g.flags = {};
       delete g.snd;
+      delete g.inf;
+      delete g.horde;
       return true;
     })
       .then((committed) => {
@@ -2069,6 +2165,11 @@ export class Game {
 
   /** Who's ahead right now: a team, a player id, or 'draw'. */
   private standings(g: GameState): [winner: string, name: string] {
+    if (this.mode === 'inf') {
+      // Anyone still standing at the buzzer makes it the survivors' round.
+      const team = timeUpWinner(this.infCount());
+      return [team, teamInfo(team, 'inf').name];
+    }
     if (this.team) {
       const red = g.score.red ?? 0;
       const blue = g.score.blue ?? 0;
@@ -2087,6 +2188,8 @@ export class Game {
   /** The round's time is up: the best score wins. Any client can do this; the transaction keeps it to one. */
   private checkTimeLimit(): void {
     const g = this.game;
+    // Horde has no clock: the waves end it.
+    if (this.mode === 'hrd') return;
     if (this.roundOver || !g.startedAt || this.timeUpRequested === g.round) return;
     if (!this.timeIsUp()) return;
     // S&D rounds are one life each: the one being fought is played out, and the match ends after it.
@@ -2097,7 +2200,7 @@ export class Game {
       if (next.round !== round || next.ended) return false;
       const [winner, name] = this.standings(next);
       // Level at the buzzer: overtime, once (the next point wins); still level after that, a draw.
-      if (winner === 'draw' && !next.overtime && this.mode !== 'snd' && this.hasPoints(next)) {
+      if (winner === 'draw' && !next.overtime && this.mode !== 'snd' && this.mode !== 'inf' && this.hasPoints(next)) {
         next.overtime = this.net.serverNow() + OVERTIME_MS;
         return true;
       }
@@ -2144,7 +2247,7 @@ export class Game {
    * Players who didn't kill or capture anything can't be MVP.
    */
   private pickMvp(): MvpInfo | null {
-    const candidates = Object.entries(this.players).filter(([, p]) => !p.spec).map(([id, p]) => {
+    const candidates = Object.entries(this.players).filter(([, p]) => !p.spec && !p.npc).map(([id, p]) => {
       const me = id === this.playerId;
       const kills = me ? this.kills : p.kills || 0;
       const captures = me ? this.stats.captures : p.captures || 0;
@@ -2345,8 +2448,13 @@ export class Game {
       if (!leader || kills > leader.kills) leader = { name: p.name, kills };
     }
     const g = this.game;
-    const score = { red: g.score.red ?? 0, blue: g.score.blue ?? 0, mine: this.kills, leader };
     const now = this.net.serverNow();
+    // Infection and Horde keep no team score: the bar shows who's left on each side.
+    const inf = this.infView(now);
+    const horde = this.hordeView(now);
+    const score = inf ? { red: inf.zombies, blue: inf.survivors, mine: this.kills, leader }
+      : horde ? { red: horde.left, blue: horde.standing, mine: this.kills, leader }
+        : { red: g.score.red ?? 0, blue: g.score.blue ?? 0, mine: this.kills, leader };
 
     const flags = this.mode === 'ctf'
       ? Object.fromEntries(TEAMS.map((team) => {
@@ -2366,7 +2474,10 @@ export class Game {
 
     let clock: HudState['clock'] = null;
     const snd = this.sndView(now);
-    if (snd && !g.ended) {
+    if (horde) {
+      // Horde has no round clock: only the break before each wave counts down.
+      if (!g.ended && horde.phase === 'break') clock = { left: horde.startsIn, urgent: horde.startsIn <= 3 };
+    } else if (snd && !g.ended) {
       // S&D shows the round's own clock (the freeze, the attackers' time or the fuse); the match limit still applies.
       const live = snd.phase === 'live' || snd.phase === 'planted';
       clock = { left: snd.left, urgent: live && snd.left <= (snd.phase === 'planted' ? CLOCK_WARNING : 15) };
@@ -2376,11 +2487,11 @@ export class Game {
     }
 
     const matchEnd = this.matchEndView(now);
-    const playerCount = Object.values(this.players).filter((p) => !p.spec).length;
-    const key = JSON.stringify([score, flags, clock, matchEnd, playerCount, snd]);
+    const playerCount = Object.values(this.players).filter((p) => !p.spec && !p.npc).length;
+    const key = JSON.stringify([score, flags, clock, matchEnd, playerCount, snd, inf, horde]);
     if (key === this.lastScoreKey) return;
     this.lastScoreKey = key;
-    this.hud.update({ score, flags, clock, matchEnd, playerCount, snd });
+    this.hud.update({ score, flags, clock, matchEnd, playerCount, snd, inf, horde });
   }
 
   private matchEndView(now: number): MatchEnd | null {
@@ -2389,9 +2500,12 @@ export class Game {
     if (!ended || !phase) return null;
     const draw = ended.winner === 'draw';
     const won = !draw && (this.team ? ended.winner === this.team : ended.winner === this.playerId);
+    const wave = this.game.horde?.wave ?? 0;
     const title = draw
       ? "It's a draw!"
-      : this.team ? `${ended.name} team wins!` : won ? 'You win!' : `${ended.name} wins!`;
+      : this.mode === 'hrd' ? (ended.winner === SURVIVORS ? `All ${this.rules.limit} waves survived!` : `Overrun on wave ${wave}`)
+      : this.mode === 'inf' ? (ended.winner === SURVIVORS ? 'The survivors held out!' : 'Everyone was infected!')
+        : this.team ? `${ended.name} team wins!` : won ? 'You win!' : `${ended.name} wins!`;
     const ctf = this.mode === 'ctf';
     const top = this.scoreRows().slice(0, 3).map((r) => ({
       name: r.name,
@@ -2412,12 +2526,14 @@ export class Game {
       : null;
     const phaseEnds = this.endedAt + (phase === 'results' ? RESULTS_TIME * 1000 : this.intermissionMs());
     const next = ended.nextSeed ? this.mapInfo(ended.nextSeed) : null;
+    const best = this.game.hordeBest ?? 0;
     return {
       phase,
       title,
       won,
       draw,
       reason: ended.reason ?? 'score',
+      ...(this.mode === 'hrd' ? { headline: ended.winner === SURVIVORS ? 'The horde is beaten' : `This room's best: wave ${best}` } : {}),
       top,
       mvp,
       nextIn: Math.max(0, Math.ceil((phaseEnds - now) / 1000)),
@@ -2596,7 +2712,7 @@ export class Game {
 
   /** S&D: out of this round (dead, not spectating), so we watch a teammate until the next one */
   private get watchingTeam(): boolean {
-    return this.mode === 'snd' && this.joined && !this.alive && !this.spectating;
+    return (this.mode === 'snd' || this.mode === 'hrd') && this.joined && !this.alive && !this.spectating;
   }
 
   /** The defenders' two sites this round; worked out again when the map or the sides change */
@@ -2648,7 +2764,7 @@ export class Game {
       // Survivors keep their guns and abilities.
       const spawn = this.roundSpawnFor(this.playerId, this.team) ?? this.pickSpawn();
       this.player.teleport(spawn, Math.atan2(spawn.x, spawn.z));
-      this.hp = this.rules.health;
+      this.hp = this.maxHp;
       this.hitSources.clear();
       this.hud.update({ hp: this.hp });
       void this.net.sendState({ ...this.poseState(), hp: this.hp });
@@ -2676,7 +2792,8 @@ export class Game {
     void this.dropBomb();
     void this.net.sendState({ alive: false, hp: 0, shield: false });
     this.hud.update({
-      hp: 0, death: { killerName: '', self: false, weapon: 'rifle', head: false, dropped: false, respawnIn: -1, late: true },
+      hp: 0,
+      death: { killerName: '', self: false, weapon: 'rifle', head: false, dropped: false, respawnIn: -1, late: true, ...(this.mode === 'hrd' ? { untilWave: true } : {}) },
     });
   }
 
@@ -2759,7 +2876,7 @@ export class Game {
     const heads: Headcount = { red: { size: 0, alive: 0 }, blue: { size: 0, alive: 0 } };
     for (const [id, p] of Object.entries(this.players)) {
       const me = id === this.playerId;
-      if (me ? this.spectating : p.spec) continue;
+      if (me ? this.spectating : p.spec || p.npc) continue;
       const team = me ? this.team : p.team;
       if (!team) continue;
       heads[team].size++;
@@ -3017,6 +3134,331 @@ export class Game {
     };
   }
 
+  // ---------------------------------------------------------------- infection
+
+  /**
+   * Joining a round in progress (not coming back to it after a refresh): once the zombies are out we
+   * join them, and their outbreak is old news.
+   */
+  private joinInfection(resumed: boolean): void {
+    this.infAnnounced.outbreak = infPhaseOf(this.game.inf, this.game.startedAt, this.net.serverNow()) === 'live';
+    if (resumed || this.spectating) return;
+    const side = this.infSideNow();
+    if (side === ZOMBIES && this.team !== ZOMBIES) this.turn('late');
+    else if (side === SURVIVORS && this.team !== SURVIVORS) this.changeTeam(SURVIVORS);
+  }
+
+  /**
+   * Turn into a zombie. 'alpha': picked to start the outbreak, turning where we stand (whatever we picked
+   * up falls to the floor); 'infected': back from the dead as one; 'late': joining once they're out.
+   */
+  private turn(how: 'alpha' | 'infected' | 'late'): void {
+    if (this.team === ZOMBIES) return;
+    const inPlace = how === 'alpha' && this.alive;
+    if (inPlace) {
+      this.dropLoot();
+      this.clearAbilities();
+      this.endCloak();
+      this.setGunPrompt(null);
+      this.triggerHeld = false;
+    }
+    this.changeTeam(ZOMBIES);
+    // Back from the dead, respawn fills it up; otherwise it's a zombie's health from here.
+    if (how !== 'infected' && this.alive) {
+      this.hp = this.maxHp;
+      this.hud.update({ hp: this.hp });
+      void this.net.sendState({ hp: this.hp });
+    }
+    if (how === 'late') {
+      this.hud.toast('The infection is out — you join the zombies');
+      return;
+    }
+    const swipe = this.touch ? 'tap ●' : 'click';
+    this.hud.announce(how === 'alpha' ? 'YOU ARE PATIENT ZERO' : "YOU'VE TURNED", `Claws only — ${swipe} to swipe · infect every survivor`, 3500);
+    sfx.playGrowl(1.2);
+  }
+
+  /** Who's still in it: survivors standing (the dead ones are turning) and zombies, alive or not */
+  private infCount(): InfCount {
+    const heads = this.headcount();
+    return { survivors: heads[SURVIVORS].alive, zombies: heads[ZOMBIES].size };
+  }
+
+  /** Survivors still standing (bots included), by id */
+  private survivorIds(): string[] {
+    return Object.entries(this.players)
+      .filter(([id, p]) => (id === this.playerId
+        ? !this.spectating && this.alive && this.team === SURVIVORS
+        : !p.spec && p.alive !== false && p.team === SURVIVORS))
+      .map(([id]) => id);
+  }
+
+  /** Every frame in Infection: turn if we were picked, tick the head start down, banners, and the referee's calls. */
+  private updateInfection(): void {
+    const g = this.game;
+    const now = this.net.serverNow();
+    const phase = infPhaseOf(g.inf, g.startedAt, now);
+    if (phase === 'live' && !this.roundOver && !this.spectating && this.team === SURVIVORS && isAlpha(g.inf, this.playerId)) {
+      // Picked to start it: turn where we stand (or, dead just now, on the way back).
+      if (this.alive) this.turn('alpha');
+      else this.infected = true;
+    }
+    if (phase === 'countdown' && g.startedAt && !this.roundOver) {
+      const left = Math.ceil((infectAt(g.startedAt) - now) / 1000);
+      if (left !== this.lastTick && left > 0 && left <= 3) sfx.playChannelTick();
+      this.lastTick = left;
+    }
+    if (!this.roundOver) this.announceInfection(phase);
+    this.refereeInf();
+  }
+
+  /** The outbreak, and the last survivor: a banner each, once. */
+  private announceInfection(phase: ReturnType<typeof infPhaseOf>): void {
+    if (phase !== 'live') return;
+    const name = (id: string) => (id === this.playerId ? 'You' : this.players[id]?.name || 'Someone');
+    if (!this.infAnnounced.outbreak) {
+      this.infAnnounced.outbreak = true;
+      // (The first zombies have their own, from turn().)
+      if (!isAlpha(this.game.inf, this.playerId)) {
+        const first = Object.keys(this.game.inf?.alpha ?? {}).map(name);
+        const who = first.length > 1 ? `${first.slice(0, -1).join(', ')} and ${first[first.length - 1]}` : first[0] ?? 'Someone';
+        this.hud.announce('OUTBREAK', this.zombie ? 'Infect every survivor' : `${who} turned — keep your distance`, 3500);
+        sfx.playGrowl(0.8);
+      }
+    }
+    const survivors = this.survivorIds();
+    const last = survivors.length === 1 && this.infCount().zombies > 0 ? survivors[0]! : null;
+    if (!last || last === this.infAnnounced.last) return;
+    this.infAnnounced.last = last;
+    if (last === this.playerId) {
+      this.hud.announce('LAST SURVIVOR', 'Everyone is coming for you — hold out until the clock runs out', 3500);
+      sfx.playLeadLost();
+    } else if (this.zombie) {
+      this.hud.announce('ONE LEFT', `${name(last)} is the last survivor — they're on your radar`, 3000);
+      sfx.playLeadGained();
+    } else {
+      this.hud.pushInfo(`${name(last)} is the last survivor`);
+    }
+  }
+
+  /**
+   * Room owner only: pick the first zombies once the head start is over (again, if they all left before
+   * turning), and end the round when the last survivor falls. The clock running out is checkTimeLimit's.
+   */
+  private refereeInf(): void {
+    if (this.infRefereeBusy || this.roundOver || !this.isLeader()) return;
+    if (performance.now() - this.joinedAt < REFEREE_GRACE_MS) return;
+    const g = this.game;
+    const call = refereeCall(g.inf, g.startedAt, this.net.serverNow(), this.infCount());
+    if (!call) return;
+    const round = g.round;
+    let change: (next: GameState) => boolean;
+    if (call === 'pick') {
+      const ids = this.survivorIds();
+      const picks = pickAlphas(ids, alphaCount(this.rules.limit, ids.length));
+      if (!picks.length) return;
+      const before = g.inf?.t ?? null;
+      change = (next) => {
+        // Only if nobody picked in the meantime.
+        if (next.round !== round || next.ended || (next.inf?.t ?? null) !== before) return false;
+        next.inf = { alpha: Object.fromEntries(picks.map((id) => [id, true as const])), t: this.net.serverNow() } satisfies InfRecord;
+        return true;
+      };
+    } else {
+      change = (next) => {
+        if (next.round !== round || next.ended) return false;
+        this.finishRound(next, ZOMBIES, teamInfo(ZOMBIES, 'inf').name, 'score');
+        return true;
+      };
+    }
+    this.infRefereeBusy = true;
+    this.net.mutateGame(change)
+      .catch((err: unknown) => console.warn('Could not update the infection', err))
+      .finally(() => { this.infRefereeBusy = false; });
+  }
+
+  /** What the HUD shows for the infection */
+  private infView(now: number): HudState['inf'] {
+    if (this.mode !== 'inf') return null;
+    const g = this.game;
+    const phase = infPhaseOf(g.inf, g.startedAt, now);
+    const count = this.infCount();
+    const survivors = this.survivorIds();
+    const last = phase === 'live' && survivors.length === 1 && count.zombies > 0 ? survivors[0]! : null;
+    return {
+      phase,
+      turnIn: phase === 'countdown' && g.startedAt ? Math.max(0, Math.ceil((infectAt(g.startedAt) - now) / 1000)) : 0,
+      survivors: count.survivors,
+      zombies: count.zombies,
+      zombie: this.zombie,
+      last: last === null ? null : last === this.playerId ? 'You' : this.players[last]?.name || 'Someone',
+    };
+  }
+
+  /** A zombie's swipe: whoever is in reach takes CLAW_DAMAGE (a fresh survivor goes down in one). */
+  private claw(): void {
+    this.endProtection();
+    const origin = this.camera.getWorldPosition(new THREE.Vector3());
+    const best = this.meleeTarget(origin, CLAW_RANGE);
+    sfx.playKnife(1.3);
+    this.stats.shots++;
+    const dmg = best ? CLAW_DAMAGE : 0;
+    if (best) {
+      this.stats.hits++;
+      const target = this.remotes.get(best.id);
+      if (target) {
+        this.stats.damage += Math.min(dmg, target.displayedHp);
+        target.reveal(dmg);
+      }
+      this.hud.hitmarker(false);
+      sfx.playMeleeHit();
+    }
+    this.net.sendEvent({ type: 'melee', w: 'claw', o: toArr(origin), hit: best?.id ?? null, dmg, head: !!best?.head });
+    this.recorder.event({ t: this.net.serverNow(), kind: 'knife', from: this.playerId });
+  }
+
+  /** Zombies we can hear groan now and then, from where they are. */
+  private updateGrowls(): void {
+    if (!zombieMode(this.mode) || !this.joined) {
+      if (this.growlAt.size) this.growlAt.clear();
+      return;
+    }
+    const now = performance.now();
+    const interval = GROWL_INTERVAL * 1000 * (this.mode === 'hrd' ? 2.5 : 1);
+    for (const [id, r] of this.remotes) {
+      if (!r.alive || !r.isZombie || this.playback) {
+        this.growlAt.delete(id);
+        continue;
+      }
+      const due = this.growlAt.get(id);
+      if (due === undefined) {
+        this.growlAt.set(id, now + interval * (0.3 + Math.random()));
+      } else if (now >= due) {
+        this.growlAt.set(id, now + interval * (0.5 + Math.random()));
+        const heard = this.seenThrough(id) ? { volume: 0.6, at: undefined } : this.heardFrom(r.position);
+        if (heard) sfx.playGrowl(heard.volume, heard.at);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- horde
+
+  /** Survivors playing (bots included, not the zombies), and how many of them are standing */
+  private hordeSurvivors(): Survivors {
+    return this.headcount()[SURVIVORS];
+  }
+
+  /** The waves record changed: the next wave set up means the last was cleared */
+  private onHorde(prev: HordeRecord | undefined, next: HordeRecord | undefined, first: boolean): void {
+    if (first || !prev || !next || next.wave !== prev.wave + 1) return;
+    this.waveCleared(prev.wave, next);
+  }
+
+  /** A wave cleared: everyone who fell is back, and everyone standing is healed and restocked, for the break. */
+  private waveCleared(wave: number, next: HordeRecord): void {
+    if (this.roundOver) return;
+    this.hud.announce(`WAVE ${wave} CLEARED`, `Wave ${next.wave} in ${BREAK} s — everyone's back, healed and restocked`, 3500);
+    sfx.playLeadGained();
+    this.bots.hordeBreak();
+    if (this.spectating || !this.joined) return;
+    if (!this.alive) {
+      this.respawn();
+      return;
+    }
+    this.heal(this.maxHp);
+    this.weapon.takeAmmo();
+  }
+
+  /** Every frame in Horde: the start of each wave, the break's last seconds, and the referee's calls. */
+  private updateHorde(): void {
+    const rec = this.game.horde;
+    const now = this.net.serverNow();
+    if (rec && !this.roundOver) {
+      const key = `${this.game.round}:${rec.wave}`;
+      if (now >= rec.at && this.waveAnnounced !== key) {
+        this.waveAnnounced = key;
+        const last = rec.wave >= this.rules.limit;
+        this.hud.announce(last ? 'FINAL WAVE' : `WAVE ${rec.wave}`, `${rec.left} zombies${last ? ' — hold on!' : ''}`, 3000);
+        sfx.playRoundStart();
+        sfx.playGrowl(1);
+      } else if (now < rec.at) {
+        const left = Math.ceil((rec.at - now) / 1000);
+        if (left !== this.lastTick && left > 0 && left <= 3) sfx.playChannelTick();
+        this.lastTick = left;
+      }
+    }
+    this.refereeHorde();
+  }
+
+  /**
+   * Room owner only: set up the first wave, start the next once the last is cleared, and call the round:
+   * won with the mode's last wave cleared, lost with everyone down mid-wave. (The owner's bot host brings
+   * the zombies on and counts them off.)
+   */
+  private refereeHorde(): void {
+    if (this.hordeRefereeBusy || this.roundOver || !this.isLeader()) return;
+    if (performance.now() - this.joinedAt < REFEREE_GRACE_MS) return;
+    const g = this.game;
+    const survivors = this.hordeSurvivors();
+    const call = hordeRefereeCall(g.horde, this.net.serverNow(), survivors, this.rules.limit);
+    if (!call) return;
+    const round = g.round;
+    const wave = g.horde?.wave ?? 0;
+    const same = (next: GameState) => next.round === round && !next.ended && (next.horde?.wave ?? 0) === wave;
+    const best = (next: GameState, reached: number) => { next.hordeBest = Math.max(next.hordeBest ?? 0, reached); };
+    let change: (next: GameState) => boolean;
+    if (call === 'first') {
+      change = (next) => {
+        if (!same(next) || next.horde) return false;
+        next.horde = newWave(1, survivors.size, this.net.serverNow());
+        return true;
+      };
+    } else if (call === 'next') {
+      change = (next) => {
+        if (!same(next) || !next.horde || next.horde.left > 0) return false;
+        best(next, wave);
+        next.horde = newWave(wave + 1, survivors.size, this.net.serverNow());
+        return true;
+      };
+    } else if (call === 'won') {
+      change = (next) => {
+        if (!same(next) || !next.horde || next.horde.left > 0) return false;
+        best(next, wave);
+        this.finishRound(next, SURVIVORS, teamInfo(SURVIVORS, 'hrd').name, 'score');
+        return true;
+      };
+    } else {
+      change = (next) => {
+        if (!same(next) || !next.horde || next.horde.left <= 0) return false;
+        best(next, wave);
+        this.finishRound(next, ZOMBIES, teamInfo(ZOMBIES, 'hrd').name, 'score');
+        return true;
+      };
+    }
+    this.hordeRefereeBusy = true;
+    this.net.mutateGame(change)
+      .catch((err: unknown) => console.warn('Could not update the horde', err))
+      .finally(() => { this.hordeRefereeBusy = false; });
+  }
+
+  /** What the HUD shows for the waves */
+  private hordeView(now: number): HudState['horde'] {
+    if (this.mode !== 'hrd') return null;
+    const rec = this.game.horde;
+    const survivors = this.hordeSurvivors();
+    return {
+      wave: rec?.wave ?? 1,
+      waves: this.rules.limit,
+      phase: hordePhaseOf(rec, now),
+      startsIn: rec ? Math.max(0, Math.ceil((rec.at - now) / 1000)) : 0,
+      left: rec?.left ?? 0,
+      standing: survivors.alive,
+      players: survivors.size,
+      best: this.game.hordeBest ?? 0,
+      out: this.watchingTeam,
+    };
+  }
+
   // ---------------------------------------------------------------- combat
 
   /** @param source where the hit came from (the shooter's muzzle, or the grenade blast) */
@@ -3027,7 +3469,7 @@ export class Game {
     // Just respawned: nothing gets through until we've had a moment (or shot first).
     if (performance.now() < this.protectedUntil) return;
     // Headshots-only modes: body hits and blasts don't count (the flag club and the knife still do).
-    if (this.rules.headshotsOnly && !head && weapon !== 'flag' && weapon !== 'knife') return;
+    if (this.rules.headshotsOnly && !head && weapon !== 'flag' && weapon !== 'knife' && weapon !== 'claw') return;
     // Never trust the number another client sent beyond what the game allows.
     let amount = Math.min(Math.max(Number(dmg) || 0, 0), maxDamage(weapon));
     // Show where it came from even when the shield soaks it up.
@@ -3054,9 +3496,11 @@ export class Game {
     this.hp = 0;
     this.deaths++;
     this.saveSession();
-    // Search & Destroy: no respawns, the next round brings everyone back.
-    const waiting = this.mode === 'snd';
+    // Search & Destroy: no respawns, the next round brings everyone back. Horde: the end of the wave does.
+    const waiting = this.mode === 'snd' || this.mode === 'hrd';
     this.respawnTimer = waiting ? Infinity : this.rules.respawn;
+    // Infection: a survivor who dies once the zombies are out comes back as one of them (see respawn).
+    this.infected = this.mode === 'inf' && this.team === SURVIVORS && deathInfects(this.game.inf, this.game.startedAt, this.net.serverNow());
     this.channel = null;
     this.triggerHeld = false;
     this.aimHeld = false;
@@ -3076,6 +3520,8 @@ export class Game {
       hp: 0,
       death: {
         killerName: self ? '' : this.players[killerId]?.name || 'someone', self, weapon, head, dropped, respawnIn: waiting ? -1 : this.rules.respawn,
+        ...(this.infected ? { infected: true } : {}),
+        ...(this.mode === 'hrd' ? { untilWave: true } : {}),
       },
     });
     if (!self && weapon !== 'bomb') this.startKillcam(killerId, weapon, head);
@@ -3126,9 +3572,13 @@ export class Game {
   /** @param at where to come back (a round start's planned spot); otherwise picked here */
   private respawn(at: THREE.Vector3 | null = null): void {
     this.stopWatching();
+    if (this.infected) {
+      this.infected = false;
+      if (this.mode === 'inf' && this.team === SURVIVORS && !this.roundOver) this.turn('infected');
+    }
     const spawn = at ?? this.pickSpawn();
     this.player.teleport(spawn, Math.atan2(spawn.x, spawn.z));
-    this.hp = this.rules.health;
+    this.hp = this.maxHp;
     this.alive = true;
     this.weapon.reset();
     this.hitSources.clear();
@@ -3177,13 +3627,15 @@ export class Game {
    */
   private roundSpawnFor(id: string, team: Team | null): THREE.Vector3 | null {
     // Free-for-all: the map's spawns sit mostly around the two team bases, so the pickup spots (reachable,
-    // clear, all over the map) are starting places too. Team modes start at their own base.
-    const points = team
+    // clear, all over the map) are starting places too. Team modes start at their own base; Infection,
+    // where everyone starts a survivor, all over the map like free-for-all.
+    const spread = !team || this.mode === 'inf';
+    const points = !spread
       ? this.world.spawns.filter((s) => s.team === team)
       : [...this.world.spawns, ...this.world.pickupSpots.map((p) => ({ pos: new THREE.Vector3(p.x, p.y, p.z), team: null }))];
     const teamOf = (pid: string, p: PlayerState) => (pid === this.playerId ? this.team : p.team ?? null);
     const ids = Object.entries(this.players)
-      .filter(([pid, p]) => (pid === this.playerId ? !this.spectating : !p.spec) && (!team || teamOf(pid, p) === team))
+      .filter(([pid, p]) => (pid === this.playerId ? !this.spectating : !p.spec) && (spread || teamOf(pid, p) === team))
       .map(([pid]) => pid);
     if (!ids.includes(id)) ids.push(id);
     const salt = spawnSalt(`${this.game.round}:${this.game.snd?.n ?? 0}:${this.mapSpec.seed}`);
@@ -3202,9 +3654,11 @@ export class Game {
       .map(([, r]) => r.target);
     const standing = [...this.remotes.values()].filter((r) => r.alive).map((r) => r.target);
     // Free-for-all: the map's spawns sit mostly around the two team bases, so the pickup spots (reachable,
-    // clear, all over the map) are places to come back at too. Team modes come back at their own base.
-    const all = this.team
-      ? teamSpawns(this.world.spawns, this.team)
+    // clear, all over the map) are places to come back at too. Team modes come back at their own base;
+    // Infection's zombies anywhere out of the survivors' way, as in free-for-all.
+    const spread = !this.team || this.mode === 'inf';
+    const all = !spread
+      ? teamSpawns(this.world.spawns, this.team!)
       : [...this.world.spawns.map((s) => s.pos), ...this.world.pickupSpots.map((p) => new THREE.Vector3(p.x, p.y, p.z))];
     const free = all.filter((p) => standing.every((o) => Math.hypot(o.x - p.x, o.z - p.z) > SPAWN_CLEARANCE));
     const points = free.length ? free : all;
@@ -3212,7 +3666,7 @@ export class Game {
     const safety = (p: THREE.Vector3) => (enemies.length
       ? Math.min(...enemies.map((e) => e.distanceTo(p))) - (this.enemySees(p, enemies) ? SPAWN_SEEN_PENALTY : 0)
       : Infinity);
-    if (!this.team) {
+    if (spread) {
       // Free-for-all: anywhere safe, at random (see pickRespawn).
       const i = pickRespawn(points.length, (k) => safety(points[k]!));
       return (points[i] ?? new THREE.Vector3()).clone();
@@ -3397,6 +3851,11 @@ export class Game {
   knife(): void {
     if (!this.alive || !this.joined || this.roundOver || this.inventoryOpen) return;
     this.endProtection();
+    // A zombie has only its claws.
+    if (this.zombie) {
+      if (this.weapon.tryClaw(CLAW_COOLDOWN)) this.claw();
+      return;
+    }
     if (this.carryingFlag()) {
       if (this.weapon.trySwing(MELEE_COOLDOWN)) this.swingFlag();
       return;
@@ -3454,7 +3913,7 @@ export class Game {
     }
     const type = check.type;
     // Refuse instead of wasting a use
-    if (type === 'medkit' && this.hp >= this.rules.health) {
+    if (type === 'medkit' && this.hp >= this.maxHp) {
       this.hud.toast('Already at full health');
       sfx.playDenied();
       return;
@@ -3464,7 +3923,7 @@ export class Game {
 
     switch (type) {
       case 'medkit':
-        this.hp = Math.min(this.rules.health, this.hp + MEDKIT_HEAL);
+        this.hp = Math.min(this.maxHp, this.hp + MEDKIT_HEAL);
         this.hud.update({ hp: this.hp });
         void this.net.sendState({ hp: this.hp });
         break;
@@ -3943,10 +4402,11 @@ export class Game {
         this.takeDamage(FIRE_DAMAGE, fire.owner, false, 'molotov', fire.center);
       }
     }
-    // Ours, and those of the bots we play.
-    for (const t of this.turrets.list()) if (t.owner === this.playerId || this.bots.has(t.owner)) this.runTurret(t, dt);
+    // Ours, and those of the bots we play (not once their owner has turned: a zombie has no use for them).
+    const mine = (owner: string) => (owner === this.playerId || this.bots.has(owner)) && !this.isZombie(owner);
+    for (const t of this.turrets.list()) if (mine(t.owner)) this.runTurret(t, dt);
     if (!this.roundOver) {
-      for (const m of this.mines.list()) if (m.owner === this.playerId || this.bots.has(m.owner)) this.runMine(m, this.net.serverNow());
+      for (const m of this.mines.list()) if (mine(m.owner)) this.runMine(m, this.net.serverNow());
     }
     if (this.scanUntil) {
       if (now >= this.scanUntil) this.endScan();
@@ -4137,6 +4597,11 @@ export class Game {
   }
 
   private tryPickup(): void {
+    // Zombies leave everything lying where it is.
+    if (this.zombie) {
+      this.setGunPrompt(null);
+      return;
+    }
     const p = this.player.position;
     const ignored = this.ignorePickup;
     if (ignored && Math.hypot(p.x - ignored.x, p.z - ignored.z) > 1.5) this.ignorePickup = null;
@@ -4244,7 +4709,7 @@ export class Game {
       this.putFlagDown();
       return;
     }
-    if (this.claimingPickup) return;
+    if (this.claimingPickup || this.zombie) return;
     const id = this.pickups.touching(this.player.position);
     if (!id || id === this.ignorePickup?.id) return;
     const type = this.pickups.typeOf(id);
@@ -4344,7 +4809,7 @@ export class Game {
   }
 
   private update(dt: number): void {
-    if (!this.alive && this.joined && !this.spectating && this.mode !== 'snd') {
+    if (!this.alive && this.joined && !this.spectating && this.mode !== 'snd' && this.mode !== 'hrd') {
       this.respawnTimer -= dt;
       const respawnIn = Math.max(0, Math.ceil(this.respawnTimer));
       const death = this.hud.get().death;
@@ -4364,7 +4829,8 @@ export class Game {
     // Carrying the enemy flag: guns stowed, the flag is the only weapon.
     const melee = this.alive && this.carryingFlag();
     this.weapon.setMelee(melee, this.team ? TEAM_INFO[otherTeam(this.team)].color : undefined);
-    const aiming = this.aimHeld && this.alive && this.locked && !this.roundOver && !this.inventoryOpen && !melee;
+    const claws = this.weapon.clawsMode;
+    const aiming = this.aimHeld && this.alive && this.locked && !this.roundOver && !this.inventoryOpen && !melee && !claws;
     this.player.aiming = aiming;
     if (aiming) {
       this.hint('ads', () => `Aiming down sights: tighter spread, slower moves${settings.get().aimToggle ? ' — right-click again to stop' : ''}`);
@@ -4401,6 +4867,8 @@ export class Game {
       && !(this.player.stance === 'slide' && this.player.slideAge < SLIDE_FIRE_DELAY);
     if (canAttack && melee) {
       if (this.weapon.trySwing(MELEE_COOLDOWN)) this.swingFlag();
+    } else if (canAttack && claws) {
+      if (this.weapon.tryClaw(CLAW_COOLDOWN)) this.claw();
     } else if (canAttack && this.weapon.tryFire()) {
       this.shoot();
     }
@@ -4445,7 +4913,7 @@ export class Game {
     const serverNow = this.net.serverNow();
     for (const [id, r] of this.remotes) {
       r.setAlly(this.isAlly(id));
-      r.setMaxHealth(this.rules.health);
+      r.setMaxHealth(this.maxHealthOf(id));
       r.setCarrying(this.mode === 'ctf' && TEAMS.some((t) => this.game.flags[t]?.by === id));
       r.update(dt, serverNow);
       this.updateRemoteSteps(id, r, dt);
@@ -4542,6 +5010,7 @@ export class Game {
       ? playback.carriedFlag(playback.mvpId)
       : this.specTarget ? TEAMS.find((t) => this.game.flags[t]?.by === this.specTarget) : undefined;
     pv.setMelee(target.carryingFlag, carried ? TEAM_INFO[carried].color : undefined);
+    pv.setClaws(target.isZombie, ZOMBIE_COLOR);
     pv.showGun(gun);
     if (target.consumeShotFlash()) pv.flashShot();
     if (target.consumeKnife()) pv.startKnife(0);
@@ -4573,7 +5042,7 @@ export class Game {
 
   /** Below 30 health the heart pounds, faster and louder the closer to death. */
   private updateHeartbeat(dt: number): void {
-    const low = this.rules.health * LOW_HEALTH;
+    const low = this.maxHp * LOW_HEALTH;
     if (!this.alive || !this.joined || this.hp > low) {
       this.heartbeatTimer = 0;
       return;
@@ -4833,6 +5302,9 @@ export class Game {
       this.updateBomb();
       this.refereeSnd();
     }
+    if (this.mode === 'inf') this.updateInfection();
+    if (this.mode === 'hrd') this.updateHorde();
+    this.updateGrowls();
     this.ensureRoundClock();
     this.checkTimeLimit();
     if (this.roundOver && this.net.serverNow() >= this.endedAt + this.intermissionMs()) this.requestNextRound();
@@ -4869,7 +5341,7 @@ export class Game {
       color: p.color,
       team: p.team ?? null,
       hp: Math.max(0, p.hp ?? 0),
-      maxHp: this.rules.health,
+      maxHp: this.maxHealthOf(id),
       gun: p.gun ?? 'rifle',
       ...parseAmmo(p.am),
       reloading: !!p.rl,
@@ -4904,17 +5376,24 @@ export class Game {
     const markers: MinimapMarker[] = [];
     const objectives: Objective[] = [];
     const scanning = this.scanUntil > now;
+    // Infection: the zombies always know where the last survivor is.
+    const survivors = this.mode === 'inf' && team === ZOMBIES ? this.survivorIds() : [];
+    const hunted = survivors.length === 1 ? survivors[0]! : null;
+    // Horde: the last few zombies of a wave show on the radar, so nobody hunts the map for a straggler.
+    const stragglers = this.mode === 'hrd' && hordePhaseOf(this.game.horde, this.net.serverNow()) === 'live' && (this.game.horde?.left ?? 0) <= 3;
     for (const [id, r] of this.remotes) {
       if (!r.alive || this.players[id]?.spec || id === watchedId) continue;
       const p = r.position;
       if (ally(id)) {
-        markers.push({ x: p.x, z: p.z, kind: 'ally', color: team ? TEAM_INFO[team].color : '#fff' });
+        markers.push({ x: p.x, z: p.z, kind: 'ally', color: team ? teamInfo(team, this.mode).color : '#fff' });
         continue;
       }
       // Enemies only where a player could know: our scan pulse, or gunfire a moment ago.
       const fired = (this.lastShotAt.get(id) ?? -Infinity) > now - 2000;
       const scanned = scanning && p.distanceTo(this.scanOrigin) < SCAN_RADIUS;
-      if (fired || scanned) markers.push({ x: p.x, z: p.z, kind: 'enemy', live: fired });
+      const straggler = stragglers && !!this.players[id]?.npc;
+      if (fired || scanned || id === hunted || straggler) markers.push({ x: p.x, z: p.z, kind: 'enemy', live: fired || id === hunted || straggler });
+      if (id === hunted) objectives.push({ id: 'last-survivor', icon: '☠', label: 'Last survivor', color: ZOMBIE_COLOR, pos: p.clone(), live: true });
     }
     for (const p of this.pickups.list()) markers.push({ x: p.x, z: p.z, kind: 'pickup' });
 
@@ -4971,12 +5450,18 @@ export class Game {
     this.presenceTimer = 5;
     const map = this.hud.get().map;
     const g = this.game;
-    const count = Object.values(this.players).filter((p) => !p.spec).length;
+    const count = Object.values(this.players).filter((p) => !p.spec && !p.npc).length;
     const details = `${this.rules.name}${map ? ` on ${map.name}` : ''}`;
     let state: string;
     if (this.spectating) state = 'Spectating';
     else if (this.roundOver) state = 'Round over';
-    else if (this.team) state = `Red ${g.score.red ?? 0} – ${g.score.blue ?? 0} Blue`;
+    else if (this.mode === 'hrd') {
+      const rec = g.horde;
+      state = rec ? `Wave ${rec.wave} · ${rec.left} zombie${rec.left === 1 ? '' : 's'} left` : 'Waiting for the horde';
+    } else if (this.mode === 'inf') {
+      const left = this.infCount().survivors;
+      state = this.zombie ? `Zombie · ${left} survivor${left === 1 ? '' : 's'} left` : `Surviving · ${left} left`;
+    } else if (this.team) state = `Red ${g.score.red ?? 0} – ${g.score.blue ?? 0} Blue`;
     else if (this.rules.loadout === 'gungame') state = `Level ${Math.min(this.kills + 1, GUN_GAME_LADDER.length)} of ${GUN_GAME_LADDER.length}`;
     else state = `${this.kills} kill${this.kills === 1 ? '' : 's'}`;
     const key = `${details}|${state}|${count}`;
@@ -4987,6 +5472,7 @@ export class Game {
 
   private scoreRows(): ScoreRow[] {
     return Object.entries(this.players)
+      .filter(([, p]) => !p.npc)
       .map(([id, p]) => {
         // Our own stats are fresher locally than the last copy we sent.
         const s = id === this.playerId ? this.stats : p;

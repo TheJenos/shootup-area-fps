@@ -3,7 +3,7 @@ import type { BotRow, Game } from '../game/game';
 import type { HudState } from '../game/hudStore';
 import { BOT_SKILL_OPTIONS } from '../game/rules';
 import { MAX_BOTS } from '../game/bot/roster';
-import { MODES, TEAM_INFO } from '../game/modes';
+import { MODES, teamInfo } from '../game/modes';
 import type { BotSkill } from '../game/bot/brain';
 import type { Team } from '../types';
 import { friendlyError } from './errors';
@@ -26,7 +26,10 @@ export function BotsPanel({ game, hud, onClose }: Props) {
   const [team, setTeam] = useState<Team | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const teams = MODES[hud.rules.base].teams;
+  const mode = hud.rules.base;
+  const teams = MODES[mode].teams;
+  /** Whether a bot's team can be chosen (Infection decides it) */
+  const choose = MODES[mode].chooseTeams;
   const box = useRef<HTMLDivElement>(null);
   useDialogFocus(box);
 
@@ -65,7 +68,7 @@ export function BotsPanel({ game, hud, onClose }: Props) {
   const teamSelect = (value: Team | null, onChange: (t: Team | null) => void, label: string) => (
     <select value={value ?? ''} aria-label={label} onChange={(e) => onChange((e.target.value || null) as Team | null)}>
       <option value="">Auto team</option>
-      {(['red', 'blue'] as const).map((t) => <option key={t} value={t}>{TEAM_INFO[t].name}</option>)}
+      {(['red', 'blue'] as const).map((t) => <option key={t} value={t}>{teamInfo(t, mode).name}</option>)}
     </select>
   );
 
@@ -81,8 +84,8 @@ export function BotsPanel({ game, hud, onClose }: Props) {
           <select value={skill} aria-label="New bot level" onChange={(e) => setSkill(e.target.value as BotSkill)}>
             {BOT_SKILL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
-          {teams && teamSelect(team, setTeam, 'New bot team')}
-          <button type="button" className="primary" disabled={busy || full} onClick={() => void act(() => game.addBot(skill, teams ? team : null))}>
+          {choose && teamSelect(team, setTeam, 'New bot team')}
+          <button type="button" className="primary" disabled={busy || full} onClick={() => void act(() => game.addBot(skill, choose ? team : null))}>
             {full ? 'Room is full of bots' : 'Add bot'}
           </button>
         </section>
@@ -94,7 +97,7 @@ export function BotsPanel({ game, hud, onClose }: Props) {
             {rows.map((r) => (
               <li key={r.slot} className={r.playing ? undefined : 'joining'}>
                 <span className="bot-name">
-                  {teams && r.actualTeam && <span className={`tag ${r.actualTeam}`} title={`${TEAM_INFO[r.actualTeam].name} team`}>{TEAM_INFO[r.actualTeam].name[0]}</span>}
+                  {teams && r.actualTeam && <span className={`tag ${r.actualTeam} ${mode}`} title={teamInfo(r.actualTeam, mode).name}>{teamInfo(r.actualTeam, mode).name[0]}</span>}
                   <span className="badge bot">BOT</span>
                   <strong>{r.name}</strong>
                   <span className="muted score">{r.playing ? `${r.kills} – ${r.deaths}` : 'joining…'}</span>
@@ -103,7 +106,7 @@ export function BotsPanel({ game, hud, onClose }: Props) {
                   onChange={(e) => void act(() => game.editBot(r.slot, { skill: e.target.value as BotSkill }))}>
                   {BOT_SKILL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
-                {teams && teamSelect(r.team, (t) => void act(() => game.editBot(r.slot, { team: t })), `${r.base}'s team`)}
+                {choose && teamSelect(r.team, (t) => void act(() => game.editBot(r.slot, { team: t })), `${r.base}'s team`)}
                 <button type="button" className="icon" aria-label={`Remove ${r.base}`} title="Remove this bot" disabled={busy}
                   onClick={() => void act(() => game.removeBot(r.slot))}>✕</button>
               </li>

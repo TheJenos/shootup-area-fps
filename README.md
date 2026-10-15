@@ -116,7 +116,7 @@ the HTML report, with traces and videos.
 
 ## Game modes
 
-Every mode is one of four **base types**, which decide teams, flags and how points are scored, plus a set of
+Every mode is one of six **base types**, which decide teams, flags and how points are scored, plus a set of
 **rules** on top. The room's creator picks a mode in the lobby; the room list shows its badge and name.
 
 | Base | Goal | Default time limit | Or ends early at |
@@ -125,6 +125,8 @@ Every mode is one of four **base types**, which decide teams, flags and how poin
 | **TDM** — Team Deathmatch | Red vs Blue; every kill scores for the killer's team | 10 min | 50 team kills |
 | **CTF** — Capture the Flag | Grab the enemy flag and bring it to your own base | 12 min | 3 captures |
 | **S&D** — Search & Destroy | One life per round: attackers plant the bomb at site A or B, defenders stop them | 20 min | 5 rounds won |
+| **INF** — Infection | Survivors vs zombies: whoever dies turns. Survive the clock, or infect everyone | 5 min | Every survivor infected |
+| **HRD** — Horde | Everyone together against waves of zombie bots | none | 10 waves survived, or everyone down |
 
 **Rules** (`src/game/rules.ts`), all optional on top of the base:
 
@@ -133,17 +135,17 @@ Every mode is one of four **base types**, which decide teams, flags and how poin
 | Loadout | Standard (rifle + pickups), Rifles / Shotguns / Snipers / Deagles only (endless ammo, no other guns or ammo boxes), or the Gun Game ladder (FFA only) |
 | Pickups | Gun pickups, ammo boxes, abilities: each on or off |
 | Headshots only | Body hits do nothing; grenades don't spawn |
-| Score limit | FFA 5–60 kills, TDM 10–150 team kills, CTF 1–10 captures, S&D 2–10 rounds |
-| Time limit | 3–20 minutes |
+| Score limit | FFA 5–60 kills, TDM 10–150 team kills, CTF 1–10 captures, S&D 2–10 rounds; Infection: 1–4 zombies at the start; Horde: 3–30 waves to win |
+| Time limit | 3–20 minutes (Horde has none) |
 | Health | 25–200 HP (medkits heal up to it, the health bar and name tags scale to it) |
-| Respawn | 1–10 seconds (not in S&D: the dead sit out the rest of the round) |
+| Respawn | 1–10 seconds (not in S&D: the dead sit out the rest of the round; in Infection, the zombies'; not in Horde: the fallen are back after each wave) |
 | Speed / gravity | 70–150 % movement speed, 30–150 % gravity (low gravity = higher, floatier jumps) |
 
 **Prebuilt modes:**
 
 | Badge | Mode | Base | What's different |
 | --- | --- | --- | --- |
-| FFA / TDM / CTF / S&D | Free-for-all, Team Deathmatch, Capture the Flag, Search & Destroy | – | The plain base modes |
+| FFA / TDM / CTF / S&D / INF / HRD | Free-for-all, Team Deathmatch, Capture the Flag, Search & Destroy, Infection, Horde | – | The plain base modes |
 | GG | Gun Game | FFA | Every kill hands you the next gun on a 12-step ladder; first through it wins. A knife kill sends the victim down a level. No pickups |
 | SNP | Sniper Only | FFA | Snipers only, 20 kills |
 | SNT | Sniper TDM | TDM | Snipers only, 40 team kills |
@@ -156,6 +158,8 @@ Every mode is one of four **base types**, which decide teams, flags and how poin
 | SSD | Sniper S&D | S&D | Snipers only |
 | MOON | Moon Gravity | FFA | 35 % gravity, 110 % speed |
 | SPD | Speed Rush | FFA | 145 % speed, 1 s respawn, 30 kills |
+| SIEG | Shotgun Siege | INF | Survivors get shotguns only; 2 zombies at the start, 6 min |
+| NITE | Long Night | HRD | 30 waves |
 
 **Search & Destroy** (`src/game/snd.ts`): a match is a series of short rounds. Red attacks first; one attacker
 starts with the bomb (it drops where its carrier dies, and any attacker can pick it up). Holding **E** for 3.5 s
@@ -169,6 +173,38 @@ When the match's time limit runs out mid-round, that round is played to the end 
 Plants and defuses count as objectives (the leaderboard's captures). The room owner referees: it sets
 rounds up, decides them and starts the next one 5 s later (`game/snd` in the database). Bots carry, plant,
 escort, hold the sites and defuse.
+
+**Infection** (`src/game/infection.ts`, zombies in `src/game/zombies.ts`): everyone starts a round as a
+survivor, spread over the map like free-for-all. After a 15 s head start the room owner picks the first zombies
+(1 by default, never everyone), who turn where they stand: whatever they picked up falls to the floor. From then
+on a survivor who dies, however it happens, rises as a zombie after the respawn time, and anyone who joins (or
+stops spectating) joins the zombies. Zombies have no guns, grenades or pickups, only claws: click (or **V**) to
+swipe, 100 damage at 2.3 m, so a fresh survivor goes down in one hit. To make up for it they run 12 % faster and
+have 150 % health (the first zombies 200 %, capped at 200 HP). Survivors keep the mode's loadout and pickups. The
+zombies win the moment no survivor is left standing; the survivors win if anyone is still standing when the clock
+runs out (no overtime). When it's down to one survivor, everyone is told, and the zombies see them on the radar
+and as an objective marker. Zombies are grey-green with the visor glowing red, no gun in hand and arms reaching
+out; they groan now and then. It's a team mode underneath (survivors are blue, zombies red, shown as Survivors and
+Zombies), so teammates can't hurt each other; teams can't be switched. The room owner referees (`game/inf` in the
+database holds only who turned first). Bots play both sides: survivors fight as in TDM, zombie bots run the
+routes to the nearest survivor (zombies can smell the living) and charge once they see them (`src/game/bot/zombie.ts`).
+
+**Horde** (`src/game/horde.ts`): co-op. Everyone (bots in the room too) is a survivor, starting on the blue side,
+against waves of zombie bots that the room owner's computer plays. Before each wave there's a break (10 s before
+the first, 12 s after each), counted down on the score bar. Each wave has more zombies than the last (6 for one
+player in wave 1, 3 more each wave, 40 % more per extra player) and they're tougher (50 HP in wave 1, +10 a wave,
+up to 200), hit harder and, from wave 3, some are runners that sprint (a little slower than you can) where the
+rest shamble. They come on a few at a time (at most 4 + 2 per player at once, 14 in all) at spawn and pickup
+spots at least 20 m from every survivor, and hunt the nearest survivor (zombie bots always know where the
+living are: `src/game/bot/zombie.ts`). Whoever goes down sits the wave out, watching a teammate; clearing it brings
+everyone back for the break, healed to full with their ammo restocked. Kills don't heal in Horde. Everyone down at
+once ends the round (**Overrun on wave N**); surviving the mode's last wave (10 by default) wins it. There's no
+clock. When a wave is down to its last 3 zombies they show on the radar. The room keeps its best wave from round
+to round (`game/hordeBest`). The zombies are bot records the game brings on and takes off, not on the room's bot
+list or its members, and left out of the scoreboard, the player count, the MVP and the kill feed (except your own
+kills); fallen ones are brought back on as the wave's next zombies. The room owner referees (`game/horde`: the wave,
+when it starts, and how many of its zombies are left to kill). The owner's bot skill setting decides how quickly
+the zombies strike.
 
 **Custom modes:** **＋ Create custom mode** in the lobby opens an editor: pick the base, name it (and a badge of
 up to 4 letters), set every rule, and see a live description. **Use once** plays it in the room you create;

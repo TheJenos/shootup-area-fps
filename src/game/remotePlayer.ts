@@ -9,6 +9,7 @@ import { Ragdoll, type RagdollBones } from './ragdoll';
 import { BONES, cloneCharacter, GAITS, type CharacterAsset, type Gait } from './character';
 import { CARRIED_LEAN } from './flags';
 import { TEAMS, TEAM_INFO } from './modes';
+import { ZOMBIE_COLOR } from './zombies';
 import type { GunKind, PlayerState, Stance, Team } from '../types';
 
 /** Attached to hitbox meshes so a raycast hit can be traced back to a player. */
@@ -112,9 +113,19 @@ const TEAM_VISOR_GLOW = 0.7;
 /** What a cloaked enemy fades to instead of their colour: a pale glassy grey */
 const CLOAK_COLOR = new THREE.Color(0xd8dee4);
 
-/** The team a colour belongs to (replay stand-ins only know the colour). */
+/** The team a colour belongs to (replay stand-ins only know the colour); a zombie's is Infection's red */
 const teamOfColor = (color: string | undefined): Team | undefined =>
-  TEAMS.find((t) => TEAM_INFO[t].color.toLowerCase() === color?.toLowerCase());
+  (color?.toLowerCase() === ZOMBIE_COLOR ? 'red' : TEAMS.find((t) => TEAM_INFO[t].color.toLowerCase() === color?.toLowerCase()));
+
+/*
+ * A zombie (anyone wearing ZOMBIE_COLOR): grey-green skin, the uniform dark and stained, the visor glowing
+ * red like eyes; no gun, arms reaching out in front, and a swipe of the claws for an attack.
+ */
+const ZOMBIE_SKIN = new THREE.Color(0.42, 0.62, 0.36);
+const ZOMBIE_RAGS = new THREE.Color(0.32, 0.4, 0.26);
+const ZOMBIE_EYES = new THREE.Color(1, 0.16, 0.06);
+/** Where a zombie's hands reach, from the head (m): forward, down, out to the side */
+const ZOMBIE_REACH = { forward: 0.55, down: 0.32, out: 0.2 };
 
 // Hitboxes are invisible but still raycastable.
 const hitboxMat = new THREE.MeshBasicMaterial({ visible: false });
@@ -220,6 +231,12 @@ export class RemotePlayer {
   private fallRoll = 0;
   /** Carrying the enemy flag: no gun in hand, arms swing free except when they strike */
   private carrying = false;
+  /** A zombie (Infection): no gun, arms out, claws (it's in their colour: see setColor) */
+  private zombie = false;
+  /** Each zombie's arms sway out of step with the others' */
+  private readonly swayPhase = Math.random() * Math.PI * 2;
+  /** One of Horde's zombies: no name tag (a horde of tags would bury the view) */
+  private npc = false;
   /** Cloak ability on (as last reported), and how far the fade has got (0..1) */
   private cloak = false;
   private cloakAmount = 0;
@@ -678,6 +695,15 @@ export class RemotePlayer {
     return this.carrying;
   }
 
+  get isZombie(): boolean {
+    return this.zombie;
+  }
+
+  setNpc(on: boolean): void {
+    this.npc = on;
+    if (on) this.tag.hide();
+  }
+
   /** Watching through their eyes: hide their body, name tag and shield bubble from us. */
   setFirstPerson(on: boolean): void {
     if (on === this.firstPerson) return;
@@ -691,7 +717,7 @@ export class RemotePlayer {
     if (carrying === this.carrying) return;
     this.carrying = carrying;
     this.swingAmount = 0;
-    this.gunHolder.visible = !carrying;
+    this.gunHolder.visible = !carrying && !this.zombie;
   }
 
   /**
@@ -751,7 +777,7 @@ export class RemotePlayer {
     if (!on && this.cloakAmount < 0.01) this.cloakAmount = 0;
     const amount = Math.round(this.cloakAmount * 50) / 50;
     this.cloakHidden = amount > 0.5 && !this.ally;
-    this.gunHolder.visible = !this.carrying && !this.cloakHidden;
+    this.gunHolder.visible = !this.carrying && !this.cloakHidden && !this.zombie;
     const look = amount + (this.ally ? 10 : 0);
     if (look === this.lastCloakLook) return;
     this.lastCloakLook = look;
@@ -803,9 +829,9 @@ export class RemotePlayer {
     this.bend(this.spine, -this.pitch * SPINE_PITCH);
     this.applyStance(dt);
     this.applyAim(dt);
-    // The right hand always holds the gun or the flag; the left grips the gun when it's up.
-    this.curlFingers(0, 1);
-    this.curlFingers(1, this.carrying ? 0 : this.readyAmount);
+    // The right hand always holds the gun or the flag; the left grips the gun when it's up. A zombie's are claws.
+    this.curlFingers(0, this.zombie ? 0.45 : 1);
+    this.curlFingers(1, this.zombie ? 0.45 : this.carrying ? 0 : this.readyAmount);
 
     // Died while we were watching: the body goes limp as a ragdoll, starting from this pose.
     if (!this.alive && !this.ragdoll && this.fall < 1) {
@@ -844,7 +870,7 @@ export class RemotePlayer {
       this.model.position.y = 0;
     }
     }
-    this.tag.update(this.alive && !this.occluded && !this.firstPerson && !this.cloakHidden);
+    this.tag.update(this.alive && !this.occluded && !this.firstPerson && !this.cloakHidden && !this.npc);
     if (this.firstPerson) this.shield.visible = false;
   }
 
@@ -881,7 +907,7 @@ export class RemotePlayer {
   private applyAim(dt: number): void {
     const shooting = performance.now() - this.firedAt < SHOOT_HOLD_MS;
     const ready = !this.alive ? 0
-      : this.carrying || this.knifeTime >= 0 ? 1
+      : this.carrying || this.zombie || this.knifeTime >= 0 ? 1
         : this.aiming || shooting || (this.gait !== 'Run' && this.slideAmount < 0.5) ? 1 : 0;
     // Snap up fast for a strike or a shot (the first bullets shouldn't leave from the hip), ease otherwise.
     const speed = this.carrying || shooting ? 16 : READY_SPEED;
@@ -922,6 +948,12 @@ export class RemotePlayer {
       // The flag is in the right hand: that arm holds and swings it, the left keeps its animation.
       this.swingFlag(throwPhase, w, dt);
       this.blendArms(3, w);
+      return;
+    }
+    if (this.zombie) {
+      this.reachOut();
+      this.blendArms(6, w);
+      this.showKnife(false);
       return;
     }
 
@@ -1021,6 +1053,39 @@ export class RemotePlayer {
     knife.position.copy(_handAt).addScaledVector(_dir, 0.05).addScaledVector(_bladeDir, 0.03);
     knife.quaternion.setFromUnitVectors(UP_Y, _bladeDir);
     knife.visible = true;
+  }
+
+  /**
+   * A zombie's arms: both reaching out in front at chest height, swaying a little. A swipe of the claws
+   * (a "knife" slash, to everyone else) brings the right hand down across from high on the right.
+   * Uses the aim frame applyAim just set.
+   */
+  private reachOut(): void {
+    const t = performance.now() / 1000;
+    const phase = this.knifeTime >= 0 ? this.knifeTime / KNIFE_LEN : -1;
+    // Level forward: zombies reach ahead, not where they look.
+    _fwd.set(_right.z, 0, -_right.x);
+    this.head.getWorldPosition(_anchor);
+    for (const side of [1, -1] as const) {
+      const arm = side > 0 ? this.rightArm : this.leftArm;
+      const sway = Math.sin(t * 2.3 + this.swayPhase + (side > 0 ? 0 : 1.7)) * 0.05;
+      _handAt.copy(_anchor)
+        .addScaledVector(_fwd, ZOMBIE_REACH.forward + sway * 0.5)
+        .addScaledVector(WORLD_UP, -ZOMBIE_REACH.down + sway)
+        .addScaledVector(_right, ZOMBIE_REACH.out * side);
+      if (phase >= 0 && side > 0) {
+        // Raised high and wide, then raked down and across.
+        const rake = phase < 0.3 ? 0 : Math.min(1, (phase - 0.3) / 0.4);
+        const up = _tmp.copy(_anchor).addScaledVector(_fwd, 0.3).addScaledVector(WORLD_UP, 0.15).addScaledVector(_right, 0.4);
+        const down = _gunAt.copy(_anchor).addScaledVector(_fwd, 0.65).addScaledVector(WORLD_UP, -0.5).addScaledVector(_right, -0.15);
+        const swipe = up.lerp(down, 1 - (1 - rake) ** 2);
+        // In from the reach, and back to it at the end.
+        const blend = Math.min(1, phase / 0.2, (1 - phase) / 0.15);
+        _handAt.lerp(swipe, blend);
+      }
+      _pole.copy(_right).multiplyScalar(0.7 * side).addScaledVector(WORLD_UP, -1);
+      reach(arm[0], arm[1], arm[2], _handAt, _pole);
+    }
   }
 
   /** Close hand 0 (right) or 1 (left) into a fist, `amount` 0..1 of the way. */
@@ -1141,8 +1206,23 @@ export class RemotePlayer {
     this.xrayMaterial?.uniforms.color?.value.set(color);
     const onTeam = !!(team ?? teamOfColor(color));
     const tint = new THREE.Color(color);
+    this.zombie = color.toLowerCase() === ZOMBIE_COLOR;
+    this.gunHolder.visible = !this.carrying && !this.cloakHidden && !this.zombie;
     for (const mat of this.materials) {
-      if (mat.name === 'Visor') {
+      const base = mat.userData.baseColor as THREE.Color;
+      if (this.zombie) {
+        if (mat.name === 'Visor') {
+          mat.color.copy(ZOMBIE_EYES);
+          mat.emissive.copy(ZOMBIE_EYES).multiplyScalar(1.4);
+        } else if (mat.name === 'Uniform') {
+          mat.color.copy(base).multiply(ZOMBIE_RAGS);
+          mat.emissive.copy(tint).multiplyScalar(0.05);
+        } else if (mat.name === 'Skin') {
+          mat.color.copy(base).multiply(ZOMBIE_SKIN);
+        }
+      } else if (mat.name === 'Skin') {
+        mat.color.copy(base);
+      } else if (mat.name === 'Visor') {
         // Visor in full colour; in team modes it glows too.
         mat.color.copy(tint);
         mat.emissive.copy(tint).multiplyScalar(onTeam ? TEAM_VISOR_GLOW : 0);

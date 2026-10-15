@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { MatchInfo, MyMatch, ScoreRow, ScoreView } from '../game/hudStore';
-import { MODES, TEAMS, TEAM_INFO } from '../game/modes';
+import { MODES, TEAMS, teamInfo } from '../game/modes';
 import type { GameMode } from '../types';
 import type { ModeRules } from '../game/rules';
 import { safeColor } from './colors';
@@ -55,11 +55,18 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, rules, scor
   /** Objectives: flag captures, or bombs planted and defused */
   const objectives = ctf || snd;
   const columns = objectives ? 11 : 10;
+  const inf = mode === 'inf';
+  const horde = mode === 'hrd';
   const unit = ctf ? 'capture' : snd ? 'round' : 'kill';
-  // Team modes list each team under its own header; FFA is one list.
-  const groups = teams
-    ? TEAMS.map((t) => ({ team: t, rows: rows.filter((r) => r.team === t) }))
-    : [{ team: null, rows }];
+  // Team modes list each team under its own header (Infection: the survivors first; Horde: only them, the
+  // zombies aren't players); FFA is one list.
+  const groups = horde ? [{ team: 'blue' as const, rows }]
+    : teams ? (inf ? [...TEAMS].reverse() : TEAMS).map((t) => ({ team: t, rows: rows.filter((r) => r.team === t) }))
+      : [{ team: null, rows }];
+  /** A side's header line: its score, or (Infection, Horde) who's on it */
+  const groupLine = (t: 'red' | 'blue') => (horde ? `Survivors · ${score.blue} standing · ${score.red} zombies left`
+    : inf ? `${teamInfo(t, mode).name} · ${t === 'blue' ? `${score.blue} still standing` : `${score.red} turned`}`
+      : `${teamInfo(t, mode).name} team · ${score[t]} ${unit}${score[t] === 1 ? '' : 's'}`);
 
   const row = (r: ScoreRow, i: number) => (
     <tr key={r.id} className={[r.me && 'me', r.spectating && 'spectating'].filter(Boolean).join(' ') || undefined}>
@@ -88,16 +95,16 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, rules, scor
         <div>
           <h3 id="summary-title">{match?.roomName ?? 'Match'}</h3>
           <span className="muted">
-            {rules.name} · {rules.loadout === 'gungame' ? `${rules.limit} guns` : `first to ${rules.limit}`} ·{' '}
+            {rules.name} · {rules.loadout === 'gungame' ? `${rules.limit} guns` : inf ? 'survive the clock' : horde ? `${rules.limit} waves` : `first to ${rules.limit}`} ·{' '}
             {map && <>{map.name} (seed {map.seed}) · </>}Room {roomCode} · {rows.length}{' '}
             {rows.length === 1 ? 'player' : 'players'}
           </span>
         </div>
-        {teams && (
+        {teams && !horde && (
           <div className="team-score">
-            <strong style={{ color: TEAM_INFO.red.color }}>{score.red}</strong>
+            <strong style={{ color: teamInfo('red', mode).color }}>{score.red}</strong>
             <span className="muted">–</span>
-            <strong style={{ color: TEAM_INFO.blue.color }}>{score.blue}</strong>
+            <strong style={{ color: teamInfo('blue', mode).color }}>{score.blue}</strong>
           </div>
         )}
         <div className="clock">
@@ -128,8 +135,8 @@ export function MatchSummary({ roomCode, match, rows, myMatch, mode, rules, scor
           <tbody key={g.team ?? 'all'}>
             {g.team && (
               <tr className={`team-row ${g.team}`}>
-                <td colSpan={columns} style={{ color: TEAM_INFO[g.team].color }}>
-                  {TEAM_INFO[g.team].name} team · {score[g.team]} {unit}{score[g.team] === 1 ? '' : 's'}
+                <td colSpan={columns} style={{ color: teamInfo(g.team, mode).color }}>
+                  {groupLine(g.team)}
                   {g.rows.length === 0 && <span className="muted"> · nobody yet</span>}
                 </td>
               </tr>

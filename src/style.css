@@ -458,6 +458,8 @@ html.reduce-motion #cloak-tint { animation: none; }
 #killfeed .tag { display: inline-block; font-size: 14px; font-weight: 800; line-height: 1; padding: 2px 4px; margin-right: 4px; border-radius: 3px; color: #fff; }
 #killfeed .tag.red { background: #c23b3b; }
 #killfeed .tag.blue { background: #2f6fd1; }
+/* Infection: zombies are red's side, in their own green */
+#killfeed .tag.red.inf, #bots-panel .tag.red.inf { background: #4f9a2c; }
 #killfeed .you { color: var(--accent); }
 
 /* Status banners (reconnecting, waiting for players): in #scorebar-wrap, so they stack under the score bar */
@@ -542,6 +544,7 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 #reload-hint { font-size: 15px; font-weight: 800; color: var(--accent); letter-spacing: 1.5px; visibility: hidden; }
 #reload-hint.show { visibility: visible; }
 #ammo.melee #ammo-value { font-size: 26px; letter-spacing: 2px; color: var(--accent); }
+#ammo.claws #ammo-value { color: #8fe35c; }
 #ammo.melee #reload-hint { color: var(--text); }
 #ammo.low:not(.reloading) #reload-hint, #ammo.dry #reload-hint { color: var(--danger); }
 
@@ -758,6 +761,8 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 .muted { color: var(--muted); }
 
 #death-overlay { background: rgba(120, 0, 0, 0.35); }
+#death-overlay.infected { background: rgba(40, 90, 10, 0.4); }
+#death-overlay.infected h2 { color: #a4f07a; }
 
 #pause-overlay, #connecting-overlay, #map-error-overlay {
   /* Menus sit over everything in the HUD (prompts, toasts, flash and cloak effects) */
@@ -981,6 +986,8 @@ kbd {
 .mode-badge.tdm { background: rgba(61, 139, 255, 0.18); color: #8fbaff; }
 .mode-badge.ctf { background: rgba(255, 77, 77, 0.18); color: #ff9a9a; }
 .mode-badge.snd { background: rgba(255, 176, 32, 0.18); color: #ffc861; }
+.mode-badge.inf { background: rgba(127, 214, 80, 0.18); color: #a4f07a; }
+.mode-badge.hrd { background: rgba(214, 72, 52, 0.2); color: #ff9f86; }
 .mode-badge.gungame { background: rgba(255, 181, 71, 0.18); color: #ffd48a; }
 .mode-badge.sniper { background: rgba(167, 139, 255, 0.18); color: #c9b8ff; }
 .mode-badge.snipertdm { background: rgba(167, 139, 255, 0.18); color: #c9b8ff; }
@@ -1241,6 +1248,13 @@ kbd {
 }
 #scorebar .team.red { --team: #ff4d4d; }
 #scorebar .team.blue { --team: #3d8bff; }
+#scorebar-wrap.inf .team.red { --team: #7fd650; }
+#scorebar-wrap.inf .team .muted { font-size: 12px; }
+#scorebar-wrap.horde .team.red { --team: #7fd650; }
+#scorebar-wrap.horde .team .muted { font-size: 12px; }
+#scorebar-wrap.horde .team strong .muted { font-size: 14px; }
+#scorebar-wrap.horde .center .wave { font-size: 18px; letter-spacing: 1px; text-transform: uppercase; }
+#scorebar-wrap.horde .center .wave .muted { font-size: 13px; }
 #scorebar .team.mine { box-shadow: inset 0 0 0 1px var(--team); }
 #scorebar .team .name { font-size: 14px; font-weight: 700; color: var(--team); text-transform: uppercase; letter-spacing: 1px; }
 #scorebar .team strong { font-size: 24px; line-height: 1.1; }

@@ -1,6 +1,8 @@
 import type { SlotView } from './abilities';
 import { baseRules, type ModeRules } from './rules';
 import type { SndPhase } from './snd';
+import type { InfPhase } from './infection';
+import type { HordePhase } from './horde';
 import type { AbilityType, GameMode, GunKind, PlayerState, SndRecord, Team, WeaponKind } from '../types';
 import type { MapSize, MapSpec } from './mapgen';
 
@@ -13,7 +15,7 @@ const ANNOUNCE_LIFETIME = 2_200;
 /** A minor call-out held back behind a bigger one is dropped if it has waited longer than this */
 const ANNOUNCE_STALE = 3_000;
 
-type Named = Pick<PlayerState, 'name' | 'color' | 'bot'>;
+type Named = Pick<PlayerState, 'name' | 'color' | 'bot' | 'npc'>;
 
 export type FeedEntry =
   | {
@@ -103,6 +105,39 @@ export interface SndView {
   watching: boolean;
 }
 
+/** Infection: the round as the HUD shows it */
+export interface InfView {
+  phase: InfPhase;
+  /** Seconds of head start left (countdown) */
+  turnIn: number;
+  /** Survivors still standing, and zombies */
+  survivors: number;
+  zombies: number;
+  /** We're one of the zombies */
+  zombie: boolean;
+  /** Down to one survivor: who (null otherwise; 'You' when it's us) */
+  last: string | null;
+}
+
+/** Horde: the waves as the HUD shows them */
+export interface HordeView {
+  /** The wave being fought (or the one coming, during a break), and how many to survive */
+  wave: number;
+  waves: number;
+  phase: HordePhase;
+  /** Seconds until the wave starts (a break) */
+  startsIn: number;
+  /** Its zombies still to kill */
+  left: number;
+  /** Survivors standing, and playing */
+  standing: number;
+  players: number;
+  /** The furthest wave this room has reached */
+  best: number;
+  /** We're down until the wave is cleared */
+  out: boolean;
+}
+
 /** A red arc around the crosshair pointing at whoever just hurt us. */
 export interface DamageIndicator {
   /** The attacker (one arc each) */
@@ -133,6 +168,8 @@ export interface MatchEnd {
   won: boolean;
   draw: boolean;
   reason: 'time' | 'score';
+  /** Overrides the line saying why it ended ("Time's up"...) */
+  headline?: string;
   /** Best three players of the round */
   top: { name: string; color: string; score: string }[];
   mvp: MvpView | null;
@@ -176,6 +213,8 @@ export interface HudState {
   scoped: boolean;
   /** Carrying the enemy flag: guns stowed, the flag is a melee weapon */
   melee: boolean;
+  /** A zombie (Infection): no guns, claws */
+  claws: boolean;
   reloading: boolean;
   /** `n` increments on every hit so the UI can restart the animation; `kill`: the hit that took them out. */
   hitmarker: { n: number; head: boolean; kill: boolean };
@@ -206,6 +245,10 @@ export interface HudState {
     respawnIn: number;
     /** Not dead: joined (or switched team) in the middle of an S&D round */
     late?: boolean;
+    /** Infection: a survivor who died, coming back as a zombie */
+    infected?: boolean;
+    /** Horde: out until the wave is cleared */
+    untilWave?: boolean;
   } | null;
   /** Watching the kill cam: who killed us, and how */
   killcam: { killerName: string; color: string; weapon: WeaponKind; head: boolean } | null;
@@ -243,6 +286,10 @@ export interface HudState {
   flags: Record<Team, FlagStatus> | null;
   /** Search & Destroy only */
   snd: SndView | null;
+  /** Infection only */
+  inf: InfView | null;
+  /** Horde only */
+  horde: HordeView | null;
   /** Seconds left in the round; null before the round clock is known */
   /** Seconds left on the round clock; `overtime`: the extra time after a tie, next point wins */
   clock: { left: number; urgent: boolean; overtime?: boolean } | null;
@@ -274,6 +321,7 @@ const initialState: HudState = {
   specialRounds: null,
   scoped: false,
   melee: false,
+  claws: false,
   reloading: false,
   hitmarker: { n: 0, head: false, kill: false },
   killConfirm: null,
@@ -307,6 +355,8 @@ const initialState: HudState = {
   score: { red: 0, blue: 0, mine: 0, leader: null },
   flags: null,
   snd: null,
+  inf: null,
+  horde: null,
   clock: null,
   matchEnd: null,
   announce: null,

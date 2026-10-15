@@ -115,7 +115,8 @@ function draw2D(canvas: HTMLCanvasElement, map: MapData, mode: GameMode): void {
   g.globalAlpha = 1;
 
   for (const s of map.spawns) {
-    g.fillStyle = mode === 'ffa' || !s.team ? 'rgba(255, 255, 255, 0.75)' : TEAM_INFO[s.team].color;
+    // (Infection starts everyone all over the map, as free-for-all does.)
+    g.fillStyle = mode === 'ffa' || mode === 'inf' || mode === 'hrd' || !s.team ? 'rgba(255, 255, 255, 0.75)' : TEAM_INFO[s.team].color;
     g.beginPath();
     g.arc(px(s.x), px(s.z), 1.6, 0, Math.PI * 2);
     g.fill();

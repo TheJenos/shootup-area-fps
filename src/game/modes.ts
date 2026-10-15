@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { ZOMBIE_COLOR } from './zombies';
 import type { GameMode, GunKind, Team } from '../types';
 
 /**
@@ -18,7 +19,12 @@ export interface ModeDef {
   short: string;
   description: string;
   teams: boolean;
-  /** Kills (FFA: one player's, TDM: a team's), flag captures (CTF) or rounds (S&D) needed to win the match */
+  /** Players pick their team (and may switch); otherwise the mode decides it (Infection) */
+  chooseTeams: boolean;
+  /**
+   * Kills (FFA: one player's, TDM: a team's), flag captures (CTF) or rounds (S&D) needed to win the match;
+   * in Infection, how many players turn at the start; in Horde, the waves to survive
+   */
   limit: number;
   /** Round length in seconds; the best score when it runs out wins */
   timeLimit: number;
@@ -31,20 +37,28 @@ export interface ModeDef {
 /** The base types every mode (prebuilt or custom) is built on; see rules.ts for the rest. */
 export const MODES: Record<GameMode, ModeDef> = {
   ffa: {
-    name: 'Free-for-all', short: 'FFA', description: 'Everyone for themselves', teams: false, limit: 25, timeLimit: 8 * 60, pickups: true,
+    name: 'Free-for-all', short: 'FFA', description: 'Everyone for themselves', teams: false, chooseTeams: false, limit: 25, timeLimit: 8 * 60, pickups: true,
     goal: 'Every kill counts — first to 25 wins',
   },
   tdm: {
-    name: 'Team Deathmatch', short: 'TDM', description: 'Red vs Blue, team kills count', teams: true, limit: 50, timeLimit: 10 * 60, pickups: true,
+    name: 'Team Deathmatch', short: 'TDM', description: 'Red vs Blue, team kills count', teams: true, chooseTeams: true, limit: 50, timeLimit: 10 * 60, pickups: true,
     goal: 'Kills score for your team — first team to 50 wins',
   },
   ctf: {
-    name: 'Capture the Flag', short: 'CTF', description: 'Bring the enemy flag to yours', teams: true, limit: 3, timeLimit: 12 * 60, pickups: true,
+    name: 'Capture the Flag', short: 'CTF', description: 'Bring the enemy flag to yours', teams: true, chooseTeams: true, limit: 3, timeLimit: 12 * 60, pickups: true,
     goal: 'Take the enemy flag to your base — first to 3 captures. Your own flag must be home to score.',
   },
   snd: {
-    name: 'Search & Destroy', short: 'S&D', description: 'One life per round: plant the bomb or stop it', teams: true, limit: 5, timeLimit: 20 * 60, pickups: true,
+    name: 'Search & Destroy', short: 'S&D', description: 'One life per round: plant the bomb or stop it', teams: true, chooseTeams: true, limit: 5, timeLimit: 20 * 60, pickups: true,
     goal: 'Attackers plant the bomb at site A or B, defenders stop them. One life per round — first team to 5 rounds wins.',
+  },
+  inf: {
+    name: 'Infection', short: 'INF', description: 'Survive the zombies — or join them', teams: true, chooseTeams: false, limit: 1, timeLimit: 5 * 60, pickups: true,
+    goal: 'Survive until the clock runs out. Anyone who dies turns into a zombie, and the zombies win once everyone has.',
+  },
+  hrd: {
+    name: 'Horde', short: 'HRD', description: 'Everyone together against waves of zombies', teams: true, chooseTeams: false, limit: 10, timeLimit: 20 * 60, pickups: true,
+    goal: 'Hold out together against waves of zombies, each bigger than the last. The fallen are back after each wave — survive 10 to win.',
   },
 };
 
@@ -58,6 +72,19 @@ export const TEAM_INFO: Record<Team, { name: string; color: string }> = {
   red: { name: 'Red', color: '#ff4d4d' },
   blue: { name: 'Blue', color: '#3d8bff' },
 };
+
+/** Infection's and Horde's sides: survivors (blue) and zombies (red, in the zombies' own colour) */
+export const INFECTION_TEAMS: Record<Team, { name: string; color: string }> = {
+  red: { name: 'Zombies', color: ZOMBIE_COLOR },
+  blue: { name: 'Survivors', color: TEAM_INFO.blue.color },
+};
+
+/** Survivors against zombies: Infection and Horde */
+export const zombieMode = (mode: GameMode): boolean => mode === 'inf' || mode === 'hrd';
+
+/** A team's name and colour in `mode` (the zombie modes name their sides) */
+export const teamInfo = (team: Team, mode: GameMode): { name: string; color: string } =>
+  (zombieMode(mode) ? INFECTION_TEAMS : TEAM_INFO)[team];
 
 export const otherTeam = (t: Team): Team => (t === 'red' ? 'blue' : 'red');
 

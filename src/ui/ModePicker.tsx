@@ -15,7 +15,7 @@ interface PickerProps {
 }
 
 /** The plain base modes come first; everything else is an arcade preset. */
-const CLASSIC = PRESETS.filter((p) => p.id === 'ffa' || p.id === 'tdm' || p.id === 'ctf' || p.id === 'snd');
+const CLASSIC = PRESETS.filter((p) => p.id === 'ffa' || p.id === 'tdm' || p.id === 'ctf' || p.id === 'snd' || p.id === 'inf' || p.id === 'hrd');
 const ARCADE = PRESETS.filter((p) => !CLASSIC.includes(p));
 
 /**
@@ -29,7 +29,11 @@ export function ModePicker({ value, onChange, showBots = true }: PickerProps) {
   const presetOf = PRESETS.find((p) => sameMode(p.rules, value));
   const isMine = !presetOf && mine.some((m) => sameMode(m, value));
   const unit = value.base === 'ctf' ? 'captures' : value.base === 'snd' ? 'rounds' : value.loadout === 'gungame' ? 'guns' : 'kills';
-  const chips = [`${value.limit} ${unit} to win`, `${value.minutes} min`, ...(value.base === 'snd' ? ['One life per round'] : []), ...tweaks(value)];
+  const chips = value.base === 'hrd'
+    ? ['Co-op against zombie bots', `${value.limit} waves to win`, 'The fallen are back after each wave', ...tweaks(value)]
+    : value.base === 'inf'
+    ? [`${value.limit} zombie${value.limit === 1 ? '' : 's'} at the start`, `Survive ${value.minutes} min`, 'The dead turn', ...tweaks(value)]
+    : [`${value.limit} ${unit} to win`, `${value.minutes} min`, ...(value.base === 'snd' ? ['One life per round'] : []), ...tweaks(value)];
   /** Picking another mode keeps the room's bots */
   const pick = (rules: ModeRules) => onChange({ ...rules, bots: value.bots, botSkill: value.botSkill });
 
@@ -216,13 +220,19 @@ function ModeEditor({ initial, onCancel, onUse }: EditorProps) {
           {rules.loadout === 'gungame'
             ? <p className="muted hint">Gun Game ends when someone clears all {rules.limit} guns.</p>
             : range(
-              rules.base === 'ctf' ? 'Captures to win' : rules.base === 'snd' ? 'Rounds to win' : rules.base === 'tdm' ? 'Team kills to win' : 'Kills to win',
+              rules.base === 'ctf' ? 'Captures to win' : rules.base === 'snd' ? 'Rounds to win' : rules.base === 'tdm' ? 'Team kills to win'
+                : rules.base === 'inf' ? 'Starting zombies' : rules.base === 'hrd' ? 'Waves to win' : 'Kills to win',
               'limit', lo, hi, 1, (v) => String(v),
             )}
-          {range('Time limit', 'minutes', LIMITS.minutes[0], LIMITS.minutes[1], 1, (v) => `${v} min`)}
-          {rules.base === 'snd'
+          {rules.base !== 'hrd' && range('Time limit', 'minutes', LIMITS.minutes[0], LIMITS.minutes[1], 1, (v) => `${v} min`)}
+          {rules.base === 'hrd' ? (
+            <p className="muted hint">No clock and no respawns mid-wave: whoever goes down is back, healed and restocked, once the wave is cleared. Everyone down at once ends it. Bots in the room fight on your side; the zombies are the game's own. Bot skill sets how quickly they strike.</p>
+          ) : rules.base === 'snd'
             ? <p className="muted hint">No respawns: whoever dies sits out the rest of the round. Teams swap sides at halftime.</p>
-            : range('Respawn', 'respawn', LIMITS.respawn[0], LIMITS.respawn[1], 1, (v) => `${v} s`)}
+            : range(rules.base === 'inf' ? 'Zombie respawn' : 'Respawn', 'respawn', LIMITS.respawn[0], LIMITS.respawn[1], 1, (v) => `${v} s`)}
+          {rules.base === 'inf' && (
+            <p className="muted hint">Everyone starts as a survivor; after a 15 s head start the first zombies turn. Survivors who die come back as zombies. The loadout and pickups are the survivors': zombies only have claws.</p>
+          )}
         </section>
 
         <section>

@@ -367,6 +367,14 @@ export function playKnifeHit(volume = 1, pan = 0, at?: Where): void {
   play('melee_hit', { volume: 0.7 * volume, pan, rate: 1.6 * vary(0.08), at });
 }
 
+/**
+ * A zombie's groan: the hurt cry slowed right down and dulled, from `at` (someone else's) or centred (our own,
+ * on turning). Each a little different.
+ */
+export function playGrowl(volume = 1, at?: Where): void {
+  play('hurt', { volume: 0.75 * volume, rate: 0.42 * vary(0.12), lowpass: 1500, bass: 5, at, ref: 6 });
+}
+
 /** The pole connecting: a heavy thump. */
 export function playMeleeHit(volume = 1, pan = 0, at?: Where): void {
   play('melee_hit', { volume: 0.9 * volume, pan, rate: vary(0.08), bass: 4, at });
