@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { BotRow, Game } from '../game/game';
 import type { HudState } from '../game/hudStore';
 import { BOT_SKILL_OPTIONS } from '../game/rules';
@@ -7,6 +7,7 @@ import { MODES, TEAM_INFO } from '../game/modes';
 import type { BotSkill } from '../game/bot/brain';
 import type { Team } from '../types';
 import { friendlyError } from './errors';
+import { useDialogFocus } from './useDialogFocus';
 
 interface Props {
   game: Game;
@@ -26,6 +27,8 @@ export function BotsPanel({ game, hud, onClose }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const teams = MODES[hud.rules.base].teams;
+  const box = useRef<HTMLDivElement>(null);
+  useDialogFocus(box);
 
   // The list and the bots' scores, kept fresh while the panel is open.
   useEffect(() => {
@@ -68,7 +71,7 @@ export function BotsPanel({ game, hud, onClose }: Props) {
 
   return (
     <div id="bots-panel" className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="panel-box" role="dialog" aria-modal="true" aria-labelledby="bots-panel-title">
+      <div ref={box} className="panel-box" role="dialog" aria-modal="true" aria-labelledby="bots-panel-title">
         <header>
           <h3 id="bots-panel-title">Bots <span className="muted count">{rows.length} / {MAX_BOTS}</span></h3>
           <button type="button" onClick={onClose}>Back</button>

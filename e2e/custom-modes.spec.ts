@@ -130,6 +130,7 @@ test.describe('custom modes', () => {
     expect(saved[0].gravity).toBe(0.6);
 
     await page.getByRole('button', { name: 'Delete Low Grav' }).click();
+    await page.getByRole('button', { name: 'Delete', exact: true }).click();
     await expect(page.getByRole('radiogroup', { name: 'Your modes' }).getByRole('radio')).toHaveCount(0);
     await expect(page.locator('.mode-detail strong')).toHaveText('Free-for-all');
     expect(await customModes(p)).toEqual([]);

@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import { isValidName } from './playerName';
 import {
   ACTIONS, CROSSHAIR_COLORS, CROSSHAIR_SIZE_MAX, CROSSHAIR_SIZE_MIN, FOV_MAX, FOV_MIN, HUD_SCALE_MAX, HUD_SCALE_MIN,
@@ -7,6 +7,7 @@ import {
 import { TOUCH } from '../game/device';
 import { hints } from '../game/hints';
 import { Crosshair } from './Crosshair';
+import { useDialogFocus } from './useDialogFocus';
 
 export function useSettings(): Settings {
   return useSyncExternalStore(settings.subscribe, settings.get);
@@ -47,6 +48,8 @@ export function SettingsPanel({ onClose, profile }: Props) {
   const [tipsReset, setTipsReset] = useState(false);
   const [tab, setTab] = useState<SettingsTab>(lastTab);
   const [confirmReset, setConfirmReset] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useDialogFocus(box);
 
   // Esc closes the panel (unless we're waiting for a key to bind, which handles Esc itself).
   useEffect(() => {
@@ -75,7 +78,7 @@ export function SettingsPanel({ onClose, profile }: Props) {
 
   return (
     <div id="settings" className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="panel-box tabbed" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div ref={box} className="panel-box tabbed" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <header>
           <h3 id="settings-title">Settings</h3>
           <button onClick={onClose} autoFocus>Done</button>

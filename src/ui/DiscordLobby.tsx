@@ -146,7 +146,7 @@ export function DiscordLobby({ initialError, onEnter }: Props) {
             <div className="lobby-profile">
               <span className="muted">Playing as</span>
               <strong title="Your Discord name">{discord.name}</strong>
-              <button type="button" className="icon-button" aria-label="Mouse and key settings" title="Settings" onClick={() => setSettingsOpen(true)}>⚙</button>
+              <button type="button" className="icon-button" aria-label="Settings" title="Settings" onClick={() => setSettingsOpen(true)}>⚙</button>
             </div>
           )}
         </header>

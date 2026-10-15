@@ -20,6 +20,7 @@ test.describe('room owner', () => {
     await setup.getByRole('radio', { name: /Team Deathmatch/ }).click();
     await setup.getByLabel('Map seed').fill('OWNERTEST');
     await setup.getByRole('button', { name: 'End round & restart' }).click();
+    await setup.getByRole('button', { name: 'Restart', exact: true }).click();
     await expect(setup).toBeHidden();
 
     const game = await waitForValue(`rooms/${code}/game`, (g) => g?.round === 1);

@@ -144,7 +144,7 @@ test.describe('lobby', () => {
   test('the name can be changed from Settings', async ({ players }) => {
     const p = await players.open(uniqueName('Before'));
     await p.gotoLobby();
-    await p.page.getByRole('button', { name: 'Mouse and key settings' }).click();
+    await p.page.getByRole('button', { name: 'Settings', exact: true }).click();
     const form = p.page.getByRole('form', { name: 'Profile' });
     const input = form.getByLabel('Your name');
     await expect(input).toHaveValue(p.name);

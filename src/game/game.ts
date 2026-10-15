@@ -1663,14 +1663,14 @@ export class Game {
     this.announceKill(chain, streak);
   }
 
-  /** Multi-kill and streak call-outs: a banner and a stinger. */
+  /** Multi-kill and streak call-outs: a banner (minor, so it never covers an objective one) and a stinger. */
   private announceKill(chain: number, streak: number): void {
     const names: Record<number, string> = { 2: 'DOUBLE KILL', 3: 'TRIPLE KILL', 4: 'QUAD KILL' };
     if (chain >= 2) {
-      this.hud.announce(names[chain] ?? 'RAMPAGE', chain >= 5 ? `${chain} kills` : '');
+      this.hud.announceMinor(names[chain] ?? 'RAMPAGE', chain >= 5 ? `${chain} kills` : '');
       sfx.playMultiKill(chain);
     } else if (streak >= 5 && streak % 5 === 0) {
-      this.hud.announce(`${streak} KILL STREAK`, streak >= 10 ? 'Unstoppable' : 'On fire');
+      this.hud.announceMinor(`${streak} KILL STREAK`, streak >= 10 ? 'Unstoppable' : 'On fire');
       sfx.playStreak();
     }
   }
@@ -3030,7 +3030,7 @@ export class Game {
     this.hud.update({ hp: Math.max(0, this.hp) });
     this.hud.flashDamage();
     this.shake = Math.min(1, this.shake + 0.25 + amount / 80);
-    sfx.playHurt();
+    sfx.playHurt(this.hurtFrom(source));
     if (this.hp <= 0) this.die(fromId, head, weapon);
     else if (amount > 0) void this.net.sendState({ hp: this.hp });
   }
@@ -4706,6 +4706,19 @@ export class Game {
     // Fade out smoothly toward the edge of hearing range.
     const edge = 1 - Math.max(0, (distance - STEP_HEARING_RANGE * 0.7) / (STEP_HEARING_RANGE * 0.3));
     return { volume: edge, at: this.soundAt(at) };
+  }
+
+  /**
+   * Where our own hurt sound plays: a metre and a half from the camera toward `source`. Close enough to stay at full
+   * volume and never be muffled (it's our pain, not a far-off sound), but panned so it says which side the hit came from.
+   */
+  private hurtFrom(source: THREE.Vector3): sfx.Where | undefined {
+    const ear = this.camera.getWorldPosition(this.soundFrom);
+    const dir = this.soundTo.copy(source).sub(ear);
+    const len = dir.length();
+    if (len < 0.01) return undefined;
+    dir.multiplyScalar(1.5 / len).add(ear);
+    return { x: dir.x, y: dir.y, z: dir.z };
   }
 
   /**

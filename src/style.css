@@ -37,8 +37,12 @@ html, body {
 
 #lobby {
   display: grid;
+  /* One column no wider than the screen: an auto column grows to the widest unbreakable row inside
+     (chips, the map picker) and pushed the card off the side of phones. */
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
-  padding: 16px;
+  /* Clear of notches and the home bar (the page is laid out under them: viewport-fit=cover) */
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   overflow-y: auto;
   background:
     radial-gradient(ellipse at top, rgba(255, 181, 71, 0.12), transparent 60%),
@@ -86,8 +90,12 @@ input, button {
   color: var(--text);
   background: #0f131a;
 }
-input { width: 100%; outline: none; }
+input { width: 100%; }
 input:focus { border-color: var(--accent); }
+/* Keyboard focus: a ring on everything you can Tab to (the browser's own is hard to see on this theme).
+   Text boxes keep showing focus with their accent border instead. */
+:is(button, input, select, textarea, a, [role='tab']):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input:is(:not([type]), [type='text'], [type='search'], [type='number']):focus { outline: none; }
 #code-input { text-transform: uppercase; letter-spacing: 2px; }
 
 button { cursor: pointer; background: #222a38; white-space: nowrap; }
@@ -122,7 +130,7 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 #room-list li.empty { color: var(--muted); justify-content: center; border-style: dashed; }
 #room-list .info { flex: 1; min-width: 0; }
 #room-list .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#room-list .meta { font-size: 12px; color: var(--muted); }
+#room-list .meta { font-size: 14px; color: var(--muted); }
 
 /* ---------- Game ---------- */
 
@@ -155,8 +163,12 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
   position: absolute;
   left: 24px;
   bottom: 96px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--muted);
+  /* It sits over the scene, so it gets a backing like the other panels */
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.5);
   transform-origin: bottom left;
   transform: scale(var(--hud-scale));
 }
@@ -165,7 +177,8 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 
 /* Objective markers (game/objectiveMarkers.ts): over the thing on screen, pinned to the edge otherwise */
 #objective-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-#objective-markers { position: absolute; inset: 0; }
+/* The padding is never laid out (markers are placed absolutely): objectiveMarkers.ts reads the insets from it */
+#objective-markers { position: absolute; inset: 0; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
 #objective-markers .objective {
   --objective: #fff;
   position: absolute;
@@ -176,7 +189,7 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
   align-items: center;
   gap: 1px;
   color: #fff;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-shadow: 0 1px 2px #000, 0 0 4px rgba(0, 0, 0, 0.8);
@@ -186,17 +199,19 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4
 #objective-markers .objective .icon {
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   background: var(--objective);
   color: #000;
-  font-size: 13px;
+  font-size: 22px;
+  line-height: 1;
+  text-shadow: none;
   box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.5), 0 0 8px var(--objective);
 }
 #objective-markers .objective.live .icon { animation: objective-pulse 0.9s ease-in-out infinite alternate; }
 #objective-markers .objective .label { color: var(--objective); }
-#objective-markers .objective .dist { font-weight: 500; opacity: 0.85; font-variant-numeric: tabular-nums; }
+#objective-markers .objective .dist { font-size: 13px; font-weight: 500; opacity: 0.9; font-variant-numeric: tabular-nums; }
 #objective-markers .objective .arrow {
   display: none;
   width: 0;
@@ -296,7 +311,7 @@ html.reduce-motion #objective-markers .objective.live .icon { animation: none; }
   left: 50%;
   top: calc(50% + 36px);
   transform: translateX(-50%);
-  font-size: 13px;
+  font-size: 14px;
   letter-spacing: 0.12em;
   color: #ffd9d9;
   text-shadow: 0 0 6px rgba(255, 40, 40, 0.8), 0 1px 2px #000;
@@ -392,7 +407,7 @@ html.reduce-motion #cloak-tint { animation: none; }
   position: absolute;
   top: 16px;
   left: 16px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--muted);
   background: rgba(0, 0, 0, 0.35);
   padding: 6px 10px;
@@ -445,12 +460,8 @@ html.reduce-motion #cloak-tint { animation: none; }
 #killfeed .tag.blue { background: #2f6fd1; }
 #killfeed .you { color: var(--accent); }
 
-/* Status banners under the score bar (reconnecting, waiting for players) */
+/* Status banners (reconnecting, waiting for players): in #scorebar-wrap, so they stack under the score bar */
 .hud-banner {
-  position: absolute;
-  top: 64px;
-  left: 50%;
-  transform: translateX(-50%);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -458,11 +469,12 @@ html.reduce-motion #cloak-tint { animation: none; }
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.55);
   border: 1px solid var(--line);
-  font-size: 13px;
+  font-size: 14px;
   white-space: nowrap;
   pointer-events: auto;
 }
-.hud-banner button { padding: 3px 10px; font-size: 12px; }
+.hud-banner button { padding: 3px 10px; font-size: 14px; }
+#hud.touch .hud-banner button { min-height: 44px; }
 .hud-banner.danger { border-color: rgba(255, 90, 90, 0.5); background: rgba(120, 0, 0, 0.45); animation: pulse 1s ease-in-out infinite alternate; }
 
 .spinner {
@@ -585,7 +597,7 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 }
 #abilities .buffs { display: flex; gap: 6px; min-height: 24px; }
 .buff {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   padding: 3px 8px;
   border-radius: 6px;
@@ -601,7 +613,8 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
   position: absolute;
   left: 50%;
   bottom: 190px;
-  transform: translateX(-50%);
+  transform: translateX(-50%) scale(var(--hud-scale));
+  transform-origin: bottom center;
   z-index: 20;
   display: flex;
   align-items: center;
@@ -615,13 +628,14 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
   white-space: nowrap;
   pointer-events: none;
 }
-#gun-prompt kbd { font-size: 13px; padding: 2px 7px; }
-#gun-prompt.touch { pointer-events: auto; border: 1px solid var(--accent); font: inherit; font-weight: 700; min-height: 44px; bottom: 196px; }
+#gun-prompt kbd { font-size: 14px; padding: 2px 7px; }
+#gun-prompt.touch { pointer-events: auto; border: 1px solid var(--accent); font: inherit; font-weight: 700; min-height: 44px; bottom: calc(env(safe-area-inset-bottom) + 196px); }
 #toasts {
   position: absolute;
   left: 50%;
   bottom: 140px;
-  transform: translateX(-50%);
+  transform: translateX(-50%) scale(var(--hud-scale));
+  transform-origin: bottom center;
   z-index: 20;
   pointer-events: none;
   display: flex;
@@ -735,8 +749,10 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
   justify-content: center;
   gap: 10px;
   text-align: center;
-  padding: 16px;
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
 }
+/* Opened from the lobby, which scrolls: pinned to the screen so they don't open somewhere up the page */
+#lobby .overlay, #mode-editor { position: fixed; }
 .overlay h2 { font-size: 34px; color: var(--text); text-transform: none; letter-spacing: 0; margin: 0; }
 .overlay p { margin: 0; }
 .muted { color: var(--muted); }
@@ -770,19 +786,19 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 .pause-card .status header { display: flex; gap: 10px; align-items: flex-start; }
 .pause-card .status header .mode-badge { margin-top: 4px; }
 .pause-card h3 { margin: 0; font-size: 20px; }
-.pause-card .goal { margin: 2px 0 0; font-size: 13px; line-height: 1.4; }
+.pause-card .goal { margin: 2px 0 0; font-size: 14px; line-height: 1.4; }
 .pause-card .row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 15px; }
 .pause-card .row .clock { font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .pause-card .score .flag { margin-left: 4px; font-size: 12px; }
 .pause-card .menu-toast { margin: 0; font-size: 14px; padding: 6px 10px; border-radius: 8px; background: rgba(255, 181, 71, 0.12); color: var(--accent); }
 .pause-card .state { margin: 0; font-weight: 600; padding: 8px 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.05); border-left: 3px solid var(--accent); }
 .pause-card .map { display: flex; gap: 12px; align-items: center; }
-.pause-card .map > div { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.pause-card .map > div { display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
 .pause-card .map .map-preview { width: 112px !important; height: 112px !important; border-radius: 8px; }
 .pause-card .room { margin: 0; display: flex; align-items: center; gap: 10px; font-size: 14px; }
-.pause-card .room button { padding: 5px 10px; font-size: 13px; }
-.pause-card .owner { margin: 0; display: flex; align-items: center; gap: 10px; font-size: 13px; }
-.pause-card .owner button { padding: 5px 10px; font-size: 13px; color: var(--text); }
+.pause-card .room button { padding: 5px 10px; font-size: 14px; }
+.pause-card .owner { margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 14px; }
+.pause-card .owner button { padding: 5px 10px; font-size: 14px; color: var(--text); }
 .pause-card .help { min-width: 0; }
 /* The buttons: one row across the bottom of the card */
 .pause-card .actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
@@ -790,6 +806,7 @@ html.reduce-motion #health .heal-pop { animation: toast-fade 1.4s forwards; }
 .pause-card .actions .primary { min-width: 120px; }
 .pause-card .actions .spacer { flex: 1; }
 .pause-card .keys, #controls-card .keys { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; font-size: 12px; color: var(--muted); }
+.pause-card .keys { font-size: 14px; }
 .pause-card .keys li, #controls-card .keys li { display: flex; gap: 8px; align-items: baseline; }
 .pause-card .keys kbd, #controls-card .keys kbd { min-width: 54px; text-align: center; white-space: nowrap; }
 
@@ -843,7 +860,7 @@ kbd {
 /* Mode picker: compact chips in three groups, and a card for the selected mode */
 .mode-picker { display: flex; flex-direction: column; gap: 8px; }
 .mode-group { display: grid; grid-template-columns: 58px 1fr; align-items: start; gap: 6px; }
-.mode-group-label { padding-top: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted); }
+.mode-group-label { padding-top: 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted); }
 .mode-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .mode-chip {
   display: inline-flex;
@@ -852,7 +869,7 @@ kbd {
   gap: 0;
   max-width: 100%;
   padding: 5px 10px 5px 6px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   border-radius: 999px;
   background: #1c2230;
@@ -871,13 +888,13 @@ kbd {
 .mode-detail-head > .mode-badge { margin: 0; }
 .mode-detail-title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .mode-detail-title strong { font-size: 15px; }
-.mode-detail-title small { font-size: 12px; line-height: 1.35; }
+.mode-detail-title small { font-size: 14px; line-height: 1.35; }
 .mode-detail-tools { display: flex; gap: 6px; flex-shrink: 0; }
-.mode-detail-tools button { padding: 6px 12px; font-size: 13px; }
+.mode-detail-tools button { padding: 6px 12px; font-size: 14px; }
 .mode-detail-tools button.icon { padding: 6px 9px; }
 .mode-rules { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 5px; }
 .mode-bots { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; }
-.mode-bots .setting { display: flex; align-items: center; gap: 10px; flex: 1 1 220px; font-size: 13px; }
+.mode-bots .setting { display: flex; align-items: center; gap: 10px; flex: 1 1 220px; font-size: 14px; }
 .mode-bots .setting > span:first-child { width: 64px; flex-shrink: 0; color: var(--muted); }
 .mode-bots input[type='range'] { flex: 1; min-width: 0; padding: 0; accent-color: var(--accent); }
 .mode-bots select { flex: 1; padding: 6px 8px; background: #0f1218; color: var(--text); border: 1px solid var(--line); border-radius: 8px; font: inherit; }
@@ -889,13 +906,14 @@ kbd {
 #match-setup { background: rgba(8, 10, 14, 0.75); pointer-events: auto; z-index: 40; }
 /* Bots: the owner's panel, and the badge bots wear in lists */
 .badge.bot { display: inline-block; font-size: 10px; font-weight: 800; letter-spacing: 0.5px; line-height: 1; padding: 2px 4px; margin-right: 5px; border-radius: 3px; background: rgba(255, 181, 71, 0.18); color: var(--accent); vertical-align: 1px; }
+#bots-panel .badge.bot { font-size: 12px; }
 #bots-panel { background: rgba(8, 10, 14, 0.75); pointer-events: auto; z-index: 40; }
 #bots-panel .panel-box { width: min(620px, 100%); max-height: calc(100% - 16px); overflow-y: auto; background: rgba(16, 20, 27, 0.97); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; text-align: left; }
 #bots-panel header, #bots-panel footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 #bots-panel h3 { margin: 0; font-size: 20px; }
 #bots-panel h3 .count { font-size: 14px; font-weight: 500; margin-left: 6px; }
 #bots-panel footer { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
-#bots-panel footer p { font-size: 12px; line-height: 1.4; margin: 0; }
+#bots-panel footer p { font-size: 14px; line-height: 1.4; margin: 0; }
 #bots-panel select { padding: 7px 9px; background: #0f1218; color: var(--text); border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 13px; }
 #bots-panel .bots-add { display: flex; gap: 8px; margin: 14px 0; flex-wrap: wrap; }
 #bots-panel .bots-add .primary { margin-left: auto; }
@@ -912,7 +930,7 @@ kbd {
 #match-setup .panel-box { width: min(640px, 100%); max-height: calc(100% - 16px); overflow-y: auto; background: rgba(16, 20, 27, 0.97); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; text-align: left; }
 #match-setup header, #match-setup footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 #match-setup footer { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
-#match-setup footer p { font-size: 12px; line-height: 1.4; }
+#match-setup footer p { font-size: 14px; line-height: 1.4; }
 #match-setup footer .primary { flex-shrink: 0; }
 #match-setup h3 { margin: 0; font-size: 20px; }
 #match-setup h4 { margin: 16px 0 8px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
@@ -939,7 +957,7 @@ kbd {
 #mode-editor .choice.selected { border-color: var(--accent); color: var(--accent); background: rgba(255, 181, 71, 0.1); }
 #mode-editor .name-row { margin: 10px 0 0; }
 #mode-editor .tag-input { flex: 0 0 72px; text-transform: uppercase; text-align: center; letter-spacing: 1px; }
-#mode-editor .hint { font-size: 12px; margin: 0 0 8px; }
+#mode-editor .hint { font-size: 14px; margin: 0 0 8px; }
 #mode-editor .mode-preview { margin: 14px 0 0; padding: 10px 12px; border-radius: 8px; background: rgba(255, 255, 255, 0.05); border-left: 3px solid var(--accent); font-size: 13px; line-height: 1.5; }
 
 .mode-badge {
@@ -984,6 +1002,7 @@ kbd {
 .tab:hover { color: var(--text); background: rgba(255, 255, 255, 0.03); }
 .tab.selected { color: var(--text); }
 .tab.selected::after { content: ''; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; background: var(--accent); border-radius: 2px; }
+.tab:focus-visible { outline-offset: -2px; } /* the tab strip scrolls, which would clip a ring drawn outside */
 .tab .count { margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 12px; background: rgba(255, 255, 255, 0.08); color: var(--muted); }
 .tab-panel { text-align: left; min-height: 340px; }
 .rooms-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -1005,6 +1024,49 @@ kbd {
   .create-grid { grid-template-columns: 1fr; }
   .rooms-toolbar .code-join { flex: 1 1 100%; }
   .rooms-toolbar > .primary { flex: 1 1 100%; }
+}
+/* Phones and narrow windows: the Create / Start button sticks to the bottom of the screen while the
+   modes and map scroll under it, instead of waiting below all of them. Sticky only works inside the
+   button's parent, so the wrappers between it and the whole grid step aside (display: contents). */
+@media (pointer: coarse), (max-width: 760px) {
+  .create-form { display: contents; }
+  .create-side { align-self: stretch; }
+  .create-button {
+    position: sticky;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    z-index: 2;
+    min-height: 48px;
+    /* A rim of the card's colour, so what scrolls under it doesn't show around the edges */
+    box-shadow: 0 0 0 6px var(--card), 0 -10px 18px 6px rgba(23, 28, 37, 0.9);
+  }
+}
+@media (max-width: 760px) {
+  .create-grid { gap: 12px; }
+  .create-side { display: contents; }
+}
+/* Short screens (phones held sideways): a smaller map preview, and no tall empty panels */
+@media (max-height: 520px) {
+  .tab-panel { min-height: 0; }
+  .create-panel .map-preview { width: 96px !important; height: 96px !important; }
+}
+
+/* An inline "are you sure?" (ConfirmButton.tsx): the question and its two answers where the button was */
+.confirm { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.confirm-question { font-weight: 600; }
+.mode-detail-tools .confirm button { padding: 6px 12px; }
+/* Asking about a delete: the question gets its own line under the mode's name instead of squeezing it */
+.mode-detail-head:has(.confirm) { flex-wrap: wrap; }
+.mode-detail-head:has(.confirm) .mode-detail-tools { flex-basis: 100%; }
+.mode-detail-tools:has(.confirm) > button { display: none; } /* Edit waits until the delete is answered */
+
+/* Touch: menu buttons at least 44px tall, the smallest a thumb hits reliably. Desktop stays compact. */
+@media (pointer: coarse) {
+  .icon-button { width: 44px; height: 44px; font-size: 18px; }
+  .tab, .mode-chip, .map-controls .choice, #settings .choice, #mode-editor .choice, .mode-detail-tools button,
+  .pause-card .room button, .pause-card .owner button, #room-list li.empty button, .board-switch button, .confirm button { min-height: 44px; }
+  .mode-detail-tools button.icon { min-width: 44px; }
+  /* .swatches in front: these rules come before the swatches' own sizes further down */
+  #settings .swatches .swatch, #settings .swatches input[type='color'] { width: 44px; height: 44px; }
 }
 
 /* Lobby: the header across the top, the room form on the left, the open rooms on the right */
@@ -1052,7 +1114,7 @@ kbd {
   .lobby-card .lobby-rooms #room-list { max-height: none; overflow: visible; }
   .lobby-card .lobby-rooms h2 { margin-top: 24px; }
 }
-.field .hint { display: block; margin-top: 4px; font-size: 12px; }
+.field .hint { display: block; margin-top: 4px; font-size: 14px; }
 .invite-card { position: relative; overflow: hidden; border: 1px solid var(--accent); background: rgba(255, 181, 71, 0.08); border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; text-align: left; }
 .invite-card p { margin: 0 0 10px; }
 .invite-card .row { margin: 0; }
@@ -1066,7 +1128,8 @@ kbd {
   position: absolute;
   left: 50%;
   bottom: 28px;
-  transform: translateX(-50%);
+  transform: translateX(-50%) scale(var(--hud-scale));
+  transform-origin: bottom center;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1084,12 +1147,13 @@ kbd {
 #hud.watching #spectate {
   top: 110px;
   bottom: auto;
+  transform-origin: top center;
   flex-direction: row;
   gap: 10px;
   padding: 6px 14px;
 }
 #hud.watching #spectate strong { font-size: 16px; }
-#hud.watching #spectate .muted { font-size: 12px; }
+#hud.watching #spectate .muted { font-size: 14px; }
 @media (max-height: 520px) { #hud.watching #spectate { top: 88px; } }
 #match-summary tr.spectating td { color: var(--muted); font-style: italic; }
 
@@ -1105,7 +1169,8 @@ kbd {
   position: absolute;
   left: 50%;
   bottom: 22px;
-  transform: translateX(-50%);
+  transform: translateX(-50%) scale(var(--hud-scale));
+  transform-origin: bottom center;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1115,19 +1180,21 @@ kbd {
   background: rgba(10, 12, 18, 0.66);
   pointer-events: none;
 }
-#killcam .label { font-size: 13px; letter-spacing: 3px; text-transform: uppercase; color: var(--danger); font-weight: 800; }
+#killcam .label { font-size: 14px; letter-spacing: 3px; text-transform: uppercase; color: var(--danger); font-weight: 800; }
 #killcam strong { font-size: 22px; }
 #killcam .how { display: flex; align-items: center; gap: 8px; }
 #killcam .weapon { font-size: 20px; }
 #killcam .head { color: var(--danger); font-weight: 700; }
 #killcam .muted { font-size: 14px; }
 #killcam .skip { pointer-events: auto; margin-top: 6px; padding: 6px 14px; font-size: 14px; }
+#hud.touch #killcam .skip { min-height: 44px; padding: 8px 22px; }
 
 #scorebar-wrap {
   position: absolute;
   top: 14px;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translateX(-50%) scale(var(--hud-scale));
+  transform-origin: top center;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1140,10 +1207,6 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 #scorebar.ffa {
-  position: absolute;
-  top: 14px;
-  left: 50%;
-  transform: translateX(-50%);
   align-items: center;
   gap: 14px;
   padding: 7px 14px;
@@ -1160,7 +1223,11 @@ kbd {
   align-items: center;
   justify-content: center;
   font-size: 14px;
-  padding: 0 6px;
+  /* Backed like the team boxes either side: the clock and round state sit over the sky otherwise */
+  padding: 4px 12px 6px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.5);
+  text-shadow: 0 1px 2px #000;
 }
 #scorebar .team {
   min-width: 104px;
@@ -1187,7 +1254,8 @@ kbd {
   padding: 6px 14px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.55);
-  animation: pulse 1.2s ease-in-out infinite alternate;
+  /* Pulse to catch the eye when it appears, then hold still: an odd count ends on full opacity */
+  animation: pulse 1.2s ease-in-out 3 alternate;
 }
 .flag-banner.carrying { color: var(--good); border: 1px solid var(--good); }
 .flag-banner.alert { color: var(--danger); border: 1px solid var(--danger); }
@@ -1198,13 +1266,14 @@ kbd {
 #scorebar .alive-pips { display: flex; gap: 3px; margin-top: 3px; min-height: 8px; }
 #scorebar .alive-pips i { width: 8px; height: 8px; border-radius: 2px; background: var(--team); }
 #scorebar .alive-pips i.down { background: rgba(255, 255, 255, 0.15); }
-#scorebar .phase { font-size: 12px; white-space: nowrap; }
+#scorebar .phase { font-size: 14px; white-space: nowrap; }
 #scorebar .phase.planted { color: #ffb020; font-weight: 700; }
 #bomb-progress {
   position: absolute;
   left: 50%;
   bottom: 236px;
-  transform: translateX(-50%);
+  transform: translateX(-50%) scale(var(--hud-scale));
+  transform-origin: bottom center;
   z-index: 20;
   display: flex;
   flex-direction: column;
@@ -1217,7 +1286,12 @@ kbd {
   font-weight: 700;
   pointer-events: none;
 }
-#hud.touch #bomb-progress { pointer-events: auto; }
+/*
+ * Phones: on one line just above the crosshair, clear of the score bar and its banners above and of the
+ * health and toasts below (a 360px-tall screen has no room for the desktop spot over the prompt).
+ */
+#hud.touch #bomb-progress { pointer-events: auto; top: auto; bottom: calc(50% + 44px); transform-origin: bottom center; flex-direction: row; gap: 10px; padding: 6px 12px; }
+#hud.touch #bomb-progress .bar { width: 96px; }
 #bomb-progress .bar { width: 220px; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
 #bomb-progress .bar > div { height: 100%; background: #ffb020; }
 #bomb-progress.defuse .bar > div { background: var(--good); }
@@ -1261,7 +1335,7 @@ kbd {
 #settings footer { margin-top: 16px; justify-content: flex-end; }
 #settings h3 { margin: 0; font-size: 20px; }
 #settings h4 { margin: 18px 0 10px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
-#settings .hint { margin: 0 0 10px; font-size: 12px; }
+#settings .hint { margin: 0 0 10px; font-size: 14px; }
 #settings .setting { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font-size: 14px; }
 #settings .setting > span:first-child { width: 90px; }
 #settings .setting.check > span { width: auto; }
@@ -1293,7 +1367,7 @@ kbd {
 .map-controls { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; }
 .map-controls strong { font-size: 16px; }
 .map-controls .row { margin: 0; }
-.map-controls small { font-size: 12px; line-height: 1.4; }
+.map-controls small { font-size: 14px; line-height: 1.4; }
 .seed-input { text-transform: uppercase; letter-spacing: 2px; font-variant-numeric: tabular-nums; }
 .map-controls .choices { display: flex; gap: 6px; }
 .map-controls .choice { flex: 1; padding: 6px 8px; font-size: 13px; }
@@ -1302,7 +1376,7 @@ kbd {
 .map-preview.empty .spinner { margin-right: 6px; }
 .version-badge { color: var(--danger, #ff6b6b); font-weight: 600; }
 @media (max-width: 440px) {
-  .map-picker { flex-direction: column; align-items: center; }
+  .map-picker, .map-picker.stacked { flex-direction: column; align-items: center; }
   .map-controls { width: 100%; }
 }
 
@@ -1317,8 +1391,11 @@ kbd {
   transform: translate(-50%, -50%);
   overflow: visible;
 }
+/* Dark underlay, red body, near-white core: the low-health vignette and the damage flash are the same red */
+#damage-directions .arc-under { fill: none; stroke: rgba(0, 0, 0, 0.6); stroke-linecap: round; }
 #damage-directions .arc { fill: none; stroke: #ff3030; stroke-linecap: round; filter: drop-shadow(0 0 6px rgba(255, 30, 30, 0.8)); }
-#damage-directions .tip { fill: #ff3030; }
+#damage-directions .arc-core { fill: none; stroke: #ffe0e0; stroke-linecap: round; }
+#damage-directions .tip { fill: #ff5050; stroke: rgba(0, 0, 0, 0.6); stroke-width: 2px; paint-order: stroke; }
 
 #match-summary td.ping { white-space: nowrap; }
 #match-summary td.ping.good { color: var(--good); }
@@ -1329,13 +1406,13 @@ kbd {
 
 /* ---------- Round clock, results, MVP ---------- */
 
-#scorebar .clock { font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--text); }
+#scorebar .clock { font-size: 20px; line-height: 1.15; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--text); }
 #scorebar .you.leading { color: var(--accent); }
 #scorebar .you.leading strong { color: var(--accent); }
 #scorebar .clock.urgent { color: var(--danger); animation: pulse 0.6s ease-in-out infinite alternate; }
 /* Overtime: the clock turns gold, with "OT" in front */
 #scorebar .clock.overtime { color: var(--accent); }
-#scorebar .clock.overtime small { font-size: 11px; letter-spacing: 1px; vertical-align: 2px; }
+#scorebar .clock.overtime small { font-size: 13px; letter-spacing: 1px; vertical-align: 2px; }
 
 #round-over.draw h2 { color: var(--muted); }
 #round-over .podium { list-style: none; margin: 10px 0 6px; padding: 0; display: grid; gap: 6px; min-width: min(360px, 100%); }
@@ -1353,7 +1430,7 @@ kbd {
 #round-over .podium li:first-child { border: 1px solid var(--accent); }
 
 #hud.cinematic #crosshair,
-#hud.cinematic #scorebar-wrap,
+#hud.cinematic #scorebar-wrap > :not(.hud-banner),
 #hud.cinematic #scorebar,
 #hud.cinematic #room-tag,
 #hud.cinematic #damage-directions { display: none; }
@@ -1375,10 +1452,10 @@ kbd {
   animation: mvp-in 0.6s ease-out;
 }
 @keyframes mvp-in { from { opacity: 0; transform: translateX(-24px); } }
-#mvp .label { font-size: 12px; font-weight: 900; letter-spacing: 3px; color: var(--accent); }
+#mvp .label { font-size: 14px; font-weight: 900; letter-spacing: 3px; color: var(--accent); }
 #mvp h2 { margin: 2px 0 0; font-size: 34px; text-transform: none; letter-spacing: 0; }
 #mvp .title { margin: 2px 0 10px; font-size: 18px; font-weight: 700; }
-#mvp .chips { display: flex; flex-wrap: wrap; gap: 6px; font-size: 13px; color: var(--muted); }
+#mvp .chips { display: flex; flex-wrap: wrap; gap: 6px; font-size: 14px; color: var(--muted); }
 #mvp .chips span { background: rgba(255, 255, 255, 0.06); padding: 3px 8px; border-radius: 6px; }
 #mvp .chips strong { color: var(--text); }
 #mvp .progress { margin-top: 12px; height: 3px; background: rgba(255, 255, 255, 0.12); border-radius: 2px; overflow: hidden; }
@@ -1391,7 +1468,7 @@ kbd {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  font-size: 13px;
+  font-size: 14px;
   padding: 10px 14px;
   border-radius: 10px;
   background: rgba(8, 10, 14, 0.6);
@@ -1414,9 +1491,9 @@ kbd {
 .discord-connect h2 { display: inline-flex; align-items: center; gap: 4px; }
 .card.discord .match-info p { margin: 0; font-size: 13px; }
 .card.discord .play { width: 100%; padding: 12px; font-size: 16px; margin-top: 4px; }
-.card.discord .hint { font-size: 12px; margin: 10px 0 0; }
+.card.discord .hint { font-size: 14px; margin: 10px 0 0; }
 
-.card .legal { margin: 18px 0 0; font-size: 12px; text-align: center; }
+.card .legal { margin: 18px 0 0; font-size: 14px; text-align: center; }
 .card .legal a { color: var(--muted); }
 
 /* ---------- Brand ---------- */
@@ -1476,10 +1553,10 @@ kbd {
   place-items: center;
   pointer-events: none;
 }
-#touch-controls .stick.idle { left: calc(env(safe-area-inset-left) + 110px); top: auto; bottom: 46px; margin: 0 0 0 -60px; opacity: 0.45; }
+#touch-controls .stick.idle { left: calc(env(safe-area-inset-left) + 110px); top: auto; bottom: calc(var(--sb) + 46px); margin: 0 0 0 -60px; opacity: 0.45; }
 #touch-controls .knob { width: 52px; height: 52px; border-radius: 50%; background: rgba(255, 255, 255, 0.55); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4); }
 
-#touch-controls .tbtn {
+#touch-controls .tbtn, #touch-top .tbtn {
   position: absolute;
   pointer-events: auto;
   touch-action: none;
@@ -1494,27 +1571,60 @@ kbd {
   place-items: center;
   -webkit-tap-highlight-color: transparent;
 }
-#touch-controls .tbtn:active { background: rgba(255, 181, 71, 0.4); }
+#touch-controls .tbtn:active, #touch-top .tbtn:active { background: rgba(255, 181, 71, 0.4); }
 #touch-controls .tbtn.on { border-color: var(--accent); background: rgba(255, 181, 71, 0.3); }
-#touch-controls .fire { width: 92px; height: 92px; right: calc(env(safe-area-inset-right) + 34px); bottom: 104px; font-size: 34px; border-color: rgba(255, 90, 90, 0.7); background: rgba(255, 90, 90, 0.22); }
-#touch-controls .aim { width: 60px; height: 60px; right: calc(env(safe-area-inset-right) + 142px); bottom: 150px; }
-#touch-controls .jump { width: 64px; height: 64px; right: calc(env(safe-area-inset-right) + 132px); bottom: 34px; }
-/* Right cluster: nothing left of W-202px, so the centre column (abilities, health, toasts) fits a 667px phone */
-#touch-controls .crouch { width: 58px; height: 58px; right: calc(env(safe-area-inset-right) + 50px); bottom: 24px; }
-#touch-controls .reload { width: 52px; height: 52px; right: calc(env(safe-area-inset-right) + 54px); bottom: 204px; }
-#touch-controls .knife { width: 48px; height: 48px; right: calc(env(safe-area-inset-right) + 56px); bottom: 266px; font-size: 20px; }
-#touch-controls .top-buttons { position: absolute; top: 12px; left: calc(env(safe-area-inset-left) + 12px); display: flex; gap: 10px; pointer-events: auto; }
+/*
+ * Right cluster, laid out in design px (--u): 1px on screens 432px tall and up, down to 0.76px on a 360px
+ * phone, so the whole stack stays under the ammo panel (top-right). No button goes under 44px, the smallest
+ * a thumb hits reliably (Apple's minimum). --sb / --sr keep it off the home indicator and the notch.
+ * Nothing sits left of W-202px, so the centre column (abilities, health, toasts) fits a 667px phone.
+ */
+#hud.touch {
+  --u: clamp(0.76px, calc(0.3185vh - 0.382px), 1px);
+  --sb: env(safe-area-inset-bottom, 0px);
+  --sr: env(safe-area-inset-right, 0px);
+}
+#touch-controls .fire { width: calc(92 * var(--u)); height: calc(92 * var(--u)); right: calc(var(--sr) + 34 * var(--u)); bottom: calc(var(--sb) + 104 * var(--u)); font-size: 34px; border-color: rgba(255, 90, 90, 0.7); background: rgba(255, 90, 90, 0.22); }
+#touch-controls .aim { width: max(44px, 60 * var(--u)); height: max(44px, 60 * var(--u)); right: calc(var(--sr) + 142 * var(--u)); bottom: calc(var(--sb) + 150 * var(--u)); }
+#touch-controls .jump { width: max(44px, 64 * var(--u)); height: max(44px, 64 * var(--u)); right: calc(var(--sr) + 132 * var(--u)); bottom: calc(var(--sb) + 34 * var(--u)); }
+#touch-controls .crouch { width: max(44px, 58 * var(--u)); height: max(44px, 58 * var(--u)); right: calc(var(--sr) + 50 * var(--u)); bottom: calc(var(--sb) + 24 * var(--u)); }
+#touch-controls .reload { width: max(44px, 52 * var(--u)); height: max(44px, 52 * var(--u)); right: calc(var(--sr) + 54 * var(--u)); bottom: calc(var(--sb) + 204 * var(--u)); }
+#touch-controls .knife { width: max(44px, 48 * var(--u)); height: max(44px, 48 * var(--u)); right: calc(var(--sr) + 56 * var(--u)); bottom: calc(var(--sb) + 274 * var(--u)); font-size: 20px; }
+/* Scoreboard, bag and menu: their own layer (TouchTopButtons), so they stay up while dead or spectating */
+#touch-top { position: absolute; z-index: 2; top: calc(env(safe-area-inset-top) + 12px); left: calc(env(safe-area-inset-left) + 12px); display: flex; gap: 10px; pointer-events: auto; }
 /* 44px: the smallest a thumb hits reliably (Apple's minimum); a missed tap on Menu pauses the game */
-#touch-controls .tbtn.small { position: static; width: 44px; height: 44px; font-size: 15px; border-radius: 10px; }
+#touch-top .tbtn.small { position: static; width: 44px; height: 44px; font-size: 15px; border-radius: 10px; }
 
 /* HUD rearranged around the thumbs */
 #hud.touch #room-tag { left: calc(env(safe-area-inset-left) + 112px); top: 18px; }
-#hud.touch #health { left: 50%; transform: translateX(-50%) scale(calc(0.75 * var(--hud-scale))); transform-origin: bottom center; bottom: 98px; padding: 6px 12px; }
-#hud.touch #ammo { right: calc(env(safe-area-inset-right) + 12px); top: 52px; bottom: auto; font-size: 22px; padding: 4px 10px; transform-origin: top right; }
-#hud.touch #killfeed { top: 120px; }
-#hud.touch #fps { top: 14px; right: calc(env(safe-area-inset-right) + 12px); }
+#hud.touch #health { left: 50%; transform: translateX(-50%) scale(calc(0.75 * var(--hud-scale))); transform-origin: bottom center; bottom: calc(var(--sb) + 98px); padding: 6px 12px; }
+/* The right column: ammo up top (under the FPS counter when it's on), the button cluster below */
+#hud.touch #ammo { right: calc(var(--sr) + 12px); top: calc(env(safe-area-inset-top) + 12px); bottom: auto; font-size: 22px; padding: 4px 10px; transform-origin: top right; }
+#hud.touch.fps #ammo { top: calc(env(safe-area-inset-top) + 52px); }
+#hud.touch #fps { top: calc(env(safe-area-inset-top) + 14px); right: calc(var(--sr) + 12px); }
+/*
+ * The left column: top buttons, the radar under them, then the kill feed (its newest three). The feed keeps
+ * its place when the radar is off or hidden, clear of the score bar. --mm is the radar's scale: smaller on
+ * short phones, where 150px would be nearly half the screen.
+ */
+#hud.touch { --mm: var(--hud-scale); }
+#hud.touch #minimap { top: calc(env(safe-area-inset-top) + 64px); left: calc(env(safe-area-inset-left) + 12px); transform: scale(var(--mm)); }
+#hud.touch #killfeed { top: calc(env(safe-area-inset-top) + 72px + 150px * var(--mm)); left: calc(env(safe-area-inset-left) + 12px); right: auto; justify-items: start; transform-origin: top left; }
+#hud.touch #killfeed li:nth-child(n + 4) { display: none; }
+/* Long names are cut short rather than reaching the health panel or the bomb progress bar in the centre */
+#hud.touch #killfeed li { max-width: calc(50vw - 110px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Narrow phones: the score bar shrinks to clear the top buttons and the ammo panel either side */
+@media (max-width: 720px) {
+  #hud.touch #scorebar-wrap { transform: translateX(-50%) scale(calc(0.8 * var(--hud-scale))); }
+}
+@media (max-height: 500px) {
+  #hud.touch { --mm: calc(0.66 * var(--hud-scale)); }
+  #hud.touch #killfeed { transform: scale(calc(0.85 * var(--hud-scale))); }
+  /* The resting stick goes small and low, under the kill feed */
+  #touch-controls .stick.idle { width: 88px; height: 88px; bottom: calc(var(--sb) + 10px); margin-left: -44px; }
+}
 /* Centre column, bottom-anchored rungs: slots, buffs, health, toasts. Above the look / stick zones so slots take taps. */
-#hud.touch #abilities { bottom: 8px; gap: 6px; z-index: 1; }
+#hud.touch #abilities { bottom: calc(var(--sb) + 8px); gap: 6px; z-index: 1; }
 #abilities .buffs:empty { display: none; }
 #hud.touch #abilities .buffs { min-height: 0; }
 #hud.touch .slot.empty kbd { display: none; }
@@ -1523,8 +1633,8 @@ kbd {
 #hud.touch .pause-card { grid-template-columns: 1fr; }
 #hud.touch .pause-card .actions button { min-height: 44px; font-size: 15px; }
 #hud.touch .pause-card .help button { margin-top: 8px; }
-#hud.intro #touch-controls, #hud.intro #touch-controls * { pointer-events: none; }
-#hud.touch #toasts { bottom: 140px; max-width: 240px; font-size: 14px; text-align: center; }
+#hud.intro #touch-controls, #hud.intro #touch-controls *, #hud.intro #touch-top * { pointer-events: none; }
+#hud.touch #toasts { bottom: calc(var(--sb) + 140px); max-width: 240px; font-size: 14px; text-align: center; }
 /* Phones: the room code lives in the menu (the top buttons sit where the tag was), and banners shrink to fit */
 #hud.touch #room-tag { display: none; }
 #hud.touch #announce { top: 100px; max-width: 70vw; text-align: center; }
@@ -1538,24 +1648,26 @@ kbd {
 /* First-time touch guide: labels pinned beside the real buttons */
 #touch-intro { background: rgba(8, 10, 14, 0.55); pointer-events: auto; z-index: 20; justify-content: flex-start; padding-top: 56px; }
 #touch-intro h2 { font-size: 20px; margin: 0; text-shadow: 0 1px 3px #000; }
-#touch-intro .callout { position: absolute; font-size: 12px; font-weight: 700; padding: 4px 8px; border-radius: 6px; background: var(--accent); color: #1a1205; white-space: nowrap; transform: translate(50%, 50%); box-shadow: 0 2px 8px #000a; line-height: 1.2; }
-#touch-intro .callout small { display: block; font-weight: 500; font-size: 11px; }
-#touch-intro .fire { right: calc(env(safe-area-inset-right) + 80px); bottom: 150px; }
-#touch-intro .aim { right: calc(env(safe-area-inset-right) + 172px); bottom: 180px; }
-#touch-intro .jump { right: calc(env(safe-area-inset-right) + 164px); bottom: 66px; }
-#touch-intro .crouch { right: calc(env(safe-area-inset-right) + 79px); bottom: 53px; }
-#touch-intro .reload { right: calc(env(safe-area-inset-right) + 80px); bottom: 230px; }
-#touch-intro .knife { right: calc(env(safe-area-inset-right) + 72px); bottom: 290px; }
+#touch-intro .callout { position: absolute; font-size: 15px; font-weight: 700; padding: 4px 8px; border-radius: 6px; background: var(--accent); color: #1a1205; white-space: nowrap; transform: translate(50%, 50%); box-shadow: 0 2px 8px #000a; line-height: 1.2; }
+#touch-intro .callout small { display: block; font-weight: 500; font-size: 14px; }
+/* The callouts' points: each button's centre, in the cluster's design px (see #hud.touch) */
+#touch-intro .fire { right: calc(var(--sr) + 80 * var(--u)); bottom: calc(var(--sb) + 150 * var(--u)); }
+#touch-intro .aim { right: calc(var(--sr) + 172 * var(--u)); bottom: calc(var(--sb) + 180 * var(--u)); }
+#touch-intro .jump { right: calc(var(--sr) + 164 * var(--u)); bottom: calc(var(--sb) + 66 * var(--u)); }
+#touch-intro .crouch { right: calc(var(--sr) + 79 * var(--u)); bottom: calc(var(--sb) + 53 * var(--u)); }
+#touch-intro .reload { right: calc(var(--sr) + 80 * var(--u)); bottom: calc(var(--sb) + 230 * var(--u)); }
+#touch-intro .knife { right: calc(var(--sr) + 72 * var(--u)); bottom: calc(var(--sb) + 298 * var(--u)); }
 
 /* Settings → your name (lobby only) */
 .profile-row { display: grid; grid-template-columns: 1fr auto; gap: 8px 10px; align-items: end; padding: 0 0 12px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
 .profile-row .setting { margin: 0; }
 .profile-row small { grid-column: 1 / -1; }
-#touch-intro .swap { right: calc(env(safe-area-inset-right) + 174px); bottom: 246px; }
-#touch-intro .stick { left: calc(env(safe-area-inset-left) + 110px); bottom: 106px; transform: translate(-50%, 50%); }
+#touch-intro .swap { right: calc(var(--sr) + 174 * var(--u)); bottom: calc(var(--sb) + 246 * var(--u)); }
+#touch-intro .stick { left: calc(env(safe-area-inset-left) + 110px); bottom: calc(var(--sb) + 106px); transform: translate(-50%, 50%); }
+@media (max-height: 500px) { #touch-intro .stick { bottom: calc(var(--sb) + 54px); } }
 #touch-intro .look { left: 62%; top: 40%; transform: translate(-50%, -50%); background: rgba(255, 255, 255, 0.15); color: #fff; border: 1px dashed rgba(255, 255, 255, 0.5); }
-#touch-intro .slots { left: 50%; bottom: 35px; transform: translate(-50%, 50%); }
-#touch-intro .top { left: calc(env(safe-area-inset-left) + 80px); top: 32px; transform: translate(-50%, -50%); }
+#touch-intro .slots { left: 50%; bottom: calc(var(--sb) + 35px); transform: translate(-50%, 50%); }
+#touch-intro .top { left: calc(env(safe-area-inset-left) + 80px); top: calc(env(safe-area-inset-top) + 32px); transform: translate(-50%, -50%); }
 #touch-intro > button { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-height: 44px; padding: 10px 22px; }
 
 /* Portrait phone: ask to rotate (iOS can't lock orientation for web pages) */
@@ -1568,7 +1680,7 @@ kbd {
 
 /* Short landscape phone screens: compact, scrollable overlays */
 @media (max-height: 520px) {
-  .overlay { gap: 6px; padding: 10px 16px; justify-content: safe center; overflow-y: auto; }
+  .overlay { gap: 6px; padding: max(10px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); justify-content: safe center; overflow-y: auto; }
   .overlay h2 { font-size: 24px; }
   .overlay button { padding: 6px 12px; }
   .pause-card { padding: 12px 14px; gap: 12px; }
@@ -1582,7 +1694,7 @@ kbd {
 /* ---------- Guns ---------- */
 
 #ammo .gun-slots { display: flex; gap: 4px; justify-content: flex-end; margin-bottom: 2px; }
-#ammo .gun-slot { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; color: var(--muted); background: rgba(255, 255, 255, 0.06); }
+#ammo .gun-slot { font-size: 14px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; color: var(--muted); background: rgba(0, 0, 0, 0.5); }
 #ammo .gun-slot.on { color: #1a1205; background: var(--accent); }
 #ammo .gun-slot.empty { opacity: 0.4; }
 
@@ -1602,15 +1714,16 @@ kbd {
 #scope .dot { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: #ff3b3b; box-shadow: 0 0 4px #ff3b3b; }
 #hud:has(#scope) #crosshair { display: none; }
 
-#touch-controls .swap { width: 52px; height: 52px; right: calc(env(safe-area-inset-right) + 148px); bottom: 220px; }
-#touch-controls .tbtn.small.on { border-color: var(--accent); color: var(--accent); }
+#touch-controls .swap { width: max(44px, 52 * var(--u)); height: max(44px, 52 * var(--u)); right: calc(var(--sr) + 148 * var(--u)); bottom: calc(var(--sb) + 220 * var(--u)); }
+#touch-top .tbtn.on { border-color: var(--accent); color: var(--accent); background: rgba(255, 181, 71, 0.3); }
 
 /* ---------- Reduced motion ----------
    Set on <html> from the setting (or the OS when it's "System"). Elements that stay mounted and
    rely on ending at opacity 0 (#hitmarker, #damage-overlay) get fade-only keyframes, never none. */
 html.reduce-motion #hitmarker.show { animation: hitmarker-fade 0.28s ease-out; }
 html.reduce-motion #hitmarker.head.show { animation: hitmarker-fade 0.5s ease-out; }
-html.reduce-motion #hitmarker.head::after { display: none; }
+html.reduce-motion #hitmarker.head::after,
+html.reduce-motion #hitmarker.kill::after { display: none; }
 @keyframes hitmarker-fade { 0%, 60% { opacity: 1; } 100% { opacity: 0; } }
 html.reduce-motion #damage-overlay { animation: damage-soft 0.3s ease-out forwards; }
 @keyframes damage-soft { from { opacity: 0.45; } to { opacity: 0; } }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Game } from '../game/game';
 import type { HudState } from '../game/hudStore';
 import type { ModeRules } from '../game/rules';
@@ -6,6 +6,8 @@ import { MapPicker, useMapChoice } from './MapPicker';
 import { specForMode } from '../game/mapgen';
 import { ModePicker } from './ModePicker';
 import { friendlyError } from './errors';
+import { ConfirmButton } from './ConfirmButton';
+import { useDialogFocus } from './useDialogFocus';
 
 interface Props {
   game: Game;
@@ -22,6 +24,8 @@ export function MatchSetup({ game, hud, onClose }: Props) {
   const mapChoice = useMapChoice(hud.map?.spec);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const box = useRef<HTMLDivElement>(null);
+  useDialogFocus(box);
 
   // Esc closes the panel.
   useEffect(() => {
@@ -50,7 +54,7 @@ export function MatchSetup({ game, hud, onClose }: Props) {
 
   return (
     <div id="match-setup" className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="panel-box" role="dialog" aria-modal="true" aria-labelledby="match-setup-title">
+      <div ref={box} className="panel-box" role="dialog" aria-modal="true" aria-labelledby="match-setup-title">
         <header>
           <h3 id="match-setup-title">Change match</h3>
           <button type="button" onClick={onClose}>Back</button>
@@ -70,9 +74,10 @@ export function MatchSetup({ game, hud, onClose }: Props) {
 
         <footer>
           <p className="muted">Ends the current round for everyone. Nobody wins it and it doesn't count on the leaderboard.</p>
-          <button type="button" className="primary" disabled={busy} onClick={() => void restart()}>
+          <ConfirmButton className="primary" yesClassName="primary" disabled={busy} question="End it for everyone?" yes="Restart" no="Keep playing"
+            onConfirm={() => void restart()}>
             {busy ? 'Restarting…' : 'End round & restart'}
-          </button>
+          </ConfirmButton>
         </footer>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { type MouseEvent } from 'react';
+import { useRef, type MouseEvent } from 'react';
 import type { Game } from '../game/game';
 import type { HudState } from '../game/hudStore';
 import { TEAM_INFO, otherTeam } from '../game/modes';
@@ -9,6 +9,8 @@ import { keyLabel, type Bindings } from '../game/settings';
 import { MapPreview } from './MapPreview';
 import { FlagIcon, RoundClock, useCopyInvite } from './Hud';
 import { useSettings } from './SettingsPanel';
+import { ConfirmButton } from './ConfirmButton';
+import { useDialogFocus } from './useDialogFocus';
 
 /** What each key does, with the player's own bindings. */
 export function controls(b: Bindings): [key: string, action: string][] {
@@ -57,6 +59,10 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onMatchSet
   const layout = hud.map ? cachedMap(hud.map.spec) : null;
   const { rules } = hud;
   const team = hud.team;
+  const card = useRef<HTMLDivElement>(null);
+  useDialogFocus(card, false);
+  // The owner's computer plays the room's bots, so they go when the owner does.
+  const takesBots = !!hud.owner?.me && game.botRows().length > 0;
 
   const resume = (e: MouseEvent) => {
     if (e.target === e.currentTarget) game.requestPointerLock();
@@ -96,7 +102,7 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onMatchSet
 
   return (
     <div id="pause-overlay" className="overlay" onClick={resume}>
-      <div className="panel-box pause-card" role="dialog" aria-modal="true" aria-labelledby="pause-title">
+      <div ref={card} className="panel-box pause-card" role="dialog" aria-modal="true" aria-labelledby="pause-title">
         <section className="status">
           <header>
             <span className={`mode-badge ${hud.mode}`}>{rules.short}</span>
@@ -160,7 +166,9 @@ export function PauseMenu({ game, hud, roomCode, onLeave, onSettings, onMatchSet
 
         {/* One row along the bottom: leaving on the left, everything else, then Resume on the right. */}
         <footer className="actions">
-          <button type="button" className="danger" onClick={onLeave}>Leave room</button>
+          <ConfirmButton className="danger" question={takesBots ? 'Leave? Your bots leave too.' : 'Leave the room?'} yes="Leave" no="Stay" onConfirm={onLeave}>
+            Leave room
+          </ConfirmButton>
           <span className="spacer" />
           <button type="button" onClick={onSettings}>Settings</button>
           <button type="button" onClick={() => (game.isSpectating ? game.stopSpectating() : game.startSpectating())}>

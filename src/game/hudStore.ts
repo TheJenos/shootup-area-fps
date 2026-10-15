@@ -10,6 +10,8 @@ const TOAST_LIFETIME = 1_800;
 /** Toasts waiting their turn; older ones beyond this are dropped */
 const TOAST_QUEUE_MAX = 3;
 const ANNOUNCE_LIFETIME = 2_200;
+/** A minor call-out held back behind a bigger one is dropped if it has waited longer than this */
+const ANNOUNCE_STALE = 3_000;
 
 type Named = Pick<PlayerState, 'name' | 'color' | 'bot'>;
 
@@ -324,6 +326,10 @@ export class HudStore {
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private nextFeedId = 1;
   private toastQueue: string[] = [];
+  /** Whether the banner showing now is a minor one (kill streaks and the like), which anything may replace */
+  private announceMinorShowing = false;
+  /** The latest minor call-out that came in while a bigger one was up, and when */
+  private heldAnnounce: { text: string; sub: string; at: number } | null = null;
 
   readonly get = (): HudState => this.state;
 
@@ -392,13 +398,39 @@ export class HudStore {
     this.update({ toast: null });
   }
 
-  /** Big centre-screen banner for a moment or two (`ms` for longer ones, like the intro). */
+  /**
+   * Big centre-screen banner for a moment or two (`ms` for longer ones, like the intro). These are the ones that
+   * matter (the objective, the match): they always show at once, replacing whatever is up.
+   */
   announce(text: string, sub = '', ms = ANNOUNCE_LIFETIME): void {
+    // Anything held back would only be older by the time this one ends.
+    this.heldAnnounce = null;
+    this.showAnnounce(text, sub, ms, false);
+  }
+
+  /**
+   * A minor banner (multi-kills, streaks). It never covers one from announce(): while one of those is up it waits
+   * its turn, and is dropped if it would show too late to still mean anything.
+   */
+  announceMinor(text: string, sub = ''): void {
+    if (this.state.announce && !this.announceMinorShowing) {
+      this.heldAnnounce = { text, sub, at: Date.now() };
+      return;
+    }
+    this.showAnnounce(text, sub, ANNOUNCE_LIFETIME, true);
+  }
+
+  private showAnnounce(text: string, sub: string, ms: number, minor: boolean): void {
     const n = (this.state.announce?.n ?? 0) + 1;
+    this.announceMinorShowing = minor;
     this.update({ announce: { n, text, sub, ms } });
     const timer = setTimeout(() => {
       this.timers.delete(timer);
-      if (this.state.announce?.n === n) this.update({ announce: null });
+      if (this.state.announce?.n !== n) return;
+      this.update({ announce: null });
+      const held = this.heldAnnounce;
+      this.heldAnnounce = null;
+      if (held && Date.now() - held.at <= ANNOUNCE_STALE) this.showAnnounce(held.text, held.sub, ANNOUNCE_LIFETIME, true);
     }, ms);
     this.timers.add(timer);
   }

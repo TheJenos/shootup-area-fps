@@ -282,6 +282,8 @@ export class Player {
   async leave(): Promise<void> {
     if (!(await this.page.locator('#pause-overlay').isVisible())) await this.openPauseMenu();
     await this.page.getByRole('button', { name: 'Leave room' }).click();
+    // Leaving asks first (a stray tap on a phone shouldn't drop you out of the match).
+    await this.page.getByRole('button', { name: 'Leave', exact: true }).click();
     await expect(this.page.locator('#lobby')).toBeVisible();
   }
 

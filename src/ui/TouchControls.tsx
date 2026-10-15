@@ -6,16 +6,25 @@ const STICK_RADIUS = 56;
 
 type PointerHandler = (e: ReactPointerEvent<HTMLElement>) => void;
 
+const capture = (e: ReactPointerEvent<HTMLElement>) => {
+  e.preventDefault();
+  e.stopPropagation();
+  // Keep receiving this finger's moves even when it slides off the control.
+  try {
+    e.currentTarget.setPointerCapture(e.pointerId);
+  } catch { /* pointer already gone; the control still works without capture */ }
+};
+
 /**
  * On-screen controls for phones and tablets:
  * - left half: a move stick that appears wherever the thumb lands (push fully forward to sprint)
  * - right half: drag to look around
  * - buttons: fire (drag on it to keep aiming while shooting), aim, jump, crouch / slide, reload, knife,
- *   plus the scoreboard and menu up top. Ability slots are tapped directly in the HUD.
+ *   gun swap. The scoreboard and menu up top are TouchTopButtons; ability slots are tapped in the HUD.
  * Uses pointer events, so several fingers work at once.
  */
 export function TouchControls(
-  { game, aiming, hasSpecial, scoreboardOpen }: { game: Game; aiming: boolean; hasSpecial: boolean; scoreboardOpen: boolean },
+  { game, aiming, hasSpecial }: { game: Game; aiming: boolean; hasSpecial: boolean },
 ) {
   const stick = useRef<{ id: number; x: number; y: number } | null>(null);
   const [knob, setKnob] = useState<{ x: number; y: number; dx: number; dy: number } | null>(null);
@@ -32,15 +41,6 @@ export function TouchControls(
     game.setTouchFire(false);
     game.setTouchJump(false);
   }, [game]);
-
-  const capture = (e: ReactPointerEvent<HTMLElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    // Keep receiving this finger's moves even when it slides off the control.
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch { /* pointer already gone; the control still works without capture */ }
-  };
 
   // ---- move stick
   const stickDown: PointerHandler = (e) => {
@@ -169,24 +169,38 @@ export function TouchControls(
           ⇄
         </button>
       )}
+    </div>
+  );
+}
 
-      <div className="top-buttons">
-        <button
-          type="button"
-          className={scoreboardOpen ? 'tbtn small on' : 'tbtn small'}
-          aria-label="Scoreboard"
-          aria-pressed={scoreboardOpen}
-          onPointerDown={tap(() => game.setTouchScoreboard(!scoreboardOpen))}
-        >
-          ☰
-        </button>
+/**
+ * The scoreboard, bag and menu buttons, top-left. Apart from the other controls because they stay up
+ * while dead or spectating, when the menu is the only way out (the bag needs a live player).
+ */
+export function TouchTopButtons({ game, scoreboardOpen, alive }: { game: Game; scoreboardOpen: boolean; alive: boolean }) {
+  const tap = (action: () => void): PointerHandler => (e) => {
+    capture(e);
+    action();
+  };
+  return (
+    <div id="touch-top">
+      <button
+        type="button"
+        className={scoreboardOpen ? 'tbtn small on' : 'tbtn small'}
+        aria-label="Scoreboard"
+        aria-pressed={scoreboardOpen}
+        onPointerDown={tap(() => game.setTouchScoreboard(!scoreboardOpen))}
+      >
+        ☰
+      </button>
+      {alive && (
         <button type="button" className="tbtn small" aria-label="Inventory" onPointerDown={tap(() => game.touchInventory())}>
           🎒
         </button>
-        <button type="button" className="tbtn small" aria-label="Menu" onPointerDown={tap(() => game.pauseTouchPlay())}>
-          ❚❚
-        </button>
-      </div>
+      )}
+      <button type="button" className="tbtn small" aria-label="Menu" onPointerDown={tap(() => game.pauseTouchPlay())}>
+        ❚❚
+      </button>
     </div>
   );
 }

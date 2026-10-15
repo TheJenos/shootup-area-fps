@@ -4,6 +4,7 @@ import { buildWorld } from '../game/world';
 import { PAINT, insideOutline, type MapData } from '../game/mapgen';
 import { TEAM_INFO } from '../game/modes';
 import { bombSites, SITE_IDS } from '../game/snd';
+import { reducedMotion } from '../game/settings';
 import type { GameMode } from '../types';
 
 const SIZE = 168;
@@ -249,7 +250,8 @@ export function MapPreview({ map, mode }: { map: MapData; mode: GameMode }) {
       last = now;
       // Another preview took the canvas: this one stops drawing.
       if (renderer.domElement.parentElement !== host) return;
-      if (!dragging) yaw += (dt * Math.PI * 2) / ORBIT_PERIOD;
+      // Reduced motion: it holds still until dragged.
+      if (!dragging && !reducedMotion()) yaw += (dt * Math.PI * 2) / ORBIT_PERIOD;
       const dist = map.half * 3.05;
       camera.position.set(Math.sin(yaw) * Math.cos(pitch) * dist, Math.sin(pitch) * dist, Math.cos(yaw) * Math.cos(pitch) * dist);
       camera.lookAt(0, 0, 0);

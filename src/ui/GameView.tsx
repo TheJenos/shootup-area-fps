@@ -77,6 +77,14 @@ export function GameView({ session, onExit }: Props) {
     };
   }, [session]);
 
+  // Pinch-zoom is allowed in the menus (index.html), never in a match: two thumbs on the screen are
+  // controls. #game-screen has touch-action: none; older iOS Safari only listens to its own gesture events.
+  useEffect(() => {
+    const block = (e: Event) => e.preventDefault();
+    document.addEventListener('gesturestart', block);
+    return () => document.removeEventListener('gesturestart', block);
+  }, []);
+
   return (
     <section id="game-screen" className="screen">
       <div id="canvas-host" ref={hostRef} />

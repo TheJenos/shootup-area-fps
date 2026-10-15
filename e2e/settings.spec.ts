@@ -6,7 +6,7 @@ const saved = (p: Player) => p.page.evaluate(() => JSON.parse(localStorage.getIt
 
 async function openFromLobby(p: Player) {
   await p.gotoLobby();
-  await p.page.getByRole('button', { name: 'Mouse and key settings' }).click();
+  await p.page.getByRole('button', { name: 'Settings', exact: true }).click();
   const dialog = p.page.getByRole('dialog', { name: 'Settings' });
   await expect(dialog).toBeVisible();
   return dialog;
@@ -19,11 +19,11 @@ test.describe('settings', () => {
     await dialog.getByRole('button', { name: 'Done' }).click();
     await expect(dialog).toBeHidden();
 
-    await p.page.getByRole('button', { name: 'Mouse and key settings' }).click();
+    await p.page.getByRole('button', { name: 'Settings', exact: true }).click();
     await p.page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
 
-    await p.page.getByRole('button', { name: 'Mouse and key settings' }).click();
+    await p.page.getByRole('button', { name: 'Settings', exact: true }).click();
     await p.page.locator('#settings').click({ position: { x: 3, y: 3 } });
     await expect(dialog).toBeHidden();
   });
@@ -41,7 +41,7 @@ test.describe('settings', () => {
 
     // Kept across reloads
     await p.page.reload();
-    await p.page.getByRole('button', { name: 'Mouse and key settings' }).click();
+    await p.page.getByRole('button', { name: 'Settings', exact: true }).click();
     await expect(dialog.getByLabel('Invert vertical look')).toBeChecked();
   });
 

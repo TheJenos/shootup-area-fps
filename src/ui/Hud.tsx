@@ -10,7 +10,7 @@ import { SettingsPanel, useSettings } from './SettingsPanel';
 import { keyLabel } from '../game/settings';
 import { PERF_DEBUG, perfStats } from '../game/perfStats';
 import { InventoryPanel } from './InventoryPanel';
-import { TouchControls } from './TouchControls';
+import { TouchControls, TouchTopButtons } from './TouchControls';
 import { TouchIntro } from './TouchIntro';
 import { PauseMenu, controls } from './PauseMenu';
 import { MatchSetup } from './MatchSetup';
@@ -191,7 +191,8 @@ export function Hud({ game, roomCode, onLeave }: Props) {
         </div>
       )}
       {/* Always mounted, so toasts show while spectating and during the MVP replay too. */}
-      {(hud.snd?.prompt ?? hud.gunPrompt) && !hud.death && !hud.spectate && !hud.paused && (
+      {/* Not while planting or defusing: the progress bar is the prompt then (and a gun nearby would cover it). */}
+      {(hud.snd?.prompt ?? hud.gunPrompt) && !hud.death && !hud.spectate && !hud.paused && !hud.snd?.channel && (
         <GunPrompt text={(hud.snd?.prompt ?? hud.gunPrompt)!} touch={game.touch} onTap={() => game.interact()} />
       )}
       {hud.snd?.channel && !hud.death && !hud.paused && (
@@ -207,21 +208,23 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       {/* The radar and the objective markers draw themselves (game/minimap.ts, game/objectiveMarkers.ts); these are their places. */}
       {showMinimap && (hud.watched || (!hud.death && !hud.spectate && !hud.matchEnd)) && <div id="minimap" ref={mountMinimap} />}
       {!hud.death && !hud.spectate && !hud.killcam && !hud.matchEnd && !hud.paused && <div id="objective-layer" ref={mountMarkers} />}
-      <ScoreBar hud={hud} />
+      {/* Status banners hang under the score bar, in its column, so the two never overlap. */}
+      <ScoreBar hud={hud}>
+        {hud.offline && !hud.connecting && (
+          <div id="offline-banner" className="hud-banner danger" role="status">
+            <span className="spinner" aria-hidden="true" />{slowOffline ? 'Still reconnecting…' : 'Reconnecting…'}
+            {slowOffline && <button type="button" onClick={onLeave}>Back to lobby</button>}
+          </div>
+        )}
+        {waitingAlone && (
+          <div id="waiting-banner" className="hud-banner" role="status">
+            Waiting for players — share room <strong>{roomCode}</strong>
+            <button type="button" onClick={copy}>{copied ? 'Copied!' : game.touch ? 'Share' : 'Copy invite'}</button>
+          </div>
+        )}
+      </ScoreBar>
       {(showFps || PERF_DEBUG) && <FpsCounter />}
       <KillFeed entries={hud.feed} />
-      {hud.offline && !hud.connecting && (
-        <div id="offline-banner" className="hud-banner danger" role="status">
-          <span className="spinner" aria-hidden="true" />{slowOffline ? 'Still reconnecting…' : 'Reconnecting…'}
-          {slowOffline && <button type="button" onClick={onLeave}>Back to lobby</button>}
-        </div>
-      )}
-      {waitingAlone && (
-        <div id="waiting-banner" className="hud-banner" role="status">
-          Waiting for players — share room <strong>{roomCode}</strong>
-          <button type="button" onClick={copy}>{copied ? 'Copied!' : game.touch ? 'Share' : 'Copy invite'}</button>
-        </div>
-      )}
       {hud.watched ? (
         <WatchedPanels watched={hud.watched} />
       ) : !hud.spectate && (
@@ -241,7 +244,11 @@ export function Hud({ game, roomCode, onLeave }: Props) {
       )}
       {game.touch && (!hud.paused || intro) && !hud.connecting && !hud.death && !hud.inventoryOpen && !hud.spectate
         && hud.matchEnd?.phase !== 'mvp' && (
-        <TouchControls game={game} aiming={hud.aiming} hasSpecial={!!hud.special} scoreboardOpen={hud.scoreboardOpen} />
+        <TouchControls game={game} aiming={hud.aiming} hasSpecial={!!hud.special} />
+      )}
+      {/* The menu and scoreboard stay reachable while dead or spectating (the rest of the controls don't). */}
+      {game.touch && (!hud.paused || intro) && !hud.connecting && !hud.inventoryOpen && hud.matchEnd?.phase !== 'mvp' && (
+        <TouchTopButtons game={game} scoreboardOpen={hud.scoreboardOpen} alive={!hud.death && !hud.spectate} />
       )}
       {game.touch && (
         <div id="rotate-hint" className="overlay">
@@ -391,36 +398,43 @@ function SpectateBanner({ spectate, touch, label }: { spectate: NonNullable<HudS
   );
 }
 
-function ScoreBar({ hud }: { hud: HudState }) {
+/** The score bar, top-centre; `children` (status banners) stack under it. */
+function ScoreBar({ hud, children }: { hud: HudState; children?: React.ReactNode }) {
   const { team, score, flags, rules } = hud;
-  if (hud.snd) return <SndScoreBar hud={hud} snd={hud.snd} />;
+  if (hud.snd) return <SndScoreBar hud={hud} snd={hud.snd}>{children}</SndScoreBar>;
   const { limit, short } = rules;
   /** Free-for-all: outright ahead of everyone else */
   const leading = score.mine > 0 && score.mine > (score.leader?.kills ?? 0);
   if (rules.loadout === 'gungame') {
     return (
-      <div id="scorebar" className="ffa">
-        <span className="mode">{short}</span>
-        <RoundClock clock={hud.clock} />
-        <span className={leading ? 'you leading' : 'you'}>{leading && '👑 '}Level <strong>{Math.min(score.mine + 1, limit)}</strong><span className="muted">/{limit}</span> · {GUNS[hud.gun].name}</span>
-        {score.leader && (
-          <span className="muted">Best other: {score.leader.name} <strong>lvl {Math.min(score.leader.kills + 1, limit)}</strong></span>
-        )}
+      <div id="scorebar-wrap">
+        <div id="scorebar" className="ffa">
+          <span className="mode">{short}</span>
+          <RoundClock clock={hud.clock} />
+          <span className={leading ? 'you leading' : 'you'}>{leading && '👑 '}Level <strong>{Math.min(score.mine + 1, limit)}</strong><span className="muted">/{limit}</span> · {GUNS[hud.gun].name}</span>
+          {score.leader && (
+            <span className="muted">Best other: {score.leader.name} <strong>lvl {Math.min(score.leader.kills + 1, limit)}</strong></span>
+          )}
+        </div>
+        {children}
       </div>
     );
   }
   if (!team) {
     return (
-      <div id="scorebar" className="ffa">
-        <span className="mode">{short}</span>
-        <RoundClock clock={hud.clock} />
-        <span className={leading ? 'you leading' : 'you'} title={leading ? "You're in the lead" : undefined}>
-          {leading && '👑 '}You <strong>{score.mine}</strong>
-        </span>
-        {score.leader && (
-          <span className="muted">Best other: {score.leader.name} <strong>{score.leader.kills}</strong></span>
-        )}
-        <span className="muted">First to {limit}</span>
+      <div id="scorebar-wrap">
+        <div id="scorebar" className="ffa">
+          <span className="mode">{short}</span>
+          <RoundClock clock={hud.clock} />
+          <span className={leading ? 'you leading' : 'you'} title={leading ? "You're in the lead" : undefined}>
+            {leading && '👑 '}You <strong>{score.mine}</strong>
+          </span>
+          {score.leader && (
+            <span className="muted">Best other: {score.leader.name} <strong>{score.leader.kills}</strong></span>
+          )}
+          <span className="muted">First to {limit}</span>
+        </div>
+        {children}
       </div>
     );
   }
@@ -449,12 +463,13 @@ function ScoreBar({ hud }: { hud: HudState }) {
       {flags?.[team].state === 'carried' && (
         <div className="flag-banner alert">Your flag was taken — get it back!</div>
       )}
+      {children}
     </div>
   );
 }
 
 /** Search & Destroy: rounds won, who's still standing on each side, the round's clock and the bomb. */
-function SndScoreBar({ hud, snd }: { hud: HudState; snd: SndView }) {
+function SndScoreBar({ hud, snd, children }: { hud: HudState; snd: SndView; children?: React.ReactNode }) {
   const { team, score, rules } = hud;
   const teamBox = (t: Team) => (
     <div className={`team ${t}${t === team ? ' mine' : ''}`}>
@@ -469,9 +484,9 @@ function SndScoreBar({ hud, snd }: { hud: HudState; snd: SndView }) {
     : snd.phase === 'planted' ? `💣 Planted at ${snd.site}`
       : snd.phase === 'over' ? `${TEAM_INFO[snd.over!.winner].name} take round ${snd.round}`
         : `Round ${snd.round}`;
-  // Out of the round, the spectate banner says enough.
+  // Out of the round, the spectate banner says enough; planting or defusing, the progress bar does.
   let banner: { text: string; tone: 'carrying' | 'alert' } | null = null;
-  if (snd.watching) banner = null;
+  if (snd.watching || snd.channel) banner = null;
   else if (snd.phase === 'planted') {
     banner = snd.attacking
       ? { text: `Bomb planted at ${snd.site} — hold the site until it blows`, tone: 'carrying' }
@@ -494,9 +509,10 @@ function SndScoreBar({ hud, snd }: { hud: HudState; snd: SndView }) {
         {teamBox('blue')}
       </div>
       {banner && <div className={`flag-banner ${banner.tone}`}>{banner.text}</div>}
-      {!banner && snd.attacking && snd.carrier && snd.phase === 'live' && (
+      {!banner && !snd.channel && snd.attacking && snd.carrier && snd.phase === 'live' && (
         <div className="flag-banner subtle">{snd.carrier} has the bomb</div>
       )}
+      {children}
     </div>
   );
 }
@@ -613,16 +629,24 @@ const ARC_PATH = `M ${arcPoint(-ARC / 2, ARC_RADIUS)} A ${ARC_RADIUS} ${ARC_RADI
 // A small arrowhead just outside the middle of the arc.
 const TIP_PATH = `M ${arcPoint(-5, ARC_RADIUS + 8)} L ${arcPoint(0, ARC_RADIUS + 20)} L ${arcPoint(5, ARC_RADIUS + 8)} Z`;
 
-/** Red arcs around the crosshair, each pointing toward someone who just hit us. */
+/**
+ * Red arcs around the crosshair, each pointing toward someone who just hit us. Each sits on a dark underlay and has
+ * a bright core, so it still stands out against the red of the damage flash and the low-health vignette.
+ */
 function DamageDirections({ indicators }: { indicators: HudState['damageIndicators'] }) {
   return (
     <svg id="damage-directions" viewBox="-160 -160 320 320" aria-hidden="true">
-      {indicators.map((d) => (
-        <g key={d.id} transform={`rotate(${d.angle})`} opacity={d.opacity}>
-          <path d={ARC_PATH} className="arc" strokeWidth={6 + d.strength * 8} />
-          <path d={TIP_PATH} className="tip" />
-        </g>
-      ))}
+      {indicators.map((d) => {
+        const width = 6 + d.strength * 8;
+        return (
+          <g key={d.id} transform={`rotate(${d.angle})`} opacity={d.opacity}>
+            <path d={ARC_PATH} className="arc-under" strokeWidth={width + 4} />
+            <path d={ARC_PATH} className="arc" strokeWidth={width} />
+            <path d={ARC_PATH} className="arc-core" strokeWidth={Math.max(2, width * 0.3)} />
+            <path d={TIP_PATH} className="tip" />
+          </g>
+        );
+      })}
     </svg>
   );
 }

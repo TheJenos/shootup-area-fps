@@ -154,7 +154,17 @@ export class Minimap {
         }
       } else {
         g.beginPath();
-        g.arc(0, 0, r, 0, Math.PI * 2);
+        if (m.kind === 'enemy') {
+          // Enemies are diamonds, allies circles: the two differ by more than colour (team colours, colour blindness).
+          const e = r * 1.3;
+          g.moveTo(0, -e);
+          g.lineTo(e, 0);
+          g.lineTo(0, e);
+          g.lineTo(-e, 0);
+          g.closePath();
+        } else {
+          g.arc(0, 0, r, 0, Math.PI * 2);
+        }
         g.fill();
         if (m.kind === 'ally' || m.kind === 'enemy') {
           g.strokeStyle = 'rgba(0, 0, 0, 0.6)';

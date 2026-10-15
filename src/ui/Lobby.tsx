@@ -38,7 +38,7 @@ const QUICK_PLAY_BOTS = 5;
 const LONELY_ROOM_BOTS = 3;
 
 export function Lobby({ initialCode, initialError, onEnter }: Props) {
-  /** The player's name: chosen once, then kept in this browser and not changed again */
+  /** The player's name: chosen on the first visit, kept in this browser, changeable in Settings */
   const [name, setName] = useState(() => loadName().trim().slice(0, 16));
   const [draftName, setDraftName] = useState('');
   const [tab, setTab] = useState<Tab>('rooms');
@@ -73,7 +73,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
   }, [invite, hasName]);
   const disabled = !!busy || !isConfigured;
 
-  /** Keep the chosen name for good. */
+  /** Keep the chosen name in this browser. */
   const chooseName = (e: FormEvent) => {
     e.preventDefault();
     const chosen = draftName.trim().replace(/\s+/g, ' ');
@@ -171,8 +171,8 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
           {hasName && (
             <div className="lobby-profile">
               <span className="muted">Playing as</span>
-              <strong title="Your name is set for good on this browser">{name}</strong>
-              <button type="button" className="icon-button" aria-label="Mouse and key settings" title="Settings" onClick={() => setSettingsOpen(true)}>⚙</button>
+              <strong title="Your name on this browser (change it in Settings)">{name}</strong>
+              <button type="button" className="icon-button" aria-label="Settings" title="Settings" onClick={() => setSettingsOpen(true)}>⚙</button>
             </div>
           )}
         </header>
@@ -190,7 +190,7 @@ export function Lobby({ initialCode, initialError, onEnter }: Props) {
             <h2>Choose your name</h2>
             <p className="muted">
               {initialCode ? <>You've been invited to room <strong>{initialCode}</strong>. </> : null}
-              It's how everyone sees you in matches and on the leaderboard. <strong>You can't change it later.</strong>
+              It's how everyone sees you in matches and on the leaderboard. You can change it later in Settings.
             </p>
             <div className="row">
               <input

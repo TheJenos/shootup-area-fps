@@ -345,7 +345,8 @@ export function playExplosion(volume = 1, at?: Where, ref = 10): void {
 // ---------------------------------------------------------------- hits, kills, UI
 
 export const playHit = (head: boolean) => { play(head ? 'hit_head' : 'hit_body', { volume: head ? 0.7 : 0.5, rate: head ? 1.1 : 1.3 }); };
-export const playHurt = () => { play('hurt', { volume: 0.8, rate: vary(0.08) }); };
+/** `from`: a spot just off the listener toward whoever hit us (inside the panner's full-volume distance), so it's directional but never quieter */
+export const playHurt = (from?: Where) => { play('hurt', { volume: 0.8, rate: vary(0.08), at: from, ref: 4 }); };
 export const playKill = () => { play('kill', { volume: 0.6 }); };
 export const playPickup = () => { play('pickup', { volume: 0.55 }); };
 export const playAbility = (at?: Where) => { play('ability', { volume: 0.5, rate: vary(0.04), at, ref: 6 }); };

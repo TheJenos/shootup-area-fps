@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { GAME_MODES, MODES } from '../game/modes';
 import {
   BOT_SKILL_OPTIONS, LIMITS, LOADOUTS, PRESETS, baseRules, deleteCustomMode, goalOf, loadCustomModes, normalizeRules, sameMode,
   saveCustomMode, tweaks, type Loadout, type ModeRules,
 } from '../game/rules';
+import { ConfirmButton } from './ConfirmButton';
+import { useDialogFocus } from './useDialogFocus';
 
 interface PickerProps {
   value: ModeRules;
@@ -79,10 +81,10 @@ export function ModePicker({ value, onChange, showBots = true }: PickerProps) {
           </div>
           <div className="mode-detail-tools">
             {isMine && (
-              <button type="button" className="icon" aria-label={`Delete ${value.name}`} title="Delete this mode"
-                onClick={() => { setMine(deleteCustomMode(value.name)); pick(PRESETS[0]!.rules); }}>
+              <ConfirmButton className="icon" aria-label={`Delete ${value.name}`} title="Delete this mode" question="Delete?" yes="Delete" no="Keep"
+                onConfirm={() => { setMine(deleteCustomMode(value.name)); pick(PRESETS[0]!.rules); }}>
                 ✕
-              </button>
+              </ConfirmButton>
             )}
             <button type="button" onClick={() => setEditing(isMine ? value : { ...value, name: presetOf ? `${value.name} (custom)`.slice(0, 24) : value.name })}>
               {isMine ? 'Edit' : 'Customize'}
@@ -141,6 +143,8 @@ function ModeEditor({ initial, onCancel, onUse }: EditorProps) {
   const set = (patch: Partial<ModeRules>) => setDraft((d) => ({ ...d, ...patch }));
   const standard = rules.loadout === 'standard';
   const [lo, hi] = LIMITS.limit[rules.base];
+  const box = useRef<HTMLDivElement>(null);
+  useDialogFocus(box);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.code === 'Escape') { e.stopPropagation(); onCancel(); } };
@@ -167,7 +171,7 @@ function ModeEditor({ initial, onCancel, onUse }: EditorProps) {
 
   return (
     <div id="mode-editor" className="overlay" onClick={(e) => e.target === e.currentTarget && onCancel()}>
-      <div className="panel-box" role="dialog" aria-modal="true" aria-labelledby="mode-editor-title">
+      <div ref={box} className="panel-box" role="dialog" aria-modal="true" aria-labelledby="mode-editor-title">
         <header>
           <h3 id="mode-editor-title">Custom mode</h3>
           <button type="button" onClick={onCancel}>Cancel</button>

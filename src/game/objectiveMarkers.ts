@@ -18,8 +18,8 @@ export interface Objective {
   live?: boolean;
 }
 
-/** Keep markers this far in from the screen's edges (px) */
-const MARGIN = 28;
+/** Keep markers this far in from the screen's edges (px): about half a pinned marker's height, so none of it is cut off */
+const MARGIN = 36;
 /** Markers this close to the player are dropped (standing on it) */
 const NEAR = 2.5;
 
@@ -28,6 +28,8 @@ const _v = new THREE.Vector3();
 export class ObjectiveMarkers {
   readonly root = document.createElement('div');
   private readonly nodes = new Map<string, { el: HTMLElement; arrow: HTMLElement; dist: HTMLElement; key: string }>();
+  /** The screen's safe-area insets (notch, rounded corners, home indicator), px: pinned markers stay inside them */
+  private insets = { top: 0, right: 0, bottom: 0, left: 0 };
 
   constructor() {
     this.root.id = 'objective-markers';
@@ -35,13 +37,35 @@ export class ObjectiveMarkers {
   }
 
   mount(el: HTMLElement | null): void {
-    if (el) el.appendChild(this.root);
-    else this.root.remove();
+    if (el) {
+      el.appendChild(this.root);
+      this.readInsets();
+      window.addEventListener('resize', this.readInsets);
+    } else {
+      this.root.remove();
+      window.removeEventListener('resize', this.readInsets);
+    }
   }
+
+  /** The root is padded by env(safe-area-inset-*) in the CSS; reading the padding back is the only way to get them. */
+  private readonly readInsets = (): void => {
+    const style = getComputedStyle(this.root);
+    this.insets = {
+      top: parseFloat(style.paddingTop) || 0,
+      right: parseFloat(style.paddingRight) || 0,
+      bottom: parseFloat(style.paddingBottom) || 0,
+      left: parseFloat(style.paddingLeft) || 0,
+    };
+  };
 
   /** Lay the markers out for this frame. `width`/`height`: the screen (CSS px). */
   update(objectives: Objective[], camera: THREE.Camera, eye: THREE.Vector3, width: number, height: number): void {
     const seen = new Set<string>();
+    // The box markers stay inside: the screen less the margin and the safe-area insets.
+    const left = MARGIN + this.insets.left;
+    const right = width - MARGIN - this.insets.right;
+    const top = MARGIN + this.insets.top;
+    const bottom = height - MARGIN - this.insets.bottom;
     for (const o of objectives) {
       const d = o.pos.distanceTo(eye);
       if (d < NEAR) continue;
@@ -82,12 +106,12 @@ export class ObjectiveMarkers {
         x = width - x;
         y = height - y;
       }
-      const onScreen = !behind && x >= MARGIN && x <= width - MARGIN && y >= MARGIN && y <= height - MARGIN;
+      const onScreen = !behind && x >= left && x <= right && y >= top && y <= bottom;
       let angle = 0;
       if (!onScreen) {
-        // Pin to the edge along the line from the screen's centre to the point.
-        const cx = width / 2;
-        const cy = height / 2;
+        // Pin to the edge along the line from the box's centre to the point.
+        const cx = (left + right) / 2;
+        const cy = (top + bottom) / 2;
         let dx = x - cx;
         let dy = y - cy;
         if (behind) {
@@ -96,8 +120,8 @@ export class ObjectiveMarkers {
         const len = Math.hypot(dx, dy) || 1;
         dx /= len;
         dy /= len;
-        const tx = dx !== 0 ? (cx - MARGIN) / Math.abs(dx) : Infinity;
-        const ty = dy !== 0 ? (cy - MARGIN) / Math.abs(dy) : Infinity;
+        const tx = dx !== 0 ? (cx - left) / Math.abs(dx) : Infinity;
+        const ty = dy !== 0 ? (cy - top) / Math.abs(dy) : Infinity;
         const t = Math.min(tx, ty);
         x = cx + dx * t;
         y = cy + dy * t;
